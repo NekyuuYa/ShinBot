@@ -1,8 +1,8 @@
 """Inactive durable single-writer foundation for profile-scoped sessions.
 
-``AgentRuntime`` does not construct or route production traffic through this
-package yet.  Activation requires the gates documented in
-``docs/design/runtime/agent_session_actor.md``.
+``AgentRuntime`` constructs a private inactive diagnostic graph from this
+package, but does not route production traffic through it. Activation requires
+the gates documented in ``docs/design/runtime/agent_session_actor.md``.
 """
 
 from shinbot.agent.runtime.session_actor.actor import (
@@ -18,6 +18,23 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
+from shinbot.agent.runtime.session_actor.canary_isolation_lease import (
+    SQLiteActorV2CanaryIsolationLease,
+)
+from shinbot.agent.runtime.session_actor.canary_lifecycle import (
+    ActorV2CanaryIsolationLease,
+    ActorV2CanaryIsolationLost,
+    ActorV2CanaryLifecycleController,
+    ActorV2CanaryLifecycleError,
+    ActorV2CanaryLifecycleSnapshot,
+    ActorV2CanaryLifecycleState,
+)
+from shinbot.agent.runtime.session_actor.clean_session_activation import (
+    CleanSessionActivationBlocker,
+    CleanSessionActivationPreflight,
+    CleanSessionActivationReadiness,
+    SQLiteCleanSessionActivationPreflight,
+)
 from shinbot.agent.runtime.session_actor.delayed_control_handler import (
     DELAYED_CONTROL_EFFECT_KINDS,
     DelayedControlEffectHandler,
@@ -25,8 +42,11 @@ from shinbot.agent.runtime.session_actor.delayed_control_handler import (
     register_delayed_control_effect_handlers,
 )
 from shinbot.agent.runtime.session_actor.effect_contracts import (
+    ACTOR_V2_CLEAN_SESSION_EFFECT_REFS,
+    ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS,
     EffectContractAuthority,
     EffectContractAuthorityError,
+    builtin_clean_session_actor_v2_effect_contracts,
     builtin_effect_contract_authority,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
@@ -61,6 +81,7 @@ from shinbot.agent.runtime.session_actor.events import (
     ClaimedSessionEvent,
     EventEnqueueResult,
     MailboxEventStatus,
+    ModelExecutionCancellationGateState,
     ReviewScheduleStatus,
     SessionEffect,
     SessionEventEnvelope,
@@ -103,9 +124,25 @@ from shinbot.agent.runtime.session_actor.external_actions import (
     ExternalActionRequest,
 )
 from shinbot.agent.runtime.session_actor.harness import (
+    ActorRuntimeActivationScope,
+    ActorRuntimeCleanSessionPreflightError,
     ActorRuntimeHarness,
     ActorRuntimeHarnessActivationError,
+    ActorRuntimeHistoryRecoveryPermitRequired,
     RequiredEffectContractFailure,
+)
+from shinbot.agent.runtime.session_actor.historical_effect_terminalizer import (
+    HISTORICAL_EFFECT_TERMINALIZATION_FAILURE_CODE,
+    HistoricalEffectTerminalization,
+    HistoricalEffectTerminalizationStatus,
+    HistoricalEffectTerminalizer,
+)
+from shinbot.agent.runtime.session_actor.history_lifecycle import (
+    ActorRuntimeHistoryLifecycleController,
+    ActorRuntimeHistoryLifecycleError,
+    ActorRuntimeHistoryLifecyclePermitLost,
+    ActorRuntimeHistoryLifecycleSnapshot,
+    ActorRuntimeHistoryLifecycleState,
 )
 from shinbot.agent.runtime.session_actor.idle_review_planning import (
     IDLE_REVIEW_PLANNING_INPUT_VERSION,
@@ -135,6 +172,33 @@ from shinbot.agent.runtime.session_actor.key_factory import (
     SessionKeyFactory,
     SessionRoutingIdentity,
 )
+from shinbot.agent.runtime.session_actor.legacy_recovery_lifecycle import (
+    LegacyRecoveryActorLifecycleController,
+    LegacyRecoveryActorLifecycleError,
+    LegacyRecoveryActorLifecyclePermitLost,
+    LegacyRecoveryActorLifecycleSnapshot,
+    LegacyRecoveryActorLifecycleState,
+    LegacyRecoveryGate,
+)
+from shinbot.agent.runtime.session_actor.legacy_state_handoff import (
+    ActorV2LegacyIdleStatePreparationBlocked,
+    ActorV2LegacyIdleStateTargetPreparer,
+    ActorV2LegacyStateSnapshotStager,
+)
+from shinbot.agent.runtime.session_actor.legacy_state_handoff_finalizer import (
+    ActorV2LegacyIdleStateFinalization,
+    ActorV2LegacyIdleStateFinalizationBlocked,
+    SQLiteActorV2LegacyIdleStateFinalizer,
+)
+from shinbot.agent.runtime.session_actor.manual_review import (
+    MANUAL_REVIEW_EVENT_KIND,
+    MANUAL_REVIEW_EVENT_SOURCE,
+    MANUAL_REVIEW_REQUEST_VERSION,
+    ManualReviewAdmissionRequiredError,
+    ManualReviewRequest,
+    ManualReviewRequestError,
+    manual_review_event_id,
+)
 from shinbot.agent.runtime.session_actor.message_ledger import (
     AppendMessageLedgerEntry,
     ConsumeMessageLedgerEntries,
@@ -150,6 +214,52 @@ from shinbot.agent.runtime.session_actor.message_ledger import (
 from shinbot.agent.runtime.session_actor.message_ledger_persistence import (
     MessageLedgerConflict,
     load_captured_unread_message_ledger_entries,
+)
+from shinbot.agent.runtime.session_actor.model_execution_cancellation_gate import (
+    MODEL_EXECUTION_CANCELLATION_COMPLETION_EVENT_KIND,
+    MODEL_EXECUTION_CANCELLATION_CONTRACT_VERSION,
+    MODEL_EXECUTION_CANCELLATION_EFFECT_KIND,
+    MODEL_EXECUTION_CANCELLATION_TARGETS,
+    ModelExecutionCancellationBlocked,
+    ModelExecutionCancellationControlPort,
+    ModelExecutionCancellationGateError,
+    ModelExecutionCancellationGateObservation,
+    ModelExecutionCancellationGateRequest,
+    ModelExecutionCancellationGateStatus,
+    ModelExecutionCancellationQuiescencePending,
+    SQLiteModelExecutionCancellationGateStore,
+    cancel_claimed_model_execution_if_gated,
+    finish_model_execution_if_gated,
+    is_model_execution_cancellation_target,
+    permit_model_execution_start_if_gated,
+)
+from shinbot.agent.runtime.session_actor.model_execution_cancellation_handler import (
+    ModelExecutionCancellationControlEffectHandler,
+    ModelExecutionCancellationControlHandlerError,
+    model_execution_cancellation_request_from_context,
+    register_model_execution_cancellation_control_effect_handler,
+)
+from shinbot.agent.runtime.session_actor.model_execution_witness import (
+    MODEL_EXECUTION_UNKNOWN_EVENT_KIND,
+    MODEL_EXECUTION_UNKNOWN_EVENT_SOURCE,
+    MODEL_EXECUTION_WITNESSED_EFFECT_KINDS,
+    ModelExecutionClaim,
+    ModelExecutionPermit,
+    ModelExecutionPermitDisposition,
+    ModelExecutionUnknownNotice,
+    ModelExecutionWitnessError,
+    ModelExecutionWitnessStorePort,
+    SQLiteModelExecutionWitnessStore,
+    mark_expired_model_execution_unknown,
+)
+from shinbot.agent.runtime.session_actor.profile_handler_graph import (
+    ActorProfileEffectHandlerBundle,
+    ActorProfileHandlerGraphError,
+    ActorProfileWorkflowPorts,
+    ActorV2ProfileHandlerGraph,
+    EffectHandlerRef,
+    ProfileAwareEffectHandler,
+    UnknownActorWorkflowProfile,
 )
 from shinbot.agent.runtime.session_actor.recovery import (
     MAX_RECOVERY_CERTIFICATE_BYTES,
@@ -192,26 +302,39 @@ from shinbot.agent.runtime.session_actor.recovery import (
     decode_recovery_delivery_payload,
     recovery_delivery_event_id,
 )
-from shinbot.agent.runtime.session_actor.registry import AgentSessionActorRegistry
+from shinbot.agent.runtime.session_actor.recovery_scanner_service import (
+    DurableRecoveryScannerService,
+    RecoveryScannerPort,
+    RecoveryScannerWakeError,
+    RecoveryScannerWakeTarget,
+)
+from shinbot.agent.runtime.session_actor.registry import (
+    AgentSessionActorRegistry,
+    LegacyRecoveryLifecycleRequiredError,
+)
 from shinbot.agent.runtime.session_actor.review_due_scanner import (
     GLOBAL_REVIEW_DUE_HEALTH_PROFILE_ID,
     REVIEW_DUE_EVENT_KIND,
     REVIEW_DUE_EVENT_SOURCE,
     DurableReviewDueRepository,
     DurableReviewDueScannerService,
+    ManualReviewAdmissionDisposition,
+    ManualReviewAdmissionError,
+    ManualReviewAdmissionResult,
+    ManualReviewAdmissionService,
     ReviewDueConflict,
     ReviewDueDispatchResult,
     ReviewDueDisposition,
     ReviewDueRepositoryError,
     ReviewDueScanSummary,
-    ReviewDueWakeError,
-    ReviewDueWakeTarget,
     review_due_event_id,
 )
 from shinbot.agent.runtime.session_actor.runtime_assembly import (
     ActorV2RuntimeActivationBlocked,
     ActorV2RuntimeAssembly,
+    ActorV2RuntimeDiagnostics,
     ActorV2RuntimeReadiness,
+    ActorV2WorkflowLedger,
     HandlerConfigurator,
 )
 from shinbot.agent.runtime.session_actor.store import (
@@ -279,11 +402,34 @@ __all__ = [
     "AgentSessionActor",
     "AgentSessionActorRegistry",
     "AgentSessionAggregate",
+    "ACTOR_V2_CLEAN_SESSION_EFFECT_REFS",
+    "ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS",
+    "ActorRuntimeActivationScope",
+    "ActorRuntimeCleanSessionPreflightError",
     "ActorRuntimeHarness",
     "ActorRuntimeHarnessActivationError",
+    "ActorRuntimeHistoryLifecycleController",
+    "ActorRuntimeHistoryLifecycleError",
+    "ActorRuntimeHistoryLifecyclePermitLost",
+    "ActorRuntimeHistoryLifecycleSnapshot",
+    "ActorRuntimeHistoryLifecycleState",
+    "ActorRuntimeHistoryRecoveryPermitRequired",
+    "ActorV2CanaryIsolationLease",
+    "ActorV2CanaryIsolationLost",
+    "ActorV2CanaryLifecycleController",
+    "ActorV2CanaryLifecycleError",
+    "ActorV2CanaryLifecycleSnapshot",
+    "ActorV2CanaryLifecycleState",
+    "SQLiteActorV2CanaryIsolationLease",
     "ActorV2RuntimeActivationBlocked",
     "ActorV2RuntimeAssembly",
+    "ActorV2RuntimeDiagnostics",
     "ActorV2RuntimeReadiness",
+    "ActorV2WorkflowLedger",
+    "ActorProfileEffectHandlerBundle",
+    "ActorProfileHandlerGraphError",
+    "ActorProfileWorkflowPorts",
+    "ActorV2ProfileHandlerGraph",
     "DELAYED_CONTROL_EFFECT_KINDS",
     "DelayedControlEffectHandler",
     "DelayedControlEffectHandlerError",
@@ -316,6 +462,9 @@ __all__ = [
     "ClaimedExternalAction",
     "ClaimedSessionEvent",
     "ClaimedEffect",
+    "CleanSessionActivationBlocker",
+    "CleanSessionActivationPreflight",
+    "CleanSessionActivationReadiness",
     "DurableEffectEnvelope",
     "DurableEffectExecutor",
     "DurableEffectStatus",
@@ -323,6 +472,7 @@ __all__ = [
     "DurableReviewDueRepository",
     "DurableReviewDueScannerService",
     "DurableRecordConflict",
+    "DurableRecoveryScannerService",
     "ConsumeMessageLedgerEntries",
     "EventEnqueueResult",
     "EffectClaimLost",
@@ -333,6 +483,7 @@ __all__ = [
     "EffectExecutionContract",
     "EffectExecutionContext",
     "EffectHandler",
+    "EffectHandlerRef",
     "EffectHandlerNotFound",
     "EffectHandlerRegistry",
     "EffectHandlerResult",
@@ -344,9 +495,13 @@ __all__ = [
     "EffectSettlementStatus",
     "EffectStoreBindingChanged",
     "EffectStoreConflict",
+    "HISTORICAL_EFFECT_TERMINALIZATION_FAILURE_CODE",
     "EXTERNAL_ACTION_INTENT_BATCH_SCHEMA_VERSION",
     "GLOBAL_REVIEW_DUE_HEALTH_PROFILE_ID",
     "HandlerConfigurator",
+    "HistoricalEffectTerminalization",
+    "HistoricalEffectTerminalizationStatus",
+    "HistoricalEffectTerminalizer",
     "IDLE_REVIEW_PLANNING_INPUT_VERSION",
     "IdleReviewPlanningAdapterError",
     "IdleReviewPlanningEffectHandler",
@@ -359,6 +514,19 @@ __all__ = [
     "IdleReviewPlanningWorkflowOutput",
     "IdleReviewPlanningWorkflowPort",
     "IdleReviewPlanningWorkflowRequest",
+    "LegacyRecoveryActorLifecycleController",
+    "LegacyRecoveryActorLifecycleError",
+    "LegacyRecoveryActorLifecyclePermitLost",
+    "LegacyRecoveryActorLifecycleSnapshot",
+    "LegacyRecoveryActorLifecycleState",
+    "LegacyRecoveryGate",
+    "LegacyRecoveryLifecycleRequiredError",
+    "ActorV2LegacyIdleStatePreparationBlocked",
+    "ActorV2LegacyIdleStateTargetPreparer",
+    "ActorV2LegacyStateSnapshotStager",
+    "ActorV2LegacyIdleStateFinalization",
+    "ActorV2LegacyIdleStateFinalizationBlocked",
+    "SQLiteActorV2LegacyIdleStateFinalizer",
     "MessageConsumptionProvenance",
     "MessageLedgerConflict",
     "load_captured_unread_message_ledger_entries",
@@ -394,6 +562,16 @@ __all__ = [
     "MailboxEventConflict",
     "MailboxEventStatus",
     "MailboxLeaseConflict",
+    "MANUAL_REVIEW_EVENT_KIND",
+    "MANUAL_REVIEW_EVENT_SOURCE",
+    "MANUAL_REVIEW_REQUEST_VERSION",
+    "ManualReviewAdmissionRequiredError",
+    "ManualReviewAdmissionDisposition",
+    "ManualReviewAdmissionError",
+    "ManualReviewAdmissionResult",
+    "ManualReviewAdmissionService",
+    "ManualReviewRequest",
+    "ManualReviewRequestError",
     "ReviewScheduleStatus",
     "RequiredEffectContractFailure",
     "ReviewCompletionResult",
@@ -409,8 +587,7 @@ __all__ = [
     "ReviewDueDisposition",
     "ReviewDueRepositoryError",
     "ReviewDueScanSummary",
-    "ReviewDueWakeError",
-    "ReviewDueWakeTarget",
+    "ProfileAwareEffectHandler",
     "RECOVERY_CERTIFICATE_SCHEMA",
     "RECOVERY_CERTIFICATE_VERSION",
     "RECOVERY_DELIVERY_EVENT_KIND",
@@ -433,9 +610,13 @@ __all__ = [
     "RecoveryInvariant",
     "RecoveryInvariantSeverity",
     "RecoverySubject",
+    "RecoveryScannerPort",
+    "RecoveryScannerWakeError",
+    "RecoveryScannerWakeTarget",
     "RecoveryV1Policy",
     "RecoveryWorkClassification",
     "SQLiteSessionActorStore",
+    "SQLiteCleanSessionActivationPreflight",
     "SQLiteDurableEffectStore",
     "SQLiteExternalActionReceiptStore",
     "SessionActorStore",
@@ -455,10 +636,12 @@ __all__ = [
     "RunnerIdleReviewPlanningWorkflow",
     "UnsupportedRecoveryCertificateVersion",
     "UnsupportedRecoveryDeliveryVersion",
+    "UnknownActorWorkflowProfile",
     "WORKFLOW_COMPLETION_SCHEMA_VERSION",
     "WorkflowCompletionCodecError",
     "WorkflowEffectAdapterError",
     "builtin_session_actor_effect_contracts",
+    "builtin_clean_session_actor_v2_effect_contracts",
     "builtin_effect_contract_authority",
     "build_recovery_certificate",
     "canonical_recovery_digest",
@@ -468,6 +651,7 @@ __all__ = [
     "decode_external_action_intent_batch",
     "encode_external_action_intent_batch",
     "external_action_request_from_effect",
+    "manual_review_event_id",
     "operation_global_review_proposal_id",
     "register_actor_active_chat_workflow_effect_handlers",
     "register_actor_workflow_effect_handlers",
@@ -477,4 +661,36 @@ __all__ = [
     "review_due_event_id",
     "register_external_action_effect_handlers",
     "validate_external_action_migration",
+    "MODEL_EXECUTION_CANCELLATION_COMPLETION_EVENT_KIND",
+    "MODEL_EXECUTION_CANCELLATION_CONTRACT_VERSION",
+    "MODEL_EXECUTION_CANCELLATION_EFFECT_KIND",
+    "MODEL_EXECUTION_CANCELLATION_TARGETS",
+    "MODEL_EXECUTION_UNKNOWN_EVENT_KIND",
+    "MODEL_EXECUTION_UNKNOWN_EVENT_SOURCE",
+    "MODEL_EXECUTION_WITNESSED_EFFECT_KINDS",
+    "ModelExecutionCancellationBlocked",
+    "ModelExecutionCancellationControlEffectHandler",
+    "ModelExecutionCancellationControlHandlerError",
+    "ModelExecutionCancellationControlPort",
+    "ModelExecutionCancellationGateError",
+    "ModelExecutionCancellationGateObservation",
+    "ModelExecutionCancellationGateRequest",
+    "ModelExecutionCancellationGateState",
+    "ModelExecutionCancellationGateStatus",
+    "ModelExecutionCancellationQuiescencePending",
+    "ModelExecutionClaim",
+    "ModelExecutionPermit",
+    "ModelExecutionPermitDisposition",
+    "ModelExecutionUnknownNotice",
+    "ModelExecutionWitnessError",
+    "ModelExecutionWitnessStorePort",
+    "SQLiteModelExecutionCancellationGateStore",
+    "SQLiteModelExecutionWitnessStore",
+    "cancel_claimed_model_execution_if_gated",
+    "finish_model_execution_if_gated",
+    "is_model_execution_cancellation_target",
+    "mark_expired_model_execution_unknown",
+    "model_execution_cancellation_request_from_context",
+    "permit_model_execution_start_if_gated",
+    "register_model_execution_cancellation_control_effect_handler",
 ]

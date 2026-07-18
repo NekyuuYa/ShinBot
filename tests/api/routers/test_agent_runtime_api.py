@@ -399,3 +399,170 @@ def test_agent_runtime_overview_includes_binding_and_session_platform_state(tmp_
         "connected": False,
         "available": False,
     }
+
+
+def test_agent_runtime_overview_pairs_idle_review_planning_audit_evidence(
+    tmp_path: Path,
+) -> None:
+    """The overview exposes bounded paired planning evidence without raw audit metadata."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "bot-main:group:room"
+    profile = runtime.agent_profile_for_bot("bot-main")
+    profile.agent_scheduler._state_store.set_state(
+        session_id,
+        AgentState.IDLE,
+    )
+    assert bot.database is not None
+
+    for index in range(60):
+        bot.database.audit.insert(
+            {
+                "timestamp": f"2026-01-02T00:00:{index:02d}+00:00",
+                "entry_type": "command",
+                "command_name": "tool:noise",
+                "session_id": session_id,
+                "metadata": {"unrelated": index},
+            }
+        )
+
+    bot.database.audit.insert(
+        {
+            "timestamp": "2026-01-01T00:00:01+00:00",
+            "entry_type": "message",
+            "command_name": "agent.idle_review_planning.model_result",
+            "plugin_id": "agent_runtime",
+            "session_id": session_id,
+            "instance_id": "bot-main",
+            "metadata": {
+                "profile_id": profile.profile_id,
+                "signal_id": "signal-plan-1",
+                "trigger": "active_chat_tick",
+                "active_epoch": 9,
+                "checked_at": 100.0,
+                "outcome": "model_plan",
+                "reason": "conversation_cooling",
+                "failure_code": "",
+                "model_execution_id": "execution-1",
+                "prompt_signature": "prompt-signature-1",
+                "requested_next_review_after_seconds": 720.0,
+                "applied_next_review_after_seconds": 600.0,
+                "proposed_next_review_at": 700.0,
+                "proposed_plan_reason": "conversation_cooling",
+                "prompt": "prompt-secret",
+                "message_text": "message-secret",
+            },
+        }
+    )
+    bot.database.audit.insert(
+        {
+            "timestamp": "2026-01-01T00:00:02+00:00",
+            "entry_type": "message",
+            "command_name": "agent.idle_review_planning.application",
+            "plugin_id": "agent_runtime",
+            "session_id": session_id,
+            "instance_id": "bot-main",
+            "metadata": {
+                "profile_id": profile.profile_id,
+                "signal_id": "signal-plan-1",
+                "trigger": "active_chat_tick",
+                "active_epoch": 9,
+                "checked_at": 100.0,
+                "outcome": "applied_model_plan",
+                "reason": "conversation_cooling",
+                "model_plan_supplied": True,
+                "model_plan_reason": "conversation_cooling",
+                "model_plan_next_review_at": 700.0,
+                "decision_skipped_reason": "",
+                "applied_plan_reason": "conversation_cooling",
+                "applied_next_review_at": 700.0,
+                "scheduler_state": "idle",
+                "prompt": "application-prompt-secret",
+            },
+        }
+    )
+    bot.database.audit.insert(
+        {
+            "timestamp": "2026-01-03T00:00:00+00:00",
+            "entry_type": "message",
+            "command_name": "agent.idle_review_planning.model_result",
+            "plugin_id": "agent_runtime",
+            "session_id": session_id,
+            "instance_id": "bot-main",
+            "metadata": {
+                "profile_id": "other-profile",
+                "signal_id": "other-profile-signal",
+                "prompt": "latest-audit-secret",
+            },
+        }
+    )
+
+    boot = _BootStub(tmp_path)
+    boot.bot_service_configs = (
+        type(
+            "BotConfig",
+            (),
+            {
+                "id": "bot-main",
+                "display_name": "Bot Main",
+                "enabled": True,
+                "agent": type("AgentConfig", (), {"mode": "full", "config": ""})(),
+                "bindings": (),
+            },
+        )(),
+    )
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/agent-runtime", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    session = response.json()["data"][0]["sessions"][0]
+    assert session["latestAudit"] == {
+        "id": session["latestAudit"]["id"],
+        "timestamp": "2026-01-03T00:00:00+00:00",
+        "entryType": "message",
+        "commandName": "agent.idle_review_planning.model_result",
+        "pluginId": "agent_runtime",
+        "success": False,
+    }
+    assert session["idleReviewPlanningDecisions"] == [
+        {
+            "signalId": "signal-plan-1",
+            "trigger": "active_chat_tick",
+            "activeEpoch": 9,
+            "checkedAt": 100.0,
+            "latestAt": "2026-01-01T00:00:02+00:00",
+            "modelResult": {
+                "auditId": session["idleReviewPlanningDecisions"][0]["modelResult"]["auditId"],
+                "recordedAt": "2026-01-01T00:00:01+00:00",
+                "outcome": "model_plan",
+                "reason": "conversation_cooling",
+                "failureCode": "",
+                "modelExecutionId": "execution-1",
+                "promptSignature": "prompt-signature-1",
+                "requestedNextReviewAfterSeconds": 720.0,
+                "appliedNextReviewAfterSeconds": 600.0,
+                "proposedNextReviewAt": 700.0,
+                "proposedPlanReason": "conversation_cooling",
+            },
+            "application": {
+                "auditId": session["idleReviewPlanningDecisions"][0]["application"]["auditId"],
+                "recordedAt": "2026-01-01T00:00:02+00:00",
+                "outcome": "applied_model_plan",
+                "reason": "conversation_cooling",
+                "modelPlanSupplied": True,
+                "modelPlanReason": "conversation_cooling",
+                "modelPlanNextReviewAt": 700.0,
+                "decisionSkippedReason": "",
+                "appliedPlanReason": "conversation_cooling",
+                "appliedNextReviewAt": 700.0,
+                "schedulerState": "idle",
+            },
+        }
+    ]
+    serialized = repr(response.json())
+    assert "prompt-secret" not in serialized
+    assert "message-secret" not in serialized
+    assert "latest-audit-secret" not in serialized

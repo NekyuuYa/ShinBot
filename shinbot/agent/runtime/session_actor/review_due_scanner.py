@@ -9,15 +9,17 @@ claimed.  Actor reduction decides what the event means for the current state.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import StrEnum
 from sqlite3 import Connection, Row
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from shinbot.agent.runtime.service_health import (
     RuntimeServiceHealth,
@@ -25,15 +27,30 @@ from shinbot.agent.runtime.service_health import (
     supervised_backoff_seconds,
 )
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
+from shinbot.agent.runtime.session_actor.manual_review import (
+    MANUAL_REVIEW_EVENT_KIND,
+    MANUAL_REVIEW_EVENT_SOURCE,
+    ManualReviewRequest,
+    ManualReviewRequestError,
+)
 from shinbot.agent.runtime.session_actor.review_due_identity import (
     REVIEW_DUE_EVENT_KIND,
     REVIEW_DUE_EVENT_SOURCE,
     review_due_event_id,
 )
+from shinbot.core.dispatch.actor_v2_admission import (
+    ActorV2AdmissionFenceConflict,
+    ActorV2AdmissionFenceExpired,
+    ActorV2AdmissionFenceNotFound,
+)
 from shinbot.core.dispatch.agent_ownership import (
+    AgentRuntimeOwnership,
+    AgentRuntimeOwnershipError,
     AgentRuntimeOwnershipMode,
     AgentRuntimeOwnershipStatus,
 )
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
+from shinbot.core.dispatch.mailbox_handoff import MailboxHandoffNotifier
 from shinbot.utils.logger import format_log_event, get_logger
 
 if TYPE_CHECKING:
@@ -48,6 +65,115 @@ type _DueScanCursor = tuple[float, float, str, str, int, str]
 type _TypedSQLiteRecord = tuple[tuple[str, str, object], ...]
 
 
+@dataclass(slots=True, frozen=True)
+class _ScheduleMailboxDelivery:
+    """Immutable mailbox and schedule-journal values for one claimed plan."""
+
+    event_id: str
+    kind: str
+    source: str
+    occurred_at: float
+    payload_json: str
+    causation_id: str
+    correlation_id: str
+    trace_id: str
+    schedule_event_type: str
+    schedule_event_outcome: str
+    reason: str
+    metadata: Mapping[str, object]
+
+
+@dataclass(slots=True, frozen=True)
+class _ScheduleMailboxAdmission:
+    """Exact durable mailbox identity returned by one schedule admission."""
+
+    mailbox_id: int
+    mailbox_inserted: bool
+
+    def __post_init__(self) -> None:
+        """Reject an admission result that cannot name its committed mailbox."""
+
+        if isinstance(self.mailbox_id, bool) or not isinstance(self.mailbox_id, int):
+            raise ValueError("mailbox_id must be an integer")
+        if self.mailbox_id < 1:
+            raise ValueError("mailbox_id must be positive")
+
+
+@dataclass(slots=True, frozen=True)
+class ReviewWakeCursor:
+    """Stable keyset position for one current review mailbox wake debt."""
+
+    mailbox_id: int
+    profile_id: str
+    session_id: str
+    ownership_generation: int
+    admission_fence_id: str = ""
+    admission_fence_generation: int = 0
+
+    def __post_init__(self) -> None:
+        """Reject a cursor that cannot identify one ordered mailbox debt row."""
+
+        if isinstance(self.mailbox_id, bool) or not isinstance(self.mailbox_id, int):
+            raise ValueError("mailbox_id must be an integer")
+        if self.mailbox_id < 1:
+            raise ValueError("mailbox_id must be positive")
+        profile_id = str(self.profile_id or "").strip()
+        session_id = str(self.session_id or "").strip()
+        if not profile_id or not session_id:
+            raise ValueError("review wake cursor requires a complete session key")
+        if (
+            isinstance(self.ownership_generation, bool)
+            or not isinstance(self.ownership_generation, int)
+            or self.ownership_generation < 1
+        ):
+            raise ValueError("ownership_generation must be a positive integer")
+        fence_id = str(self.admission_fence_id or "").strip()
+        fence_generation = self.admission_fence_generation
+        if isinstance(fence_generation, bool) or not isinstance(fence_generation, int):
+            raise ValueError("admission_fence_generation must be an integer")
+        if fence_generation < 0 or bool(fence_id) != bool(fence_generation):
+            raise ValueError("review wake cursor fence identity is inconsistent")
+        object.__setattr__(self, "profile_id", profile_id)
+        object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "admission_fence_id", fence_id)
+
+
+@dataclass(slots=True, frozen=True)
+class _PendingReviewWakeDebt:
+    """One latest pending mailbox event for an exact Actor incarnation."""
+
+    request: FencedMailboxWakeRequest
+    event_id: str
+    cursor: ReviewWakeCursor | None = dataclass_field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Reject an ambiguous cache key before it can suppress a new delivery."""
+
+        if not isinstance(self.request, FencedMailboxWakeRequest):
+            raise TypeError("request must be a FencedMailboxWakeRequest")
+        event_id = str(self.event_id or "").strip()
+        if not event_id:
+            raise ValueError("event_id must not be empty")
+        cursor = self.cursor
+        if cursor is not None:
+            if not isinstance(cursor, ReviewWakeCursor):
+                raise TypeError("cursor must be a ReviewWakeCursor")
+            if (
+                cursor.profile_id != self.request.key.profile_id
+                or cursor.session_id != self.request.key.session_id
+                or cursor.ownership_generation != self.request.ownership_generation
+                or cursor.admission_fence_id != self.request.admission_fence_id
+                or cursor.admission_fence_generation
+                != self.request.admission_fence_generation
+            ):
+                raise ValueError("review wake cursor differs from request identity")
+        object.__setattr__(self, "event_id", event_id)
+
+
 class ReviewDueRepositoryError(RuntimeError):
     """Base error raised by durable review-due persistence."""
 
@@ -56,13 +182,8 @@ class ReviewDueConflict(ReviewDueRepositoryError):
     """Raised when deterministic durable identity resolves to other work."""
 
 
-class ReviewDueWakeError(RuntimeError):
-    """Report committed ReviewDue events whose best-effort wake failed."""
-
-    def __init__(self, keys: tuple[SessionKey, ...]) -> None:
-        self.keys = keys
-        rendered = ", ".join(f"{key.profile_id}:{key.session_id}" for key in keys)
-        super().__init__(f"review-due wake failed for: {rendered}")
+class ManualReviewAdmissionError(ReviewDueRepositoryError):
+    """Raised when a manual request conflicts with durable schedule evidence."""
 
 
 class ReviewDueDisposition(StrEnum):
@@ -72,6 +193,35 @@ class ReviewDueDisposition(StrEnum):
     SUPERSEDED = "superseded"
     RETRY_DEFERRED = "retry_deferred"
     FENCE_SKIPPED = "fence_skipped"
+
+
+class ManualReviewAdmissionDisposition(StrEnum):
+    """Durable outcome for one explicit manual review request."""
+
+    ADMITTED = "admitted"
+    DUPLICATE = "duplicate"
+    ALREADY_CLAIMED = "already_claimed"
+    REJECTED = "rejected"
+
+
+class _WakeAttemptDisposition(StrEnum):
+    """Process-local outcome for one post-commit review wake handoff."""
+
+    HANDLED = "handled"
+    DEFERRED = "deferred"
+    IN_FLIGHT = "in_flight"
+    RETRY = "retry"
+
+
+class _ScheduleMailboxAdmissionLost(ReviewDueRepositoryError):
+    """Carry a final admission failure observed during mailbox handoff staging."""
+
+    def __init__(self, reason: str) -> None:
+        normalized_reason = str(reason or "").strip()
+        if not normalized_reason:
+            raise ValueError("admission-loss reason must not be empty")
+        self.reason = normalized_reason
+        super().__init__(normalized_reason)
 
 
 @dataclass(slots=True, frozen=True)
@@ -85,9 +235,37 @@ class ReviewDueDispatchResult:
     delivery_cycle: int
     disposition: ReviewDueDisposition
     event_id: str = ""
+    mailbox_id: int | None = None
     mailbox_inserted: bool = False
     reason: str = ""
     retry_at: float | None = None
+    wake_request: FencedMailboxWakeRequest | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ManualReviewAdmissionResult:
+    """Outcome of atomically admitting one manual review request."""
+
+    key: SessionKey
+    request_id: str
+    disposition: ManualReviewAdmissionDisposition
+    event_id: str = ""
+    plan_id: str = ""
+    plan_revision: int = 0
+    ownership_generation: int = 0
+    mailbox_id: int | None = None
+    mailbox_inserted: bool = False
+    reason: str = ""
+    wake_request: FencedMailboxWakeRequest | None = None
+
+    @property
+    def accepted(self) -> bool:
+        """Return whether the request has a durable mailbox identity."""
+
+        return self.disposition in {
+            ManualReviewAdmissionDisposition.ADMITTED,
+            ManualReviewAdmissionDisposition.DUPLICATE,
+        }
 
 
 @dataclass(slots=True, frozen=True)
@@ -154,12 +332,34 @@ class ReviewDueScanSummary:
             if result.disposition is ReviewDueDisposition.DISPATCHED
         )
 
+    @property
+    def dispatched_wake_requests(self) -> tuple[FencedMailboxWakeRequest, ...]:
+        """Return exact ownership identities for committed mailbox deliveries."""
 
-class ReviewDueWakeTarget(Protocol):
-    """Actor registry surface used only after the scanner transaction commits."""
+        requests: list[FencedMailboxWakeRequest] = []
+        for result in self.results:
+            if result.disposition is not ReviewDueDisposition.DISPATCHED:
+                continue
+            if result.wake_request is not None:
+                requests.append(result.wake_request)
+        return _unique_wake_requests(requests)
 
-    async def wake(self, key: SessionKey) -> None:
-        """Wake one actor without inserting another mailbox event."""
+    @property
+    def dispatched_mailbox_ids(self) -> tuple[int, ...]:
+        """Return exact durable identities for newly dispatched review events."""
+
+        mailbox_ids: list[int] = []
+        seen: set[int] = set()
+        for result in self.results:
+            if result.disposition is not ReviewDueDisposition.DISPATCHED:
+                continue
+            mailbox_id = result.mailbox_id
+            if mailbox_id is None:
+                raise ReviewDueConflict("dispatched review result is missing mailbox_id")
+            if mailbox_id not in seen:
+                seen.add(mailbox_id)
+                mailbox_ids.append(mailbox_id)
+        return tuple(mailbox_ids)
 
 
 class DurableReviewDueRepository:
@@ -201,6 +401,82 @@ class DurableReviewDueRepository:
 
         return self._profile_id or GLOBAL_REVIEW_DUE_HEALTH_PROFILE_ID
 
+    def _require_actor_admission(
+        self,
+        conn: Connection,
+        *,
+        key: SessionKey,
+        owner: Row | None,
+    ) -> tuple[AgentRuntimeOwnership | None, str]:
+        """Return the exact active owner or why this transaction cannot write."""
+
+        unavailable_reason = _ownership_unavailable_reason(owner)
+        if unavailable_reason:
+            return None, unavailable_reason
+        assert owner is not None
+        try:
+            ownership = self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+                conn,
+                key,
+                expected_generation=int(owner["generation"]),
+            )
+        except ActorV2AdmissionFenceExpired:
+            return None, "admission_fence_expired"
+        except ActorV2AdmissionFenceNotFound:
+            return None, "admission_fence_missing"
+        except ActorV2AdmissionFenceConflict:
+            fence = conn.execute(
+                """
+                SELECT status
+                FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = ? AND session_id = ?
+                """,
+                (key.profile_id, key.session_id),
+            ).fetchone()
+            if fence is not None and str(fence["status"]) == "revoked":
+                return None, "admission_fence_revoked"
+            return None, "admission_fence_invalid"
+        return ownership, ""
+
+    def _final_actor_admission_reason(
+        self,
+        conn: Connection,
+        *,
+        key: SessionKey,
+        ownership: AgentRuntimeOwnership,
+    ) -> str:
+        """Return why a staged candidate can no longer commit under its fence."""
+
+        try:
+            self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+                conn,
+                key,
+                expected_generation=ownership.generation,
+                expected_admission_fence_id=ownership.admission_fence_id,
+                expected_admission_fence_generation=(
+                    ownership.admission_fence_generation
+                ),
+            )
+        except ActorV2AdmissionFenceExpired:
+            return "admission_fence_expired"
+        except ActorV2AdmissionFenceNotFound:
+            return "admission_fence_missing"
+        except ActorV2AdmissionFenceConflict:
+            fence = conn.execute(
+                """
+                SELECT status
+                FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = ? AND session_id = ?
+                """,
+                (key.profile_id, key.session_id),
+            ).fetchone()
+            if fence is not None and str(fence["status"]) == "revoked":
+                return "admission_fence_revoked"
+            return "admission_fence_invalid"
+        except AgentRuntimeOwnershipError:
+            return "actor_v2_ownership_changed"
+        return ""
+
     def dispatch_due(self, *, limit: int = 50) -> ReviewDueScanSummary:
         """Process at most ``limit`` rows, each in its own write transaction."""
 
@@ -215,20 +491,352 @@ class DurableReviewDueRepository:
             results.append(result)
         return ReviewDueScanSummary(results=tuple(results))
 
-    def pending_review_due_keys(self, *, limit: int = 100) -> tuple[SessionKey, ...]:
-        """Discover durable wake debt from pending ReviewDue mailbox events."""
+    def admit_manual_review(
+        self,
+        key: SessionKey,
+        *,
+        request_id: str,
+        requested_by: str,
+        reason: str = "manual_review_requested",
+    ) -> ManualReviewAdmissionResult:
+        """Atomically claim the current schedule and enqueue a manual request.
+
+        The admission transaction owns the schedule claim, not merely the
+        mailbox write. A due scanner therefore cannot enqueue a competing
+        ``ReviewDue`` event after an operator request has been accepted.
+        """
+
+        normalized_request_id = str(request_id or "").strip()
+        normalized_requested_by = str(requested_by or "").strip()
+        normalized_reason = str(reason or "").strip()
+        if not normalized_request_id:
+            raise ManualReviewAdmissionError("request_id must not be empty")
+        if not normalized_requested_by:
+            raise ManualReviewAdmissionError("requested_by must not be empty")
+        if not normalized_reason:
+            raise ManualReviewAdmissionError("reason must not be empty")
+        if self._profile_id is not None and key.profile_id != self._profile_id:
+            return ManualReviewAdmissionResult(
+                key=key,
+                request_id=normalized_request_id,
+                disposition=ManualReviewAdmissionDisposition.REJECTED,
+                reason="profile_filter_mismatch",
+            )
+        with self._database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            now = _nonnegative_finite(self._clock(), field_name="clock")
+            owner = conn.execute(
+                """
+                SELECT mode, status, generation
+                FROM agent_session_runtime_ownership
+                WHERE profile_id = ? AND session_id = ?
+                """,
+                (key.profile_id, key.session_id),
+            ).fetchone()
+            ownership, unavailable_reason = self._require_actor_admission(
+                conn,
+                key=key,
+                owner=owner,
+            )
+            if unavailable_reason:
+                return ManualReviewAdmissionResult(
+                    key=key,
+                    request_id=normalized_request_id,
+                    disposition=ManualReviewAdmissionDisposition.REJECTED,
+                    reason=unavailable_reason,
+                )
+            assert ownership is not None
+            ownership_generation = ownership.generation
+            wake_request = _wake_request_for_ownership(ownership)
+            duplicate = self._manual_review_duplicate_for_request_id(
+                conn,
+                key=key,
+                ownership_generation=ownership_generation,
+                wake_request=wake_request,
+                request_id=normalized_request_id,
+                requested_by=normalized_requested_by,
+                reason=normalized_reason,
+            )
+            if duplicate is not None:
+                return duplicate
+            aggregate = conn.execute(
+                """
+                SELECT ownership_generation, current_plan_id,
+                       review_plan_revision, state_revision
+                FROM agent_session_aggregates
+                WHERE profile_id = ? AND session_id = ?
+                """,
+                (key.profile_id, key.session_id),
+            ).fetchone()
+            if aggregate is None:
+                return ManualReviewAdmissionResult(
+                    key=key,
+                    request_id=normalized_request_id,
+                    disposition=ManualReviewAdmissionDisposition.REJECTED,
+                    ownership_generation=ownership_generation,
+                    reason="aggregate_missing",
+                )
+            if int(aggregate["ownership_generation"]) != ownership_generation:
+                return ManualReviewAdmissionResult(
+                    key=key,
+                    request_id=normalized_request_id,
+                    disposition=ManualReviewAdmissionDisposition.REJECTED,
+                    ownership_generation=ownership_generation,
+                    reason="aggregate_generation_mismatch",
+                )
+            plan_id = str(aggregate["current_plan_id"])
+            plan_revision = int(aggregate["review_plan_revision"])
+            if not plan_id or plan_revision < 1:
+                return ManualReviewAdmissionResult(
+                    key=key,
+                    request_id=normalized_request_id,
+                    disposition=ManualReviewAdmissionDisposition.REJECTED,
+                    ownership_generation=ownership_generation,
+                    reason="current_review_plan_missing",
+                )
+            schedule = conn.execute(
+                """
+                SELECT *
+                FROM agent_review_schedules
+                WHERE profile_id = ? AND session_id = ?
+                  AND ownership_generation = ?
+                  AND plan_id = ? AND plan_revision = ?
+                """,
+                (
+                    key.profile_id,
+                    key.session_id,
+                    ownership_generation,
+                    plan_id,
+                    plan_revision,
+                ),
+            ).fetchone()
+            if schedule is None:
+                return ManualReviewAdmissionResult(
+                    key=key,
+                    request_id=normalized_request_id,
+                    disposition=ManualReviewAdmissionDisposition.REJECTED,
+                    plan_id=plan_id,
+                    plan_revision=plan_revision,
+                    ownership_generation=ownership_generation,
+                    reason="current_review_schedule_missing",
+                )
+            if str(schedule["status"]) != "scheduled":
+                return ManualReviewAdmissionResult(
+                    key=key,
+                    request_id=normalized_request_id,
+                    disposition=ManualReviewAdmissionDisposition.ALREADY_CLAIMED,
+                    plan_id=plan_id,
+                    plan_revision=plan_revision,
+                    ownership_generation=ownership_generation,
+                    reason=f"schedule_not_scheduled:{schedule['status']}",
+                )
+            request = ManualReviewRequest(
+                key=key,
+                request_id=normalized_request_id,
+                ownership_generation=ownership_generation,
+                plan_id=plan_id,
+                plan_revision=plan_revision,
+                delivery_cycle=_schedule_delivery_cycle(schedule),
+                requested_by=normalized_requested_by,
+                reason=normalized_reason,
+            )
+            delivery = _ScheduleMailboxDelivery(
+                event_id=request.event_id,
+                kind=MANUAL_REVIEW_EVENT_KIND,
+                source=MANUAL_REVIEW_EVENT_SOURCE,
+                occurred_at=now,
+                payload_json=_canonical_json(request.to_payload()),
+                causation_id=request.request_id,
+                correlation_id=request.request_id,
+                trace_id=request.event_id,
+                schedule_event_type="manual_dispatched",
+                schedule_event_outcome="claimed",
+                reason=request.reason,
+                metadata={
+                    "request_id": request.request_id,
+                    "requested_by": request.requested_by,
+                },
+            )
+            conn.execute("SAVEPOINT manual_review_candidate")
+            try:
+                admission = self._claim_current_schedule_for_delivery(
+                    conn,
+                    schedule,
+                    aggregate,
+                    delivery=delivery,
+                    now=now,
+                    ownership=ownership,
+                )
+                final_reason = self._final_actor_admission_reason(
+                    conn,
+                    key=key,
+                    ownership=ownership,
+                )
+                if final_reason:
+                    conn.execute("ROLLBACK TO manual_review_candidate")
+                    conn.execute("RELEASE manual_review_candidate")
+                    return ManualReviewAdmissionResult(
+                        key=key,
+                        request_id=request.request_id,
+                        disposition=ManualReviewAdmissionDisposition.REJECTED,
+                        plan_id=request.plan_id,
+                        plan_revision=request.plan_revision,
+                        ownership_generation=request.ownership_generation,
+                        reason=final_reason,
+                    )
+                conn.execute("RELEASE manual_review_candidate")
+            except _ScheduleMailboxAdmissionLost as exc:
+                conn.execute("ROLLBACK TO manual_review_candidate")
+                conn.execute("RELEASE manual_review_candidate")
+                return ManualReviewAdmissionResult(
+                    key=key,
+                    request_id=request.request_id,
+                    disposition=ManualReviewAdmissionDisposition.REJECTED,
+                    plan_id=request.plan_id,
+                    plan_revision=request.plan_revision,
+                    ownership_generation=request.ownership_generation,
+                    reason=exc.reason,
+                )
+            except ReviewDueConflict as exc:
+                conn.execute("ROLLBACK TO manual_review_candidate")
+                conn.execute("RELEASE manual_review_candidate")
+                raise ManualReviewAdmissionError(str(exc)) from exc
+            except BaseException:
+                conn.execute("ROLLBACK TO manual_review_candidate")
+                conn.execute("RELEASE manual_review_candidate")
+                raise
+            return ManualReviewAdmissionResult(
+                key=key,
+                request_id=request.request_id,
+                disposition=ManualReviewAdmissionDisposition.ADMITTED,
+                event_id=request.event_id,
+                plan_id=request.plan_id,
+                plan_revision=request.plan_revision,
+                ownership_generation=request.ownership_generation,
+                mailbox_id=admission.mailbox_id,
+                mailbox_inserted=admission.mailbox_inserted,
+                reason=request.reason,
+                wake_request=wake_request,
+            )
+
+    @staticmethod
+    def _manual_review_duplicate_for_request_id(
+        conn: Connection,
+        *,
+        key: SessionKey,
+        ownership_generation: int,
+        wake_request: FencedMailboxWakeRequest,
+        request_id: str,
+        requested_by: str,
+        reason: str,
+    ) -> ManualReviewAdmissionResult | None:
+        """Return a prior request id or reject an attempted generation rebase."""
+
+        rows = conn.execute(
+            """
+            SELECT mailbox_id, event_id, profile_id, session_id, ownership_generation,
+                   kind, source, payload_json, status
+            FROM agent_session_mailbox
+            WHERE CAST(profile_id AS BLOB) = ?
+              AND CAST(session_id AS BLOB) = ?
+              AND CAST(kind AS BLOB) = ?
+              AND CAST(source AS BLOB) = ?
+              AND CAST(causation_id AS BLOB) = ?
+            ORDER BY mailbox_id
+            """,
+            (
+                key.profile_id.encode(),
+                key.session_id.encode(),
+                MANUAL_REVIEW_EVENT_KIND.encode(),
+                MANUAL_REVIEW_EVENT_SOURCE.encode(),
+                request_id.encode(),
+            ),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ManualReviewAdmissionError(
+                "manual review request id resolves to multiple durable events"
+            )
+        row = rows[0]
+        event_id = str(row["event_id"])
+        if (
+            str(row["kind"]) != MANUAL_REVIEW_EVENT_KIND
+            or str(row["source"]) != MANUAL_REVIEW_EVENT_SOURCE
+            or int(row["ownership_generation"]) != ownership_generation
+        ):
+            raise ManualReviewAdmissionError(
+                "manual review request id resolves to different durable work"
+            )
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError as exc:
+            raise ManualReviewAdmissionError(
+                "manual review duplicate payload is not valid JSON"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise ManualReviewAdmissionError(
+                "manual review duplicate payload is not an object"
+            )
+        try:
+            request = ManualReviewRequest.from_payload(
+                payload,
+                event_id=event_id,
+                key=key,
+                ownership_generation=ownership_generation,
+            )
+        except ManualReviewRequestError as exc:
+            raise ManualReviewAdmissionError(
+                "manual review request id resolves to invalid durable work"
+            ) from exc
+        if (
+            request.request_id != request_id
+            or request.requested_by != requested_by
+            or request.reason != reason
+        ):
+            raise ManualReviewAdmissionError(
+                "manual review request id changed immutable request fields"
+            )
+        return ManualReviewAdmissionResult(
+            key=key,
+            request_id=request.request_id,
+            disposition=ManualReviewAdmissionDisposition.DUPLICATE,
+            event_id=event_id,
+            plan_id=request.plan_id,
+            plan_revision=request.plan_revision,
+            ownership_generation=request.ownership_generation,
+            mailbox_id=int(row["mailbox_id"]),
+            mailbox_inserted=False,
+            reason="manual_request_duplicate",
+            wake_request=wake_request,
+        )
+
+    def pending_review_due_wake_requests(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[FencedMailboxWakeRequest, ...]:
+        """Discover exact wake debt from pending ReviewDue mailbox events."""
 
         normalized_limit = _positive_int(limit, field_name="limit")
+        normalized_offset = _nonnegative_int(offset, field_name="offset")
+        now = _nonnegative_finite(self._clock(), field_name="clock")
         profile_clause = ""
         params: list[object] = []
         if self._profile_id is not None:
             profile_clause = " AND mailbox.profile_id = ?"
             params.append(self._profile_id)
         params.append(normalized_limit)
+        params.append(normalized_offset)
         with self._database.connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT mailbox.profile_id, mailbox.session_id,
+                       ownership.generation AS ownership_generation,
+                       ownership.admission_fence_id AS admission_fence_id,
+                       ownership.admission_fence_generation
+                           AS admission_fence_generation,
                        MIN(mailbox.mailbox_id) AS first_mailbox_id
                 FROM agent_session_mailbox AS mailbox
                 JOIN agent_session_runtime_ownership AS ownership
@@ -237,20 +845,402 @@ class DurableReviewDueRepository:
                  AND ownership.mode = 'actor_v2'
                  AND ownership.status = 'active'
                  AND ownership.generation = mailbox.ownership_generation
+                LEFT JOIN agent_session_actor_v2_admission_fences AS admission
+                  ON admission.profile_id = ownership.profile_id
+                 AND admission.session_id = ownership.session_id
+                 AND admission.fence_id = ownership.admission_fence_id
+                 AND admission.generation = ownership.admission_fence_generation
                 WHERE mailbox.kind = ?
                   AND mailbox.source = ?
                   AND mailbox.status IN ('pending', 'processing')
+                  AND (
+                        ownership.admission_fence_id = ''
+                     OR (
+                            admission.status = 'committed'
+                        AND admission.expires_at > ?
+                     )
+                  )
                   {profile_clause}
-                GROUP BY mailbox.profile_id, mailbox.session_id
+                GROUP BY mailbox.profile_id,
+                         mailbox.session_id,
+                         ownership.generation,
+                         ownership.admission_fence_id,
+                         ownership.admission_fence_generation
                 ORDER BY first_mailbox_id ASC,
                          mailbox.profile_id ASC, mailbox.session_id ASC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (REVIEW_DUE_EVENT_KIND, REVIEW_DUE_EVENT_SOURCE, *params),
+                (REVIEW_DUE_EVENT_KIND, REVIEW_DUE_EVENT_SOURCE, now, *params),
             ).fetchall()
         return tuple(
-            SessionKey(str(row["profile_id"]), str(row["session_id"]))
+            FencedMailboxWakeRequest(
+                key=SessionKey(str(row["profile_id"]), str(row["session_id"])),
+                ownership_generation=int(row["ownership_generation"]),
+                admission_fence_id=str(row["admission_fence_id"]),
+                admission_fence_generation=int(row["admission_fence_generation"]),
+            )
             for row in rows
+        )
+
+    def pending_review_due_keys(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[SessionKey, ...]:
+        """Project ReviewDue wake debt to legacy key-only compatibility values."""
+
+        return _unique_keys(
+            request.key
+            for request in self.pending_review_due_wake_requests(
+                limit=limit,
+                offset=offset,
+            )
+        )
+
+    def pending_review_wake_debts(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        after: ReviewWakeCursor | None = None,
+    ) -> tuple[_PendingReviewWakeDebt, ...]:
+        """Discover the newest pending event for each exact wake identity.
+
+        A manual admission commits its schedule claim before its post-commit
+        wake. Including it here makes a crash or one failed wake recoverable
+        through the same scanner supervision that redrives due-review debt.
+        ``after`` advances a stable mailbox keyset; ``offset`` remains for
+        compatibility with older callers that cannot retain a cursor.
+        """
+
+        normalized_limit = _positive_int(limit, field_name="limit")
+        normalized_offset = _nonnegative_int(offset, field_name="offset")
+        if after is not None and not isinstance(after, ReviewWakeCursor):
+            raise TypeError("after must be a ReviewWakeCursor")
+        if after is not None and normalized_offset:
+            raise ValueError("offset cannot be combined with a keyset cursor")
+        now = _nonnegative_finite(self._clock(), field_name="clock")
+        profile_clause = ""
+        profile_params: list[object] = []
+        if self._profile_id is not None:
+            profile_clause = " AND mailbox.profile_id = ?"
+            profile_params.append(self._profile_id)
+        after_clause = ""
+        after_params: tuple[object, ...] = ()
+        if after is not None:
+            after_clause = """
+              AND (
+                    debt.mailbox_id > ?
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id = ?
+                    AND debt.ownership_generation > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id = ?
+                    AND debt.ownership_generation = ?
+                    AND debt.admission_fence_id > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id = ?
+                    AND debt.ownership_generation = ?
+                    AND debt.admission_fence_id = ?
+                    AND debt.admission_fence_generation > ?
+                 )
+              )
+            """
+            after_params = _review_wake_cursor_parameters(after)
+        with self._database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                WITH ranked_review_mailbox AS (
+                    SELECT mailbox.profile_id,
+                           mailbox.session_id,
+                           mailbox.event_id,
+                           mailbox.mailbox_id,
+                           ownership.generation AS ownership_generation,
+                           ownership.admission_fence_id AS admission_fence_id,
+                           ownership.admission_fence_generation
+                               AS admission_fence_generation,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY mailbox.profile_id,
+                                            mailbox.session_id,
+                                            ownership.generation,
+                                            ownership.admission_fence_id,
+                                            ownership.admission_fence_generation
+                               ORDER BY mailbox.mailbox_id DESC
+                           ) AS mailbox_rank
+                    FROM agent_session_mailbox AS mailbox
+                    JOIN agent_session_runtime_ownership AS ownership
+                      ON ownership.profile_id = mailbox.profile_id
+                     AND ownership.session_id = mailbox.session_id
+                     AND ownership.mode = 'actor_v2'
+                     AND ownership.status = 'active'
+                     AND ownership.generation = mailbox.ownership_generation
+                    LEFT JOIN agent_session_actor_v2_admission_fences AS admission
+                      ON admission.profile_id = ownership.profile_id
+                     AND admission.session_id = ownership.session_id
+                     AND admission.fence_id = ownership.admission_fence_id
+                     AND admission.generation = ownership.admission_fence_generation
+                    WHERE (
+                            (mailbox.kind = ? AND mailbox.source = ?)
+                         OR (mailbox.kind = ? AND mailbox.source = ?)
+                    )
+                      AND mailbox.status IN ('pending', 'processing')
+                      AND (
+                            ownership.admission_fence_id = ''
+                         OR (
+                                admission.status = 'committed'
+                            AND admission.expires_at > ?
+                         )
+                      )
+                      {profile_clause}
+                )
+                SELECT profile_id, session_id, event_id, mailbox_id,
+                       ownership_generation, admission_fence_id,
+                       admission_fence_generation
+                FROM ranked_review_mailbox AS debt
+                WHERE debt.mailbox_rank = 1
+                {after_clause}
+                ORDER BY debt.mailbox_id ASC,
+                         debt.profile_id ASC,
+                         debt.session_id ASC,
+                         debt.ownership_generation ASC,
+                         debt.admission_fence_id ASC,
+                         debt.admission_fence_generation ASC
+                LIMIT ? OFFSET ?
+                """,
+                (
+                    REVIEW_DUE_EVENT_KIND,
+                    REVIEW_DUE_EVENT_SOURCE,
+                    MANUAL_REVIEW_EVENT_KIND,
+                    MANUAL_REVIEW_EVENT_SOURCE,
+                    now,
+                    *profile_params,
+                    *after_params,
+                    normalized_limit,
+                    normalized_offset,
+                ),
+            ).fetchall()
+        return tuple(
+            _PendingReviewWakeDebt(
+                request=FencedMailboxWakeRequest(
+                    key=SessionKey(
+                        str(row["profile_id"]),
+                        str(row["session_id"]),
+                    ),
+                    ownership_generation=int(row["ownership_generation"]),
+                    admission_fence_id=str(row["admission_fence_id"]),
+                    admission_fence_generation=int(
+                        row["admission_fence_generation"]
+                    ),
+                ),
+                event_id=str(row["event_id"]),
+                cursor=ReviewWakeCursor(
+                    mailbox_id=int(row["mailbox_id"]),
+                    profile_id=str(row["profile_id"]),
+                    session_id=str(row["session_id"]),
+                    ownership_generation=int(row["ownership_generation"]),
+                    admission_fence_id=str(row["admission_fence_id"]),
+                    admission_fence_generation=int(
+                        row["admission_fence_generation"]
+                    ),
+                ),
+            )
+            for row in rows
+        )
+
+    def pending_review_wake_requests(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        after: ReviewWakeCursor | None = None,
+    ) -> tuple[FencedMailboxWakeRequest, ...]:
+        """Project current review wake debt to exact Actor identities."""
+
+        return _unique_wake_requests(
+            debt.request
+            for debt in self.pending_review_wake_debts(
+                limit=limit,
+                offset=offset,
+                after=after,
+            )
+        )
+
+    def is_pending_review_wake_request(
+        self,
+        request: FencedMailboxWakeRequest,
+    ) -> bool:
+        """Return whether an exact identity still has live review mailbox debt."""
+
+        if not isinstance(request, FencedMailboxWakeRequest):
+            raise TypeError("request must be a FencedMailboxWakeRequest")
+        now = _nonnegative_finite(self._clock(), field_name="clock")
+        with self._database.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM agent_session_mailbox AS mailbox
+                JOIN agent_session_runtime_ownership AS ownership
+                  ON ownership.profile_id = mailbox.profile_id
+                 AND ownership.session_id = mailbox.session_id
+                 AND ownership.mode = 'actor_v2'
+                 AND ownership.status = 'active'
+                 AND ownership.generation = mailbox.ownership_generation
+                LEFT JOIN agent_session_actor_v2_admission_fences AS admission
+                  ON admission.profile_id = ownership.profile_id
+                 AND admission.session_id = ownership.session_id
+                 AND admission.fence_id = ownership.admission_fence_id
+                 AND admission.generation = ownership.admission_fence_generation
+                WHERE mailbox.profile_id = ?
+                  AND mailbox.session_id = ?
+                  AND mailbox.ownership_generation = ?
+                  AND ownership.admission_fence_id = ?
+                  AND ownership.admission_fence_generation = ?
+                  AND (
+                        (mailbox.kind = ? AND mailbox.source = ?)
+                     OR (mailbox.kind = ? AND mailbox.source = ?)
+                  )
+                  AND mailbox.status IN ('pending', 'processing')
+                  AND (
+                        ownership.admission_fence_id = ''
+                     OR (
+                            admission.status = 'committed'
+                        AND admission.expires_at > ?
+                     )
+                  )
+                LIMIT 1
+                """,
+                (
+                    request.key.profile_id,
+                    request.key.session_id,
+                    request.ownership_generation,
+                    request.admission_fence_id,
+                    request.admission_fence_generation,
+                    REVIEW_DUE_EVENT_KIND,
+                    REVIEW_DUE_EVENT_SOURCE,
+                    MANUAL_REVIEW_EVENT_KIND,
+                    MANUAL_REVIEW_EVENT_SOURCE,
+                    now,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def is_pending_review_wake_debt(self, debt: _PendingReviewWakeDebt) -> bool:
+        """Return whether one selected mailbox event remains the live debt."""
+
+        if not isinstance(debt, _PendingReviewWakeDebt):
+            raise TypeError("debt must be a _PendingReviewWakeDebt")
+        request = debt.request
+        now = _nonnegative_finite(self._clock(), field_name="clock")
+        mailbox_id_clause = ""
+        mailbox_id_params: tuple[object, ...] = ()
+        if debt.cursor is not None:
+            mailbox_id_clause = " AND mailbox.mailbox_id = ?"
+            mailbox_id_params = (debt.cursor.mailbox_id,)
+        with self._database.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT 1
+                FROM agent_session_mailbox AS mailbox
+                JOIN agent_session_runtime_ownership AS ownership
+                  ON ownership.profile_id = mailbox.profile_id
+                 AND ownership.session_id = mailbox.session_id
+                 AND ownership.mode = 'actor_v2'
+                 AND ownership.status = 'active'
+                 AND ownership.generation = mailbox.ownership_generation
+                LEFT JOIN agent_session_actor_v2_admission_fences AS admission
+                  ON admission.profile_id = ownership.profile_id
+                 AND admission.session_id = ownership.session_id
+                 AND admission.fence_id = ownership.admission_fence_id
+                 AND admission.generation = ownership.admission_fence_generation
+                WHERE mailbox.profile_id = ?
+                  AND mailbox.session_id = ?
+                  AND mailbox.ownership_generation = ?
+                  AND mailbox.event_id = ?
+                  {mailbox_id_clause}
+                  AND ownership.admission_fence_id = ?
+                  AND ownership.admission_fence_generation = ?
+                  AND (
+                        (mailbox.kind = ? AND mailbox.source = ?)
+                     OR (mailbox.kind = ? AND mailbox.source = ?)
+                  )
+                  AND mailbox.status IN ('pending', 'processing')
+                  AND (
+                        ownership.admission_fence_id = ''
+                     OR (
+                            admission.status = 'committed'
+                        AND admission.expires_at > ?
+                     )
+                  )
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM agent_session_mailbox AS newer
+                        WHERE newer.profile_id = mailbox.profile_id
+                          AND newer.session_id = mailbox.session_id
+                          AND newer.ownership_generation = mailbox.ownership_generation
+                          AND (
+                                (newer.kind = ? AND newer.source = ?)
+                             OR (newer.kind = ? AND newer.source = ?)
+                          )
+                          AND newer.status IN ('pending', 'processing')
+                          AND newer.mailbox_id > mailbox.mailbox_id
+                  )
+                LIMIT 1
+                """,
+                (
+                    request.key.profile_id,
+                    request.key.session_id,
+                    request.ownership_generation,
+                    debt.event_id,
+                    *mailbox_id_params,
+                    request.admission_fence_id,
+                    request.admission_fence_generation,
+                    REVIEW_DUE_EVENT_KIND,
+                    REVIEW_DUE_EVENT_SOURCE,
+                    MANUAL_REVIEW_EVENT_KIND,
+                    MANUAL_REVIEW_EVENT_SOURCE,
+                    now,
+                    REVIEW_DUE_EVENT_KIND,
+                    REVIEW_DUE_EVENT_SOURCE,
+                    MANUAL_REVIEW_EVENT_KIND,
+                    MANUAL_REVIEW_EVENT_SOURCE,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def pending_review_wake_keys(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        after: ReviewWakeCursor | None = None,
+    ) -> tuple[SessionKey, ...]:
+        """Project due and manual-review debt to legacy key-only values."""
+
+        return _unique_keys(
+            request.key
+            for request in self.pending_review_wake_requests(
+                limit=limit,
+                offset=offset,
+                after=after,
+            )
         )
 
     def record_service_health(
@@ -353,15 +1343,19 @@ class DurableReviewDueRepository:
                 """,
                 (key.profile_id, key.session_id),
             ).fetchone()
-            unavailable_reason = _ownership_unavailable_reason(owner)
+            ownership, unavailable_reason = self._require_actor_admission(
+                conn,
+                key=key,
+                owner=owner,
+            )
             if unavailable_reason:
                 return self._skip_unfenced_schedule(
                     schedule,
                     reason=unavailable_reason,
                 ), cursor
 
-            assert owner is not None
-            owner_generation = int(owner["generation"])
+            assert ownership is not None
+            owner_generation = ownership.generation
             if int(schedule["ownership_generation"]) != owner_generation:
                 return self._skip_unfenced_schedule(
                     schedule,
@@ -393,25 +1387,52 @@ class DurableReviewDueRepository:
                 str(aggregate["current_plan_id"]) != plan_id
                 or int(aggregate["review_plan_revision"]) != plan_revision
             ):
-                return (
-                    self._supersede_stale_schedule(
+                candidate_is_supersede = True
+            else:
+                candidate_is_supersede = False
+            conn.execute("SAVEPOINT review_due_dispatch_candidate")
+            try:
+                if candidate_is_supersede:
+                    result = self._supersede_stale_schedule(
                         conn,
                         schedule,
                         aggregate,
                         now=now,
                         reason="aggregate_current_plan_mismatch",
-                    ),
-                    cursor,
-                )
-            return (
-                self._dispatch_current_schedule(
+                    )
+                else:
+                    result = self._dispatch_current_schedule(
+                        conn,
+                        schedule,
+                        aggregate,
+                        now=now,
+                        ownership=ownership,
+                    )
+                final_reason = self._final_actor_admission_reason(
                     conn,
+                    key=key,
+                    ownership=ownership,
+                )
+                if final_reason:
+                    conn.execute("ROLLBACK TO review_due_dispatch_candidate")
+                    conn.execute("RELEASE review_due_dispatch_candidate")
+                    return self._skip_unfenced_schedule(
+                        schedule,
+                        reason=final_reason,
+                    ), cursor
+                conn.execute("RELEASE review_due_dispatch_candidate")
+            except _ScheduleMailboxAdmissionLost as exc:
+                conn.execute("ROLLBACK TO review_due_dispatch_candidate")
+                conn.execute("RELEASE review_due_dispatch_candidate")
+                return self._skip_unfenced_schedule(
                     schedule,
-                    aggregate,
-                    now=now,
-                ),
-                cursor,
-            )
+                    reason=exc.reason,
+                ), cursor
+            except BaseException:
+                conn.execute("ROLLBACK TO review_due_dispatch_candidate")
+                conn.execute("RELEASE review_due_dispatch_candidate")
+                raise
+            return result, cursor
 
     def _select_next_due(
         self,
@@ -435,6 +1456,9 @@ class DurableReviewDueRepository:
                   ) > (?, ?, ?, ?, ?, ?)
             """
             params.extend(after)
+        # The live-fence check appears after the profile/cursor predicates in
+        # the statement below, so keep its bind value last.
+        params.append(now)
         return conn.execute(
             f"""
             SELECT schedule.*
@@ -459,6 +1483,24 @@ class DurableReviewDueRepository:
                                AND ownership.status = 'active'
                                AND ownership.generation =
                                    schedule.ownership_generation
+                               AND (
+                                     ownership.admission_fence_id = ''
+                                  OR EXISTS (
+                                         SELECT 1
+                                         FROM agent_session_actor_v2_admission_fences
+                                         AS admission
+                                         WHERE admission.profile_id =
+                                                   ownership.profile_id
+                                           AND admission.session_id =
+                                                   ownership.session_id
+                                           AND admission.fence_id =
+                                                   ownership.admission_fence_id
+                                           AND admission.generation =
+                                                   ownership.admission_fence_generation
+                                           AND admission.status = 'committed'
+                                           AND admission.expires_at > ?
+                                     )
+                                   )
                          ) THEN 0
                          ELSE 1
                      END ASC,
@@ -642,19 +1684,32 @@ class DurableReviewDueRepository:
         aggregate: Row,
         *,
         now: float,
+        ownership: AgentRuntimeOwnership,
     ) -> ReviewDueDispatchResult:
+        """Dispatch one due schedule using the ownership captured by this transaction."""
+
+        wake_request = _wake_request_for_ownership(ownership)
         event_id = _review_due_event_id(schedule)
-        payload_json = _canonical_json(_review_due_payload(schedule, event_id=event_id))
-        mailbox_record = _review_due_mailbox_record(
-            schedule,
+        delivery = _ScheduleMailboxDelivery(
             event_id=event_id,
-            payload_json=payload_json,
-            now=now,
+            kind=REVIEW_DUE_EVENT_KIND,
+            source=REVIEW_DUE_EVENT_SOURCE,
+            occurred_at=float(schedule["next_review_at"]),
+            payload_json=_canonical_json(
+                _review_due_payload(schedule, event_id=event_id)
+            ),
+            causation_id=str(schedule["plan_id"]),
+            correlation_id=str(schedule["plan_id"]),
+            trace_id=event_id,
+            schedule_event_type="due_dispatched",
+            schedule_event_outcome="claimed",
+            reason="review_schedule_due",
+            metadata={},
         )
         try:
-            mailbox_exists = self._validate_mailbox_logical_key(
+            existing_mailbox_id = self._validate_mailbox_logical_key(
                 conn,
-                mailbox_record,
+                _schedule_mailbox_record(schedule, delivery=delivery, now=now),
                 allow_missing=True,
             )
         except ReviewDueConflict:
@@ -665,14 +1720,76 @@ class DurableReviewDueRepository:
                 now=now,
                 reason="mailbox_identity_conflict",
             )
+        admission = self._claim_current_schedule_for_delivery(
+            conn,
+            schedule,
+            aggregate,
+            delivery=delivery,
+            now=now,
+            existing_mailbox_id=existing_mailbox_id,
+            ownership=ownership,
+        )
+
+        return _result(
+            schedule,
+            disposition=ReviewDueDisposition.DISPATCHED,
+            event_id=event_id,
+            mailbox_id=admission.mailbox_id,
+            mailbox_inserted=admission.mailbox_inserted,
+            reason="review_schedule_due",
+            wake_request=wake_request,
+        )
+
+    def _claim_current_schedule_for_delivery(
+        self,
+        conn: Connection,
+        schedule: Row,
+        aggregate: Row,
+        *,
+        delivery: _ScheduleMailboxDelivery,
+        now: float,
+        ownership: AgentRuntimeOwnership,
+        existing_mailbox_id: int | None = None,
+    ) -> _ScheduleMailboxAdmission:
+        """Insert one exact mailbox delivery and atomically claim its schedule.
+
+        Only a row inserted by this transaction receives handoff evidence. A
+        duplicate mailbox is historical durable work, so its absent or unknown
+        sidecar evidence must remain fail-closed rather than being rebuilt from
+        the current ownership row.
+        """
+
+        mailbox_record = _schedule_mailbox_record(
+            schedule,
+            delivery=delivery,
+            now=now,
+        )
+        mailbox_key = SessionKey(
+            str(schedule["profile_id"]),
+            str(schedule["session_id"]),
+        )
+        if (
+            ownership.key != mailbox_key
+            or ownership.generation != int(schedule["ownership_generation"])
+        ):
+            raise ReviewDueConflict(
+                "captured ownership differs from the schedule mailbox identity"
+            )
+        if existing_mailbox_id is None:
+            existing_mailbox_id = self._validate_mailbox_logical_key(
+                conn,
+                mailbox_record,
+                allow_missing=True,
+            )
         self._fail_superseded_due_events(
             conn,
             schedule,
-            current_event_id=event_id,
+            current_event_id=delivery.event_id,
             now=now,
         )
         mailbox_inserted = False
-        if not mailbox_exists:
+        mailbox_id = existing_mailbox_id
+        if mailbox_id is None:
             inserted = conn.execute(
                 """
                 INSERT INTO agent_session_mailbox (
@@ -704,14 +1821,31 @@ class DurableReviewDueRepository:
             )
             if inserted.rowcount != 1:
                 raise ReviewDueConflict(
-                    "ReviewDue mailbox insert did not create exactly one row"
+                    "review schedule mailbox insert did not create exactly one row"
                 )
             mailbox_inserted = True
-        self._validate_mailbox_logical_key(
+            if inserted.lastrowid is None or inserted.lastrowid < 1:
+                raise ReviewDueConflict(
+                    "review schedule mailbox insert returned no mailbox id"
+                )
+            mailbox_id = inserted.lastrowid
+        validated_mailbox_id = self._validate_mailbox_logical_key(
             conn,
             mailbox_record,
             allow_missing=False,
         )
+        if validated_mailbox_id is None:
+            raise ReviewDueConflict("review schedule mailbox identity disappeared")
+        if mailbox_id is not None and mailbox_id != validated_mailbox_id:
+            raise ReviewDueConflict("review schedule mailbox identity changed")
+        mailbox_id = validated_mailbox_id
+        if mailbox_inserted:
+            assert mailbox_id is not None
+            self._record_new_schedule_mailbox_handoff(
+                conn,
+                mailbox_id=mailbox_id,
+                ownership=ownership,
+            )
         # The row stores the next cycle. This transaction emits the old cycle
         # and advances it only if the exact schedule fence is claimed.
         delivery_cycle = _schedule_delivery_cycle(schedule)
@@ -770,19 +1904,62 @@ class DurableReviewDueRepository:
             conn,
             schedule,
             aggregate,
-            event_id=event_id,
-            event_type="due_dispatched",
-            outcome="claimed",
-            reason="review_schedule_due",
+            event_id=delivery.event_id,
+            event_type=delivery.schedule_event_type,
+            outcome=delivery.schedule_event_outcome,
+            source=delivery.source,
+            reason=delivery.reason,
+            metadata=delivery.metadata,
             now=now,
         )
-        return _result(
-            schedule,
-            disposition=ReviewDueDisposition.DISPATCHED,
-            event_id=event_id,
+        return _ScheduleMailboxAdmission(
+            mailbox_id=mailbox_id,
             mailbox_inserted=mailbox_inserted,
-            reason="review_schedule_due",
         )
+
+    def _record_new_schedule_mailbox_handoff(
+        self,
+        conn: Connection,
+        *,
+        mailbox_id: int,
+        ownership: AgentRuntimeOwnership,
+    ) -> None:
+        """Write immutable handoff evidence from the already-captured owner.
+
+        The sidecar repository revalidates a fenced owner before and after its
+        own write. If an enclosing trigger invalidated the fence after the
+        mailbox insert, preserve that observation until the outer candidate
+        savepoint can roll back the mailbox, schedule, journal, and sidecar as
+        one unit.
+        """
+
+        request = _wake_request_for_ownership(ownership)
+        if not request.has_admission_fence:
+            self._database.actor_v2_mailbox_handoffs.record_unfenced_legacy_handoff_in_transaction(
+                conn,
+                mailbox_id,
+            )
+            return
+        try:
+            self._database.actor_v2_mailbox_handoffs.record_fenced_handoff_in_transaction(
+                conn,
+                mailbox_id,
+                request,
+            )
+        except (
+            ActorV2AdmissionFenceConflict,
+            ActorV2AdmissionFenceExpired,
+            ActorV2AdmissionFenceNotFound,
+            AgentRuntimeOwnershipError,
+        ) as exc:
+            reason = self._final_actor_admission_reason(
+                conn,
+                key=ownership.key,
+                ownership=ownership,
+            )
+            if reason:
+                raise _ScheduleMailboxAdmissionLost(reason) from exc
+            raise
 
     @staticmethod
     def _fail_superseded_due_events(
@@ -821,7 +1998,7 @@ class DurableReviewDueRepository:
         expected: _TypedSQLiteRecord,
         *,
         allow_missing: bool,
-    ) -> bool:
+    ) -> int | None:
         rows = conn.execute(
             """
             SELECT mailbox_id,
@@ -862,7 +2039,7 @@ class DurableReviewDueRepository:
             ),
         ).fetchall()
         if not rows and allow_missing:
-            return False
+            return None
         if not rows:
             raise ReviewDueConflict("deterministic ReviewDue mailbox row disappeared")
         if len(rows) != 1:
@@ -879,7 +2056,10 @@ class DurableReviewDueRepository:
                 "deterministic ReviewDue event id contains conflicting payload"
             ),
         )
-        return True
+        mailbox_id = int(rows[0]["mailbox_id"])
+        if mailbox_id < 1:
+            raise ReviewDueConflict("deterministic ReviewDue mailbox has invalid id")
+        return mailbox_id
 
     @staticmethod
     def _append_schedule_event(
@@ -892,6 +2072,8 @@ class DurableReviewDueRepository:
         outcome: str,
         reason: str,
         now: float,
+        source: str = REVIEW_DUE_EVENT_SOURCE,
+        metadata: Mapping[str, object] | None = None,
     ) -> None:
         profile_id = _canonical_text(
             schedule["profile_id"],
@@ -933,18 +2115,20 @@ class DurableReviewDueRepository:
         event_type = _canonical_text(event_type, field_name="event_type")
         outcome = _canonical_text(outcome, field_name="outcome")
         reason = _canonical_text(reason, field_name="reason")
+        source = _canonical_text(source, field_name="source")
         created_at = _canonical_real(now, field_name="now")
         schedule_event_id = _schedule_event_id(schedule, event_type=event_type)
-        metadata_json = _canonical_json(
-            {
-                "current_plan_id": current_plan_id,
-                "current_plan_revision": current_plan_revision,
-                "schedule_plan_id": plan_id,
-                "schedule_plan_revision": plan_revision,
-                "ownership_generation": ownership_generation,
-                "delivery_cycle": _schedule_delivery_cycle(schedule),
-            }
-        )
+        event_metadata: dict[str, object] = {
+            "current_plan_id": current_plan_id,
+            "current_plan_revision": current_plan_revision,
+            "schedule_plan_id": plan_id,
+            "schedule_plan_revision": plan_revision,
+            "ownership_generation": ownership_generation,
+            "delivery_cycle": _schedule_delivery_cycle(schedule),
+        }
+        if metadata:
+            event_metadata["admission"] = dict(metadata)
+        metadata_json = _canonical_json(event_metadata)
         expected: _TypedSQLiteRecord = (
             ("schedule_event_id", "text", schedule_event_id),
             ("profile_id", "text", profile_id),
@@ -956,7 +2140,7 @@ class DurableReviewDueRepository:
             ("event_type", "text", event_type),
             ("trigger", "text", trigger),
             ("outcome", "text", outcome),
-            ("source", "text", REVIEW_DUE_EVENT_SOURCE),
+            ("source", "text", source),
             ("requested_delay_seconds", "null", None),
             ("applied_delay_seconds", "null", None),
             ("scheduled_from", "null", None),
@@ -1015,36 +2199,155 @@ class DurableReviewDueRepository:
             self._retry_base_seconds * (2.0**exponent),
         )
 
+class ManualReviewAdmissionService:
+    """Durably admit manual review requests without directly waking an Actor.
 
-class DurableReviewDueScannerService:
-    """Supervised bounded loop around durable ReviewDue dispatch and wake debt."""
+    An accepted request may publish an advisory exact-mailbox hint. The shared
+    mailbox handoff dispatcher remains solely responsible for claiming sidecar
+    evidence and presenting it to a target incarnation.
+    """
 
     def __init__(
         self,
         repository: DurableReviewDueRepository,
         *,
-        wake_target: ReviewDueWakeTarget | None = None,
+        mailbox_handoff_notifier: MailboxHandoffNotifier | None = None,
+    ) -> None:
+        """Initialize the manual-admission producer boundary."""
+
+        if mailbox_handoff_notifier is not None and not callable(
+            getattr(mailbox_handoff_notifier, "notify", None)
+        ):
+            raise TypeError("mailbox_handoff_notifier must implement notify(mailbox_id)")
+        self._repository = repository
+        self._mailbox_handoff_notifier = mailbox_handoff_notifier
+
+    def bind_mailbox_handoff_notifier(
+        self,
+        notifier: MailboxHandoffNotifier | None,
+    ) -> None:
+        """Replace the advisory notifier without binding an Actor target."""
+
+        if notifier is not None and not callable(getattr(notifier, "notify", None)):
+            raise TypeError("notifier must implement notify(mailbox_id)")
+        self._mailbox_handoff_notifier = notifier
+
+    async def request(
+        self,
+        key: SessionKey,
+        *,
+        request_id: str,
+        requested_by: str,
+        reason: str = "manual_review_requested",
+    ) -> ManualReviewAdmissionResult:
+        """Admit one request and best-effort hint its exact fenced mailbox."""
+
+        result = self._repository.admit_manual_review(
+            key,
+            request_id=request_id,
+            requested_by=requested_by,
+            reason=reason,
+        )
+        if not result.accepted:
+            return result
+        await self._notify_admission(result)
+        return result
+
+    async def _notify_admission(self, result: ManualReviewAdmissionResult) -> None:
+        """Publish an advisory fenced hint without falling back to key wake."""
+
+        wake_request = result.wake_request
+        if wake_request is None:
+            raise ManualReviewAdmissionError(
+                "accepted manual review request is missing wake evidence"
+            )
+        if not wake_request.has_admission_fence:
+            logger.debug(
+                format_log_event(
+                    "agent.manual_review.unfenced_mailbox_handoff_deferred",
+                    profile_id=wake_request.key.profile_id,
+                    session_id=wake_request.key.session_id,
+                    ownership_generation=wake_request.ownership_generation,
+                )
+            )
+            return
+        mailbox_id = result.mailbox_id
+        if mailbox_id is None:
+            raise ManualReviewAdmissionError(
+                "accepted fenced manual review request is missing mailbox_id"
+            )
+        notifier = self._mailbox_handoff_notifier
+        if notifier is None:
+            logger.debug(
+                format_log_event(
+                    "agent.manual_review.fenced_mailbox_handoff_deferred",
+                    mailbox_id=mailbox_id,
+                    profile_id=wake_request.key.profile_id,
+                    session_id=wake_request.key.session_id,
+                    ownership_generation=wake_request.ownership_generation,
+                    admission_fence_id=wake_request.admission_fence_id,
+                    admission_fence_generation=wake_request.admission_fence_generation,
+                )
+            )
+            return
+        try:
+            notification = notifier.notify(mailbox_id)
+            if inspect.isawaitable(notification):
+                await notification
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                format_log_event(
+                    "agent.manual_review.fenced_mailbox_handoff_notify_failed",
+                    mailbox_id=mailbox_id,
+                    profile_id=wake_request.key.profile_id,
+                    session_id=wake_request.key.session_id,
+                    ownership_generation=wake_request.ownership_generation,
+                    admission_fence_id=wake_request.admission_fence_id,
+                    admission_fence_generation=wake_request.admission_fence_generation,
+                )
+            )
+
+
+class DurableReviewDueScannerService:
+    """Supervise durable ReviewDue admission and advisory handoff publication.
+
+    This producer never scans mailbox debt to wake an Actor. Restart discovery,
+    claiming, receipt validation, and target-incarnation handling belong to the
+    shared mailbox handoff dispatcher.
+    """
+
+    def __init__(
+        self,
+        repository: DurableReviewDueRepository,
+        *,
+        mailbox_handoff_notifier: MailboxHandoffNotifier | None = None,
         tick_interval_seconds: float = 5.0,
         batch_limit: int = 50,
-        wake_limit: int = 100,
         runtime_id: str | None = None,
     ) -> None:
-        """Initialize scanner supervision and bounded pass limits."""
+        """Initialize bounded durable schedule admission supervision."""
 
+        if mailbox_handoff_notifier is not None and not callable(
+            getattr(mailbox_handoff_notifier, "notify", None)
+        ):
+            raise TypeError("mailbox_handoff_notifier must implement notify(mailbox_id)")
         self._repository = repository
-        self._wake_target = wake_target
+        self._mailbox_handoff_notifier = mailbox_handoff_notifier
         self._tick_interval_seconds = _positive_finite(
             tick_interval_seconds,
             field_name="tick_interval_seconds",
         )
         self._batch_limit = _positive_int(batch_limit, field_name="batch_limit")
-        self._wake_limit = _positive_int(wake_limit, field_name="wake_limit")
         self._runtime_id = str(
             runtime_id or f"review-due-scanner:{uuid.uuid4().hex}"
         ).strip()
         if not self._runtime_id:
             raise ValueError("runtime_id must not be empty")
         self._task: asyncio.Task[None] | None = None
+        self._run_once_lock = asyncio.Lock()
+        self._active_run_once_task: asyncio.Task[ReviewDueScanSummary] | None = None
         self._health = RuntimeServiceHealth("durable_review_due_scanner")
         self._last_summary = ReviewDueScanSummary()
 
@@ -1059,10 +2362,15 @@ class DurableReviewDueScannerService:
 
         return self._health.snapshot()
 
-    def bind_wake_target(self, wake_target: ReviewDueWakeTarget | None) -> None:
-        """Replace the optional post-commit actor wake target."""
+    def bind_mailbox_handoff_notifier(
+        self,
+        notifier: MailboxHandoffNotifier | None,
+    ) -> None:
+        """Replace an advisory source notifier without binding an Actor target."""
 
-        self._wake_target = wake_target
+        if notifier is not None and not callable(getattr(notifier, "notify", None)):
+            raise TypeError("notifier must implement notify(mailbox_id)")
+        self._mailbox_handoff_notifier = notifier
 
     def start(self) -> None:
         """Start the supervised scanner loop when an event loop is running."""
@@ -1081,50 +2389,53 @@ class DurableReviewDueScannerService:
         )
 
     async def shutdown(self) -> None:
-        """Stop the scanner without changing any durable schedule or mailbox."""
+        """Stop local supervision without changing durable schedule or handoff state."""
 
+        active_run_once_task = self._active_run_once_task
+        self._active_run_once_task = None
+        if active_run_once_task is not None and not active_run_once_task.done():
+            active_run_once_task.cancel()
         task = self._task
         self._task = None
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        if active_run_once_task is not None and active_run_once_task is not task:
+            await asyncio.gather(active_run_once_task, return_exceptions=True)
         self._health.stop()
 
     async def run_once(self) -> ReviewDueScanSummary:
-        """Commit one bounded pass, then best-effort wake durable mailbox debt."""
+        """Join or create one serialized durable admission pass."""
+
+        async with self._run_once_lock:
+            active_task = self._active_run_once_task
+            if active_task is None or active_task.done():
+                active_task = asyncio.create_task(
+                    self._run_once_leader(),
+                    name=f"agent-durable-review-due-pass:{self._runtime_id}",
+                )
+                self._active_run_once_task = active_task
+                active_task.add_done_callback(self._finish_run_once_task)
+        return await asyncio.shield(active_task)
+
+    def _finish_run_once_task(
+        self,
+        completed: asyncio.Task[ReviewDueScanSummary],
+    ) -> None:
+        """Forget one completed single-flight pass."""
+
+        if self._active_run_once_task is completed:
+            self._active_run_once_task = None
+
+    async def _run_once_leader(self) -> ReviewDueScanSummary:
+        """Dispatch due schedules and publish only exact fenced mailbox hints."""
 
         self._health.scan_started()
         summary = ReviewDueScanSummary()
         try:
             summary = self._repository.dispatch_due(limit=self._batch_limit)
             self._last_summary = summary
-            wake_target = self._wake_target
-            if wake_target is not None:
-                keys = _unique_keys(
-                    (
-                        *summary.dispatched_keys,
-                        *self._repository.pending_review_due_keys(
-                            limit=self._wake_limit
-                        ),
-                    )
-                )
-                failures: list[SessionKey] = []
-                for key in keys:
-                    try:
-                        await wake_target.wake(key)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        failures.append(key)
-                        logger.exception(
-                            format_log_event(
-                                "agent.review_due_scanner.wake_failed",
-                                profile_id=key.profile_id,
-                                session_id=key.session_id,
-                            )
-                        )
-                if failures:
-                    raise ReviewDueWakeError(tuple(failures))
+            await self._notify_dispatched_handoffs(summary)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1143,7 +2454,73 @@ class DurableReviewDueScannerService:
         )
         return summary
 
+    async def _notify_dispatched_handoffs(
+        self,
+        summary: ReviewDueScanSummary,
+    ) -> None:
+        """Best-effort publish exact identifiers without inspecting sidecar state."""
+
+        notifier = self._mailbox_handoff_notifier
+        for result in summary.results:
+            if result.disposition is not ReviewDueDisposition.DISPATCHED:
+                continue
+            wake_request = result.wake_request
+            if wake_request is None:
+                raise ReviewDueConflict("dispatched review result is missing wake evidence")
+            if not wake_request.has_admission_fence:
+                logger.debug(
+                    format_log_event(
+                        "agent.review_due_scanner.unfenced_mailbox_handoff_deferred",
+                        profile_id=wake_request.key.profile_id,
+                        session_id=wake_request.key.session_id,
+                        ownership_generation=wake_request.ownership_generation,
+                    )
+                )
+                continue
+            mailbox_id = result.mailbox_id
+            if mailbox_id is None:
+                raise ReviewDueConflict(
+                    "dispatched fenced review result is missing mailbox_id"
+                )
+            if notifier is None:
+                logger.debug(
+                    format_log_event(
+                        "agent.review_due_scanner.fenced_mailbox_handoff_deferred",
+                        mailbox_id=mailbox_id,
+                        profile_id=wake_request.key.profile_id,
+                        session_id=wake_request.key.session_id,
+                        ownership_generation=wake_request.ownership_generation,
+                        admission_fence_id=wake_request.admission_fence_id,
+                        admission_fence_generation=(
+                            wake_request.admission_fence_generation
+                        ),
+                    )
+                )
+                continue
+            try:
+                notification = notifier.notify(mailbox_id)
+                if inspect.isawaitable(notification):
+                    await notification
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    format_log_event(
+                        "agent.review_due_scanner.fenced_mailbox_handoff_notify_failed",
+                        mailbox_id=mailbox_id,
+                        profile_id=wake_request.key.profile_id,
+                        session_id=wake_request.key.session_id,
+                        ownership_generation=wake_request.ownership_generation,
+                        admission_fence_id=wake_request.admission_fence_id,
+                        admission_fence_generation=(
+                            wake_request.admission_fence_generation
+                        ),
+                    )
+                )
+
     async def _run_loop(self) -> None:
+        """Run bounded admission passes until shutdown cancels the loop."""
+
         delay = 0.0
         try:
             while True:
@@ -1192,20 +2569,14 @@ def _ownership_unavailable_reason(owner: Row | None) -> str:
     return ""
 
 
-def _review_due_mailbox_record(
+def _schedule_mailbox_record(
     schedule: Row,
     *,
-    event_id: str,
-    payload_json: str,
+    delivery: _ScheduleMailboxDelivery,
     now: float,
 ) -> _TypedSQLiteRecord:
-    canonical_event_id = _canonical_text(event_id, field_name="event_id")
-    plan_id = _canonical_text(
-        schedule["plan_id"],
-        field_name="schedule.plan_id",
-    )
     return (
-        ("event_id", "text", canonical_event_id),
+        ("event_id", "text", _canonical_text(delivery.event_id, field_name="event_id")),
         (
             "profile_id",
             "text",
@@ -1230,24 +2601,32 @@ def _review_due_mailbox_record(
                 field_name="schedule.ownership_generation",
             ),
         ),
-        ("kind", "text", REVIEW_DUE_EVENT_KIND),
-        ("source", "text", REVIEW_DUE_EVENT_SOURCE),
+        ("kind", "text", _canonical_text(delivery.kind, field_name="kind")),
+        ("source", "text", _canonical_text(delivery.source, field_name="source")),
         (
             "occurred_at",
             "real",
             _canonical_real(
-                schedule["next_review_at"],
-                field_name="schedule.next_review_at",
+                delivery.occurred_at,
+                field_name="delivery.occurred_at",
             ),
         ),
         (
             "payload_json",
             "text",
-            _canonical_text(payload_json, field_name="payload_json"),
+            _canonical_text(delivery.payload_json, field_name="payload_json"),
         ),
-        ("causation_id", "text", plan_id),
-        ("correlation_id", "text", plan_id),
-        ("trace_id", "text", canonical_event_id),
+        (
+            "causation_id",
+            "text",
+            _canonical_text(delivery.causation_id, field_name="causation_id"),
+        ),
+        (
+            "correlation_id",
+            "text",
+            _canonical_text(delivery.correlation_id, field_name="correlation_id"),
+        ),
+        ("trace_id", "text", _canonical_text(delivery.trace_id, field_name="trace_id")),
         ("created_at", "real", _canonical_real(now, field_name="now")),
     )
 
@@ -1315,14 +2694,31 @@ def _schedule_event_id(
     return f"schedule-event:{event_type}:{digest}"
 
 
+def _wake_request_for_ownership(
+    ownership: AgentRuntimeOwnership,
+) -> FencedMailboxWakeRequest:
+    """Project an already-validated ownership row to a wake identity."""
+
+    if not ownership.actor_v2_active:
+        raise ValueError("wake requests require active actor_v2 ownership")
+    return FencedMailboxWakeRequest(
+        key=ownership.key,
+        ownership_generation=ownership.generation,
+        admission_fence_id=ownership.admission_fence_id,
+        admission_fence_generation=ownership.admission_fence_generation,
+    )
+
+
 def _result(
     schedule: Row,
     *,
     disposition: ReviewDueDisposition,
     event_id: str = "",
+    mailbox_id: int | None = None,
     mailbox_inserted: bool = False,
     reason: str = "",
     retry_at: float | None = None,
+    wake_request: FencedMailboxWakeRequest | None = None,
 ) -> ReviewDueDispatchResult:
     return ReviewDueDispatchResult(
         key=SessionKey(
@@ -1335,9 +2731,11 @@ def _result(
         delivery_cycle=_schedule_delivery_cycle(schedule),
         disposition=disposition,
         event_id=event_id,
+        mailbox_id=mailbox_id,
         mailbox_inserted=mailbox_inserted,
         reason=reason,
         retry_at=retry_at,
+        wake_request=wake_request,
     )
 
 
@@ -1352,6 +2750,36 @@ def _due_scan_cursor(schedule: Mapping[str, object]) -> _DueScanCursor:
     )
 
 
+def _review_wake_cursor_parameters(
+    cursor: ReviewWakeCursor,
+) -> tuple[object, ...]:
+    """Expand one review wake cursor for the deterministic SQL keyset chain."""
+
+    return (
+        cursor.mailbox_id,
+        cursor.mailbox_id,
+        cursor.profile_id,
+        cursor.mailbox_id,
+        cursor.profile_id,
+        cursor.session_id,
+        cursor.mailbox_id,
+        cursor.profile_id,
+        cursor.session_id,
+        cursor.ownership_generation,
+        cursor.mailbox_id,
+        cursor.profile_id,
+        cursor.session_id,
+        cursor.ownership_generation,
+        cursor.admission_fence_id,
+        cursor.mailbox_id,
+        cursor.profile_id,
+        cursor.session_id,
+        cursor.ownership_generation,
+        cursor.admission_fence_id,
+        cursor.admission_fence_generation,
+    )
+
+
 def _unique_keys(keys: Iterable[SessionKey]) -> tuple[SessionKey, ...]:
     result: list[SessionKey] = []
     seen: set[SessionKey] = set()
@@ -1362,6 +2790,23 @@ def _unique_keys(keys: Iterable[SessionKey]) -> tuple[SessionKey, ...]:
             continue
         seen.add(key)
         result.append(key)
+    return tuple(result)
+
+
+def _unique_wake_requests(
+    requests: Iterable[FencedMailboxWakeRequest],
+) -> tuple[FencedMailboxWakeRequest, ...]:
+    """Preserve order while deduplicating only identical Actor incarnations."""
+
+    result: list[FencedMailboxWakeRequest] = []
+    seen: set[FencedMailboxWakeRequest] = set()
+    for request in requests:
+        if not isinstance(request, FencedMailboxWakeRequest):
+            raise TypeError("wake debt must contain FencedMailboxWakeRequest values")
+        if request in seen:
+            continue
+        seen.add(request)
+        result.append(request)
     return tuple(result)
 
 
@@ -1555,6 +3000,12 @@ def _positive_int(value: object, *, field_name: str) -> int:
     return value
 
 
+def _nonnegative_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
 def _positive_finite(value: object, *, field_name: str) -> float:
     numeric = _nonnegative_finite(value, field_name=field_name)
     if numeric <= 0:
@@ -1580,12 +3031,15 @@ __all__ = [
     "GLOBAL_REVIEW_DUE_HEALTH_PROFILE_ID",
     "DurableReviewDueRepository",
     "DurableReviewDueScannerService",
+    "ManualReviewAdmissionDisposition",
+    "ManualReviewAdmissionError",
+    "ManualReviewAdmissionResult",
+    "ManualReviewAdmissionService",
     "ReviewDueConflict",
     "ReviewDueDispatchResult",
     "ReviewDueDisposition",
     "ReviewDueRepositoryError",
     "ReviewDueScanSummary",
-    "ReviewDueWakeError",
-    "ReviewDueWakeTarget",
+    "ReviewWakeCursor",
     "review_due_event_id",
 ]

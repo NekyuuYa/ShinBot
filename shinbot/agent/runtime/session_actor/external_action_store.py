@@ -14,6 +14,9 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     ClaimedEffect,
     DurableEffectStatus,
 )
+from shinbot.agent.runtime.session_actor.execution_binding import (
+    require_live_execution_binding_in_transaction,
+)
 from shinbot.agent.runtime.session_actor.external_actions import (
     ExternalActionKind,
     ExternalActionReceiptStatus,
@@ -21,6 +24,7 @@ from shinbot.agent.runtime.session_actor.external_actions import (
 )
 from shinbot.core.dispatch.agent_identity import SessionKey
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipError
+from shinbot.core.dispatch.fenced_wake_target_lease import FencedActorExecutionBinding
 from shinbot.persistence.records import MessageLogRecord
 
 if TYPE_CHECKING:
@@ -236,6 +240,7 @@ class SQLiteExternalActionReceiptStore:
         request: ExternalActionRequest,
         *,
         effect_claim: ClaimedEffect,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Persist an exact logical action owned by a live durable effect claim."""
 
@@ -247,6 +252,13 @@ class SQLiteExternalActionReceiptStore:
                 conn,
                 request.key,
                 expected_generation=request.ownership_generation,
+            )
+            require_live_execution_binding_in_transaction(
+                self._database,
+                conn,
+                execution_binding,
+                key=request.key,
+                ownership_generation=request.ownership_generation,
             )
             self._validate_effect_claim(
                 conn,
@@ -294,6 +306,7 @@ class SQLiteExternalActionReceiptStore:
         request: ExternalActionRequest,
         *,
         effect_claim: ClaimedEffect,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> (
         ClaimedExternalAction
         | ExternalActionOrderBlockedResult
@@ -316,6 +329,13 @@ class SQLiteExternalActionReceiptStore:
                 conn,
                 request.key,
                 expected_generation=request.ownership_generation,
+            )
+            require_live_execution_binding_in_transaction(
+                self._database,
+                conn,
+                execution_binding,
+                key=request.key,
+                ownership_generation=request.ownership_generation,
             )
             effect_lease_until = self._validate_effect_claim(
                 conn,
@@ -453,6 +473,7 @@ class SQLiteExternalActionReceiptStore:
         claim: ClaimedExternalAction,
         *,
         effect_claim: ClaimedEffect,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ClaimedExternalAction:
         """Renew a live action claim without outliving its parent effect claim."""
 
@@ -460,6 +481,13 @@ class SQLiteExternalActionReceiptStore:
             conn.execute("BEGIN IMMEDIATE")
             now = self._now()
             self._require_claim_ownership(conn, claim)
+            require_live_execution_binding_in_transaction(
+                self._database,
+                conn,
+                execution_binding,
+                key=claim.key,
+                ownership_generation=claim.receipt.ownership_generation,
+            )
             effect_lease_until = self._validate_effect_claim_for_receipt(
                 conn,
                 claim.receipt,
@@ -532,6 +560,7 @@ class SQLiteExternalActionReceiptStore:
         reason_code: str,
         reason_message: str = "",
         evidence: Mapping[str, Any] | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Record a fenced failure known to precede adapter dispatch."""
 
@@ -553,6 +582,7 @@ class SQLiteExternalActionReceiptStore:
             evidence_json=rejection_json,
             allowed_statuses=(ExternalActionReceiptStatus.EXECUTING,),
             require_active_ownership=True,
+            execution_binding=execution_binding,
         )
 
     async def mark_unknown(
@@ -562,6 +592,7 @@ class SQLiteExternalActionReceiptStore:
         reason_code: str,
         reason_message: str = "",
         evidence: Mapping[str, Any] | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Conservatively stop retry after dispatch may have begun."""
 
@@ -583,6 +614,7 @@ class SQLiteExternalActionReceiptStore:
             evidence_json=unknown_json,
             allowed_statuses=(ExternalActionReceiptStatus.EXECUTING,),
             require_active_ownership=False,
+            execution_binding=execution_binding,
         )
 
     async def settle_succeeded(
@@ -591,6 +623,7 @@ class SQLiteExternalActionReceiptStore:
         *,
         platform_result: Mapping[str, Any],
         assistant_message: MessageLogRecord | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Atomically persist success and, for replies, its assistant log.
 
@@ -605,6 +638,13 @@ class SQLiteExternalActionReceiptStore:
         self._validate_assistant_message(claim.receipt, assistant_message)
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            require_live_execution_binding_in_transaction(
+                self._database,
+                conn,
+                execution_binding,
+                key=claim.key,
+                ownership_generation=claim.receipt.ownership_generation,
+            )
             now = self._now()
             row = self._owned_receipt_row(conn, claim)
             status = ExternalActionReceiptStatus(str(row["status"]))
@@ -739,11 +779,19 @@ class SQLiteExternalActionReceiptStore:
         evidence_json: str,
         allowed_statuses: tuple[ExternalActionReceiptStatus, ...],
         require_active_ownership: bool,
+        execution_binding: FencedActorExecutionBinding | None,
     ) -> ExternalActionReceipt:
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if require_active_ownership:
                 self._require_claim_ownership(conn, claim)
+            require_live_execution_binding_in_transaction(
+                self._database,
+                conn,
+                execution_binding,
+                key=claim.key,
+                ownership_generation=claim.receipt.ownership_generation,
+            )
             now = self._now()
             row = self._owned_receipt_row(conn, claim)
             current = ExternalActionReceiptStatus(str(row["status"]))

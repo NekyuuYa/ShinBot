@@ -27,7 +27,11 @@ from shinbot.core.application.bot_routing import (
     bot_session_id_for_selection,
     permission_scope_for_event,
 )
-from shinbot.core.dispatch.agent_identity import SessionKeyFactory
+from shinbot.core.dispatch.actor_v2_admission import (
+    ActorV2AdmissionFence,
+    ActorV2AdmissionFenceReserved,
+)
+from shinbot.core.dispatch.agent_identity import SessionKey, SessionKeyFactory
 from shinbot.core.dispatch.agent_ownership import (
     AgentRuntimeOwnership,
     AgentRuntimeOwnershipConflict,
@@ -38,10 +42,22 @@ from shinbot.core.dispatch.durable_routing import (
     IngressRoutingPayload,
     MessageRoutingJobStatus,
 )
+from shinbot.core.dispatch.legacy_ingress_quiescence import (
+    LegacyIngressDurableAdmissionRequired,
+    LegacyIngressFreezeTicket,
+    LegacyIngressQuiescenceReceipt,
+    LegacyIngressSessionRegistry,
+    LegacyIngressTaskToken,
+)
 from shinbot.core.dispatch.message_context import (
     Interceptor,
     MessageContext,
+    WaitingInputConsumeDisposition,
+    WaitingInputFreezeTicket,
+    WaitingInputLeaseInspection,
+    WaitingInputQuiescenceReceipt,
     WaitingInputRegistry,
+    WaitingInputScope,
 )
 from shinbot.core.dispatch.routing import RouteMatchContext, RouteRule, RouteTable
 from shinbot.core.message_analysis import is_self_mentioned
@@ -71,6 +87,13 @@ ROUTING_SKIP_NO_ROUTE_MATCHED = MessageRoutingSkipReason.NO_ROUTE_MATCHED.value
 ROUTING_SKIP_SESSION_MUTED = MessageRoutingSkipReason.SESSION_MUTED.value
 ROUTING_SKIP_INTERCEPTOR_BLOCKED = MessageRoutingSkipReason.INTERCEPTOR_BLOCKED.value
 ROUTING_SKIP_WAIT_FOR_INPUT = MessageRoutingSkipReason.WAIT_FOR_INPUT.value
+ROUTING_SKIP_WAIT_FOR_INPUT_FROZEN = MessageRoutingSkipReason.WAIT_FOR_INPUT_FROZEN.value
+ROUTING_SKIP_WAIT_FOR_INPUT_SCOPE_MISMATCH = (
+    MessageRoutingSkipReason.WAIT_FOR_INPUT_SCOPE_MISMATCH.value
+)
+ROUTING_SKIP_WAIT_FOR_INPUT_STATE_CHANGED = (
+    MessageRoutingSkipReason.WAIT_FOR_INPUT_STATE_CHANGED.value
+)
 
 
 class DurableRoutingReplayDeferred(RuntimeError):
@@ -101,6 +124,7 @@ class RouteDispatchContext:
     message_log_id: int | None = None
     trace_id: str = ""
     observed_at: float = 0.0
+    legacy_ingress_task_token: LegacyIngressTaskToken | None = None
 
     def require_message_context(self) -> MessageContext:
         """Return the message context or raise if it was not attached.
@@ -397,6 +421,7 @@ class MessageIngress:
         self._durable_wake_callback: Callable[[], None] | None = None
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._pre_route_hooks: list[PreRouteHook] = []
+        self._legacy_ingress_sessions = LegacyIngressSessionRegistry()
 
     @property
     def pending_target_task_count(self) -> int:
@@ -406,6 +431,98 @@ class MessageIngress:
     async def shutdown(self) -> None:
         """Cancel and await all in-flight route target tasks."""
         await self._route_targets.shutdown()
+
+    def freeze_legacy_ingress_session(
+        self,
+        session_id: str,
+        *,
+        cutover_id: str,
+    ) -> LegacyIngressFreezeTicket:
+        """Freeze new local legacy admission for one base session.
+
+        This is an unmounted, process-local controller primitive. A caller must
+        establish durable admission before using it; this method does not pause
+        adapters, coordinate other processes, or authorize an Actor v2 cutover.
+        """
+
+        return self._legacy_ingress_sessions.freeze(
+            session_id,
+            cutover_id=cutover_id,
+        )
+
+    def legacy_ingress_freeze_ticket(
+        self,
+        session_id: str,
+    ) -> LegacyIngressFreezeTicket | None:
+        """Return a current local ingress freeze ticket without changing it."""
+
+        return self._legacy_ingress_sessions.active_freeze_ticket(session_id)
+
+    async def await_legacy_ingress_quiescent(
+        self,
+        ticket: LegacyIngressFreezeTicket,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> LegacyIngressQuiescenceReceipt:
+        """Observe direct pre-freeze local ingress work for one session."""
+
+        return await self._legacy_ingress_sessions.await_quiescent(
+            ticket,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def thaw_legacy_ingress_session(self, ticket: LegacyIngressFreezeTicket) -> bool:
+        """Release one locally quiescent ingress freeze ticket."""
+
+        return self._legacy_ingress_sessions.thaw(ticket)
+
+    def freeze_legacy_waiting_input(
+        self,
+        scope: WaitingInputScope,
+        *,
+        cutover_id: str,
+    ) -> WaitingInputFreezeTicket:
+        """Freeze one local legacy waiter slot for a future lifecycle drain.
+
+        This only owns the process-local waiter registry. It does not pause
+        ingress, persist a replacement delivery, or authorize Actor v2.
+        """
+
+        return self._waiting_registry.freeze(scope, cutover_id=cutover_id)
+
+    def legacy_waiting_input_freeze_ticket(
+        self,
+        session_id: str,
+    ) -> WaitingInputFreezeTicket | None:
+        """Return a current local waiter freeze ticket without changing it."""
+
+        return self._waiting_registry.active_freeze_ticket(session_id)
+
+    def legacy_waiting_input_lease_inspection(
+        self,
+        session_id: str,
+    ) -> WaitingInputLeaseInspection | None:
+        """Return local waiter ownership facts without consuming or freezing it."""
+
+        return self._waiting_registry.active_lease_inspection(session_id)
+
+    async def await_legacy_waiting_input_quiescent(
+        self,
+        ticket: WaitingInputFreezeTicket,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> WaitingInputQuiescenceReceipt:
+        """Observe one frozen local legacy waiter slot."""
+
+        return await self._waiting_registry.await_quiescent(
+            ticket,
+            timeout=timeout_seconds,
+        )
+
+    def thaw_legacy_waiting_input(self, ticket: WaitingInputFreezeTicket) -> bool:
+        """Release one locally quiescent legacy waiter freeze ticket."""
+
+        return self._waiting_registry.thaw(ticket)
 
     def add_interceptor(self, interceptor: Interceptor, priority: int = 100) -> None:
         """Register an interceptor that can block events before routing.
@@ -459,10 +576,109 @@ class MessageIngress:
         session_id = build_session_id(adapter.instance_id, event)
         trace_id = build_ingress_trace_id(adapter, event)
 
+        async with self._legacy_ingress_sessions.admit_message(session_id) as admission:
+            return await self._process_message_event_admitted(
+                event,
+                adapter,
+                message,
+                session_id=session_id,
+                trace_id=trace_id,
+                requires_durable_admission=admission.requires_durable_admission,
+                legacy_ingress_task_token=admission.task_token,
+            )
+
+    async def _process_message_event_admitted(
+        self,
+        event: UnifiedEvent,
+        adapter: BaseAdapter,
+        message: Message,
+        *,
+        session_id: str,
+        trace_id: str,
+        requires_durable_admission: bool,
+        legacy_ingress_task_token: LegacyIngressTaskToken | None,
+    ) -> IngressResult:
+        """Run one message after local legacy-admission classification."""
+
         # Preserve the current deadlock-avoidance behavior: a suspended handler
         # may already hold the session lock while waiting for this reply.
-        if self._waiting_registry.is_waiting(session_id):
+        if event.type == "message-created" and (
+            self._waiting_registry.is_waiting(session_id)
+            or self._waiting_registry.is_frozen(session_id)
+        ):
             observed_at = time.time()
+            bot_selection = self._resolve_bot_selection(event, adapter)
+            bot_id = ""
+            bot_binding_id = ""
+            bot_session_id = ""
+            if bot_selection is not None:
+                bot_id = bot_selection.bot.id
+                bot_binding_id = bot_selection.binding.id
+                bot_session_id = bot_session_id_for_selection(
+                    bot_selection,
+                    event=event,
+                )
+            waiting_scope = WaitingInputScope.from_routing_identity(
+                legacy_session_id=session_id,
+                bot_id=bot_id,
+                bot_session_id=bot_session_id,
+            )
+
+            ownership, admission_fence = self._resolve_ingress_admission(
+                self._session_key_for_routing_identity(
+                    base_session_id=session_id,
+                    bot_id=bot_id,
+                    bot_session_id=bot_session_id,
+                ),
+                legacy_session_id=session_id,
+                requires_durable_admission=requires_durable_admission,
+            )
+
+            self._require_durable_admission_if_frozen(
+                required=requires_durable_admission,
+                session_id=session_id,
+                ownership=ownership,
+                admission_fence=admission_fence,
+            )
+
+            if self._requires_durable_actor_routing(ownership) or admission_fence is not None:
+                durable_payload = self._build_durable_routing_payload(
+                    event=event,
+                    adapter=adapter,
+                    base_session_id=session_id,
+                    bot_id=bot_id,
+                    bot_binding_id=bot_binding_id,
+                    bot_session_id=bot_session_id,
+                    trace_id=trace_id,
+                    observed_at=observed_at,
+                )
+                message_log_id, _durable_job_status, _persisted_payload = (
+                    self._persist_or_reuse_durable_message(
+                        event=event,
+                        message=message,
+                        session_id=session_id,
+                        payload=durable_payload,
+                        ownership=ownership,
+                        admission_fence=admission_fence,
+                    )
+                )
+                self._log_message_ingress(
+                    event=event,
+                    adapter=adapter,
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    trace_id=trace_id,
+                    bot_selection=bot_selection,
+                    message=message,
+                )
+                self._notify_durable_routing()
+                return IngressResult(
+                    dispatch_context=None,
+                    matched_rules=[],
+                    message_log_id=message_log_id,
+                    trace_id=trace_id,
+                )
+
             message_log_id = self._persist_incoming_message(
                 event=event,
                 message=message,
@@ -475,7 +691,7 @@ class MessageIngress:
                 session_id=session_id,
                 message_log_id=message_log_id,
                 trace_id=trace_id,
-                bot_selection=None,
+                bot_selection=bot_selection,
                 message=message,
             )
             if not is_event_fresh(
@@ -498,7 +714,11 @@ class MessageIngress:
                     skipped_reason=ROUTING_SKIP_EXPIRED_MESSAGE,
                     trace_id=trace_id,
                 )
-            if self._waiting_registry.resolve(session_id, message.get_text(self_id=event.self_id)):
+            consume_disposition = self._waiting_registry.try_consume_open(
+                waiting_scope,
+                message.get_text(self_id=event.self_id),
+            )
+            if consume_disposition is WaitingInputConsumeDisposition.CONSUMED:
                 self._mark_skipped(message_log_id, ROUTING_SKIP_WAIT_FOR_INPUT)
                 self._log_routing_result(
                     event=event,
@@ -515,6 +735,35 @@ class MessageIngress:
                     skipped_reason=ROUTING_SKIP_WAIT_FOR_INPUT,
                     trace_id=trace_id,
                 )
+            skip_reason = {
+                WaitingInputConsumeDisposition.FROZEN: ROUTING_SKIP_WAIT_FOR_INPUT_FROZEN,
+                WaitingInputConsumeDisposition.SCOPE_MISMATCH: (
+                    ROUTING_SKIP_WAIT_FOR_INPUT_SCOPE_MISMATCH
+                ),
+                WaitingInputConsumeDisposition.ABSENT: (
+                    ROUTING_SKIP_WAIT_FOR_INPUT_STATE_CHANGED
+                ),
+            }[consume_disposition]
+            # A non-consuming result cannot safely enter the session lock: the
+            # original handler can still hold it while awaiting its own scoped
+            # reply. Keep this message visible and fail closed instead.
+            self._mark_skipped(message_log_id, skip_reason)
+            self._log_routing_result(
+                event=event,
+                adapter=adapter,
+                session_id=session_id,
+                message_log_id=message_log_id,
+                trace_id=trace_id,
+                bot_selection=bot_selection,
+                skipped_reason=skip_reason,
+            )
+            return IngressResult(
+                dispatch_context=None,
+                matched_rules=[],
+                message_log_id=message_log_id,
+                skipped_reason=skip_reason,
+                trace_id=trace_id,
+            )
 
         async with self._session_manager.session_lock(session_id):
             return await self._process_message_event_locked(
@@ -522,6 +771,8 @@ class MessageIngress:
                 adapter,
                 message,
                 trace_id=trace_id,
+                requires_durable_admission=requires_durable_admission,
+                legacy_ingress_task_token=legacy_ingress_task_token,
             )
 
     async def _process_message_event_locked(
@@ -530,6 +781,9 @@ class MessageIngress:
         adapter: BaseAdapter,
         message: Message,
         trace_id: str,
+        *,
+        requires_durable_admission: bool = False,
+        legacy_ingress_task_token: LegacyIngressTaskToken | None = None,
     ) -> IngressResult:
         session = self._session_manager.get_or_create(adapter.instance_id, event)
         session.touch()
@@ -569,15 +823,31 @@ class MessageIngress:
             )
 
         observed_at = time.time()
-        ownership = self._resolve_or_claim_runtime_ownership(message_context)
+        ownership, admission_fence = self._resolve_ingress_admission(
+            self._session_key_for_routing_identity(
+                base_session_id=message_context.session_id,
+                bot_id=message_context.bot_id,
+                bot_session_id=message_context.bot_session_id,
+            ),
+            legacy_session_id=message_context.session_id,
+            requires_durable_admission=requires_durable_admission,
+        )
+        self._require_durable_admission_if_frozen(
+            required=requires_durable_admission,
+            session_id=session.id,
+            ownership=ownership,
+            admission_fence=admission_fence,
+        )
         durable_payload: IngressRoutingPayload | None = None
         durable_job_status: MessageRoutingJobStatus | None = None
-        if self._requires_durable_actor_routing(ownership):
-            assert ownership is not None
+        if self._requires_durable_actor_routing(ownership) or admission_fence is not None:
             durable_payload = self._build_durable_routing_payload(
                 event=event,
                 adapter=adapter,
-                message_context=message_context,
+                base_session_id=message_context.session_id,
+                bot_id=message_context.bot_id,
+                bot_binding_id=message_context.bot_binding_id,
+                bot_session_id=message_context.bot_session_id,
                 trace_id=trace_id,
                 observed_at=observed_at,
             )
@@ -588,6 +858,7 @@ class MessageIngress:
                     session_id=session.id,
                     payload=durable_payload,
                     ownership=ownership,
+                    admission_fence=admission_fence,
                 )
             )
             self._notify_durable_routing()
@@ -617,11 +888,25 @@ class MessageIngress:
             message_log_id=message_log_id,
             trace_id=trace_id,
             observed_at=observed_at,
+            legacy_ingress_task_token=legacy_ingress_task_token,
         )
 
         if durable_job_status is not None and durable_job_status is not (
             MessageRoutingJobStatus.PENDING
         ):
+            self._notify_durable_routing()
+            self._session_manager.update(session)
+            return IngressResult(
+                dispatch_context=dispatch_context,
+                matched_rules=[],
+                message_log_id=message_log_id,
+                trace_id=trace_id,
+            )
+
+        if admission_fence is not None:
+            # The actor owner transaction retargets the job atomically when it
+            # commits this reservation. A recovery worker may route only after
+            # that durable handoff; direct ingress intentionally does no work.
             self._notify_durable_routing()
             self._session_manager.update(session)
             return IngressResult(
@@ -816,6 +1101,16 @@ class MessageIngress:
                 "ownership_generation_changed",
                 "durable routing ownership changed after ingress acceptance",
             )
+        if envelope.has_admission_fence and (
+            not ownership.actor_v2_active
+            or ownership.admission_fence_id != envelope.admission_fence_id
+            or ownership.admission_fence_generation
+            != envelope.admission_fence_generation
+        ):
+            raise DurableRoutingReplayDeferred(
+                "admission_fence_changed",
+                "durable routing admission fence no longer matches active ownership",
+            )
 
         agent_deliveries: list[Any] = []
         external_rules: list[RouteRule] = []
@@ -965,6 +1260,7 @@ class MessageIngress:
                 durable_claim.envelope.profile_id != key.profile_id
                 or durable_claim.envelope.session_id != key.session_id
                 or durable_claim.envelope.ownership_generation < 1
+                or durable_claim.envelope.is_reserved_admission
             ):
                 raise RuntimeError(
                     "durable routing claim has no canonical ownership fence"
@@ -1116,14 +1412,70 @@ class MessageIngress:
     ) -> AgentRuntimeOwnership | None:
         """Return the durable runtime owner, defaulting new sessions to legacy."""
 
+        return self._resolve_or_claim_runtime_ownership_for_key(
+            self._session_key_for_routing_identity(
+                base_session_id=message_context.session_id,
+                bot_id=message_context.bot_id,
+                bot_session_id=message_context.bot_session_id,
+            ),
+            legacy_session_id=message_context.session_id,
+        )
+
+    def _resolve_ingress_admission(
+        self,
+        key: SessionKey,
+        *,
+        legacy_session_id: str,
+        requires_durable_admission: bool,
+    ) -> tuple[AgentRuntimeOwnership | None, ActorV2AdmissionFence | None]:
+        """Resolve ingress ownership without creating legacy state after a freeze."""
+
+        if requires_durable_admission:
+            if self._database is None:
+                return None, None
+            ownership = self._database.agent_runtime_ownership.get(key)
+            if ownership is not None:
+                return ownership, None
+            return None, self._database.actor_v2_admission_fences.get(key)
+
+        try:
+            ownership = self._resolve_or_claim_runtime_ownership_for_key(
+                key,
+                legacy_session_id=legacy_session_id,
+            )
+        except ActorV2AdmissionFenceReserved as exc:
+            # A fence wins before a legacy waiter can consume this reply. The
+            # waiting handler may hold the session lock, so only a durable
+            # handoff is safe from this pre-lock path.
+            return None, exc.fence
+        return ownership, None
+
+    def _session_key_for_routing_identity(
+        self,
+        *,
+        base_session_id: str,
+        bot_id: str,
+        bot_session_id: str,
+    ) -> SessionKey:
+        """Build the ownership key from ingress identity without a session context."""
+
+        return self._session_key_factory.create(
+            bot_config_id=bot_id,
+            bot_id=bot_id,
+            bot_session_id=bot_session_id,
+            base_session_id=base_session_id,
+        )
+
+    def _resolve_or_claim_runtime_ownership_for_key(
+        self,
+        key: SessionKey,
+        *,
+        legacy_session_id: str,
+    ) -> AgentRuntimeOwnership | None:
+        """Resolve one owner or atomically make the default legacy admission."""
+
         if self._database is None:
             return None
-        key = self._session_key_factory.create(
-            bot_config_id=message_context.bot_id,
-            bot_id=message_context.bot_id,
-            bot_session_id=message_context.bot_session_id,
-            base_session_id=message_context.session_id,
-        )
         repository = self._database.agent_runtime_ownership
         existing = repository.get(key)
         if existing is not None:
@@ -1133,7 +1485,7 @@ class MessageIngress:
                 key,
                 AgentRuntimeOwnershipMode.LEGACY,
                 reason="default legacy ownership selected at first ingress",
-                legacy_session_id=message_context.session_id,
+                legacy_session_id=legacy_session_id,
                 requested_by="core.message_ingress",
             ).ownership
         except AgentRuntimeOwnershipConflict:
@@ -1157,12 +1509,34 @@ class MessageIngress:
             or ownership.mode is AgentRuntimeOwnershipMode.ACTOR_V2
         )
 
+    def _require_durable_admission_if_frozen(
+        self,
+        *,
+        required: bool,
+        session_id: str,
+        ownership: AgentRuntimeOwnership | None,
+        admission_fence: ActorV2AdmissionFence | None,
+    ) -> None:
+        """Reject a post-freeze event before it can enter legacy routing."""
+
+        if not required:
+            return
+        if self._requires_durable_actor_routing(ownership) or admission_fence is not None:
+            return
+        raise LegacyIngressDurableAdmissionRequired(
+            "local legacy ingress freeze requires durable admission for "
+            f"session {session_id!r}"
+        )
+
     def _build_durable_routing_payload(
         self,
         *,
         event: UnifiedEvent,
         adapter: BaseAdapter,
-        message_context: MessageContext,
+        base_session_id: str,
+        bot_id: str,
+        bot_binding_id: str,
+        bot_session_id: str,
         trace_id: str,
         observed_at: float,
     ) -> IngressRoutingPayload:
@@ -1175,10 +1549,10 @@ class MessageIngress:
             message_xml=event.message_content,
             trace_id=trace_id,
             observed_at=observed_at,
-            base_session_id=message_context.session_id,
-            bot_id=message_context.bot_id,
-            bot_binding_id=message_context.bot_binding_id,
-            bot_session_id=message_context.bot_session_id,
+            base_session_id=base_session_id,
+            bot_id=bot_id,
+            bot_binding_id=bot_binding_id,
+            bot_session_id=bot_session_id,
             fresh_at_ingress=is_event_fresh(
                 event,
                 now=observed_at,
@@ -1193,12 +1567,21 @@ class MessageIngress:
         message: Message,
         session_id: str,
         payload: IngressRoutingPayload,
-        ownership: AgentRuntimeOwnership,
+        ownership: AgentRuntimeOwnership | None,
+        admission_fence: ActorV2AdmissionFence | None = None,
     ) -> tuple[int, MessageRoutingJobStatus, IngressRoutingPayload]:
-        """Atomically persist a message/job or reuse its canonical duplicate."""
+        """Atomically persist a message/job or reuse its canonical duplicate.
+
+        Exactly one durable admission source is required: an existing ownership
+        generation or an unresolved Actor v2 reservation fence.
+        """
 
         if self._database is None:
             raise RuntimeError("durable Agent routing requires a database")
+        if (ownership is None) == (admission_fence is None):
+            raise RuntimeError(
+                "durable routing requires exactly one ownership or admission fence"
+            )
         repository = self._database.durable_routing
 
         def reuse_existing() -> tuple[int, MessageRoutingJobStatus, IngressRoutingPayload] | None:
@@ -1227,7 +1610,17 @@ class MessageIngress:
             observed_at=payload.observed_at,
         )
         envelope = payload.to_job_envelope(
-            ownership_generation=ownership.generation,
+            ownership_generation=ownership.generation if ownership is not None else 0,
+            admission_fence_id=(
+                ownership.admission_fence_id
+                if ownership is not None
+                else admission_fence.fence_id
+            ),
+            admission_fence_generation=(
+                ownership.admission_fence_generation
+                if ownership is not None
+                else admission_fence.generation
+            ),
             available_at=payload.observed_at + self._durable_recovery_grace_seconds,
         )
         try:
@@ -1587,6 +1980,10 @@ class MessageIngress:
                     trace_id=dispatch_context.trace_id,
                 )
                 if task is not None:
+                    self._legacy_ingress_sessions.track_route_task(
+                        dispatch_context.legacy_ingress_task_token,
+                        task,
+                    )
                     logger.debug(
                         format_log_event(
                             "route.target.scheduled",

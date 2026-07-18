@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -339,6 +340,64 @@ class TestLifecycle:
         await bot.start()
 
         assert calls == ["started"]
+
+    @pytest.mark.asyncio
+    async def test_start_awaits_agent_recovery_before_starting_adapters(self):
+        """Adapters must not accept ingress before runtime recovery is complete."""
+
+        calls = []
+
+        class OrderedAdapter(MockAdapter):
+            async def start(self) -> None:
+                calls.append("adapter")
+                await super().start()
+
+        class Runtime:
+            async def start_background_tasks(self) -> None:
+                calls.append("agent")
+
+            async def shutdown(self) -> None:
+                return None
+
+        bot = ShinBot(data_dir=None)
+        bot.adapter_manager.register_adapter("ordered", OrderedAdapter)
+        adapter = bot.add_adapter("inst1", "ordered")
+        bot.mount_agent_runtime(Runtime())
+
+        await bot.start()
+
+        assert adapter.started is True
+        assert calls == ["agent", "adapter"]
+
+    @pytest.mark.parametrize("attribute_name", ("actor_wake_target", "session_actor_registry"))
+    def test_mounting_runtime_never_auto_publishes_actor_consumer(
+        self,
+        tmp_path: Path,
+        attribute_name: str,
+    ) -> None:
+        """Actor routing requires an explicit lifecycle-controller handoff."""
+
+        bot = ShinBot(data_dir=tmp_path)
+
+        class UnexpectedTarget:
+            accepting = True
+
+            async def wake(self, _key: object) -> None:
+                raise AssertionError("unexpected actor wake")
+
+            async def recover(self) -> int:
+                raise AssertionError("unexpected actor recovery")
+
+        class Runtime:
+            async def shutdown(self) -> None:
+                return None
+
+        runtime = Runtime()
+        setattr(runtime, attribute_name, UnexpectedTarget())
+        bot.mount_agent_runtime(runtime)
+
+        assert bot.durable_routing_service is not None
+        assert bot.durable_routing_service.health_snapshot().actor_consumer_ready is False
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_adapters(self):

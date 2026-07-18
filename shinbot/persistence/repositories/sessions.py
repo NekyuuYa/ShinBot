@@ -358,6 +358,40 @@ class AuditRepository(Repository):
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def list_by_session_and_command_names(
+        self,
+        session_id: str,
+        command_names: tuple[str, ...],
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return recent session audit entries for an explicit event allowlist.
+
+        Args:
+            session_id: Session to query.
+            command_names: Exact audit command/event names to include.
+            limit: Maximum number of entries to return.
+
+        Returns:
+            Matching audit entries ordered from newest to oldest.
+        """
+        names = tuple(dict.fromkeys(name for name in command_names if name))
+        if not names or limit <= 0:
+            return []
+        placeholders = ", ".join("?" for _ in names)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM audit_logs
+                WHERE session_id = ? AND command_name IN ({placeholders})
+                ORDER BY timestamp DESC, id DESC
+                LIMIT ?
+                """,
+                (session_id, *names, limit),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def get_latest_by_session(self, session_id: str) -> dict[str, Any] | None:
         """Return the most recent audit entry for a session, or ``None``."""
         rows = self.list_by_session(session_id, limit=1)

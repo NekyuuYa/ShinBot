@@ -146,6 +146,16 @@ class SQLiteRecoveryCommitCoordinator:
 
         return self._authority.persistence_domain
 
+    @property
+    def materializer_states(self) -> tuple[str, ...]:
+        """Return the state keys with an explicitly bound recovery materializer.
+
+        This is diagnostic metadata only.  It does not authorize scanning,
+        mailbox delivery, or state materialization by itself.
+        """
+
+        return tuple(sorted(self._materializers))
+
     def prepare(
         self,
         conn: sqlite3.Connection,

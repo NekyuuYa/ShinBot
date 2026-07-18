@@ -7,6 +7,7 @@ import inspect
 import math
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -14,16 +15,24 @@ from typing import Any, Protocol
 
 from shinbot.core.dispatch.agent_identity import SessionKey
 from shinbot.core.dispatch.durable_routing import IngressRoutingPayload
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
 from shinbot.core.dispatch.ingress import DurableRoutingReplayDeferred
+from shinbot.core.dispatch.mailbox_handoff import MailboxHandoffNotifier
 from shinbot.core.platform.adapter_manager import BaseAdapter
 from shinbot.persistence.repositories.durable_routing import (
     ClaimedAgentRouteDelivery,
     ClaimedMessageRoutingJob,
     DurableMessageRoutingRepository,
+    PendingRouteWakeDebt,
+    RouteRelayResult,
+    RouteWakeCursor,
 )
 from shinbot.utils.logger import format_log_event, get_logger
 
 logger = get_logger(__name__, source="dispatch", color="cyan")
+
+_LEGACY_WAKE_DISCOVERY_LIMIT = 100
+_LEGACY_WAKE_STATE_CAPACITY = _LEGACY_WAKE_DISCOVERY_LIMIT * 2
 
 
 class DurableRoutingServiceStatus(StrEnum):
@@ -40,10 +49,6 @@ class AgentMailboxWakeTarget(Protocol):
 
     def wake(self, key: SessionKey) -> Awaitable[None] | None:
         """Wake the actor that owns an already-persisted mailbox event."""
-
-    def recover(self) -> Awaitable[int] | int:
-        """Discover and wake actors for all committed pending mailbox events."""
-
 
 RoutingReplay = Callable[
     [ClaimedMessageRoutingJob, BaseAdapter],
@@ -90,6 +95,7 @@ class DurableRoutingService:
         replay: RoutingReplay,
         adapter_resolver: AdapterResolver,
         actor_wake_target: AgentMailboxWakeTarget | None = None,
+        mailbox_handoff_notifier: MailboxHandoffNotifier | None = None,
         worker_id: str | None = None,
         poll_interval_seconds: float = 1.0,
         retry_base_seconds: float = 1.0,
@@ -103,7 +109,12 @@ class DurableRoutingService:
         self._repository = repository
         self._replay = replay
         self._adapter_resolver = adapter_resolver
+        if mailbox_handoff_notifier is not None and not callable(
+            getattr(mailbox_handoff_notifier, "notify", None)
+        ):
+            raise TypeError("mailbox_handoff_notifier must implement notify(mailbox_id)")
         self._actor_wake_target = actor_wake_target
+        self._mailbox_handoff_notifier = mailbox_handoff_notifier
         self._worker_id = str(
             worker_id or f"durable-routing:{uuid.uuid4().hex}"
         ).strip()
@@ -136,10 +147,18 @@ class DurableRoutingService:
         self._closed = False
         self._wake_event = asyncio.Event()
         self._lifecycle_lock = asyncio.Lock()
+        self._startup_complete = asyncio.Event()
+        self._startup_complete.set()
         self._task: asyncio.Task[None] | None = None
         self._active_job: ClaimedMessageRoutingJob | None = None
         self._active_delivery: ClaimedAgentRouteDelivery | None = None
-        self._wake_debt: set[SessionKey] = set()
+        self._wake_debt: OrderedDict[
+            FencedMailboxWakeRequest, PendingRouteWakeDebt
+        ] = OrderedDict()
+        self._legacy_wake_discovery_cursor: RouteWakeCursor | None = None
+        self._legacy_wake_target_epoch = 0
+        self._legacy_broad_wake_fenced_debt = False
+        self._wake_recovery_lock = asyncio.Lock()
 
         self._last_scan_at = 0.0
         self._last_success_at = 0.0
@@ -163,6 +182,23 @@ class DurableRoutingService:
         """Install or clear the actor consumer used after mailbox commits."""
 
         self._actor_wake_target = target
+        self._legacy_wake_target_epoch += 1
+        self._legacy_wake_discovery_cursor = None
+        self.wake()
+
+    def set_mailbox_handoff_notifier(
+        self,
+        notifier: MailboxHandoffNotifier | None,
+    ) -> None:
+        """Install or clear the advisory fenced-mailbox notifier.
+
+        This only changes post-commit hint delivery. It does not bind a handoff
+        target, start a dispatcher, or authorize an Actor v2 wake.
+        """
+
+        if notifier is not None and not callable(getattr(notifier, "notify", None)):
+            raise TypeError("notifier must implement notify(mailbox_id)")
+        self._mailbox_handoff_notifier = notifier
         self.wake()
 
     def wake(self) -> None:
@@ -185,7 +221,7 @@ class DurableRoutingService:
                 return self.health_snapshot()
             self._prepared = True
 
-        if self._actor_target_available():
+        if self._delivery_sink_available():
             while await self._process_delivery_once(wake_after_commit=False):
                 pass
         return self.health_snapshot()
@@ -193,20 +229,41 @@ class DurableRoutingService:
     async def start(self) -> DurableRoutingHealthSnapshot:
         """Declare adapters ready, recover mailbox wake debt, and start polling."""
 
+        startup_waiter: asyncio.Event | None = None
         async with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("a closed durable routing service cannot be started")
             if self._started:
-                return self.health_snapshot()
-            if not self._prepared:
-                self._prepared = True
-            self._adapters_ready = True
-            self._started = True
-            self._task = asyncio.create_task(
-                self._run(),
-                name="core.durable-routing",
-            )
-        await self._recover_wake_debt(force=True)
+                if self._task is not None:
+                    return self.health_snapshot()
+                startup_waiter = self._startup_complete
+            else:
+                if not self._prepared:
+                    self._prepared = True
+                self._adapters_ready = True
+                self._started = True
+                self._startup_complete.clear()
+        if startup_waiter is not None:
+            await startup_waiter.wait()
+            return await self.start()
+        try:
+            await self._recover_wake_debt(force=True)
+            async with self._lifecycle_lock:
+                if self._closed:
+                    self._startup_complete.set()
+                    return self.health_snapshot()
+                self._task = asyncio.create_task(
+                    self._run(),
+                    name="core.durable-routing",
+                )
+                self._startup_complete.set()
+        except BaseException:
+            async with self._lifecycle_lock:
+                if not self._closed and self._task is None:
+                    self._started = False
+                    self._adapters_ready = False
+                self._startup_complete.set()
+            raise
         self.wake()
         return self.health_snapshot()
 
@@ -218,6 +275,8 @@ class DurableRoutingService:
                 return
             self._closed = True
             self._adapters_ready = False
+            self._legacy_wake_target_epoch += 1
+            self._startup_complete.set()
             task = self._task
             self._task = None
             self._wake_event.set()
@@ -240,7 +299,11 @@ class DurableRoutingService:
             pending_deliveries = -1
             actor_owners = -1
 
-        consumer_ready = self._actor_target_available()
+        fenced_handoff_notifier_required = self._fenced_handoff_notifier_required()
+        consumer_ready = (
+            self._legacy_actor_target_available()
+            and not self._legacy_broad_wake_fenced_debt
+        )
         ready_for_actor = (
             self._started
             and self._adapters_ready
@@ -248,7 +311,9 @@ class DurableRoutingService:
             and (actor_owners == 0 or consumer_ready)
         )
         degraded_reason = ""
-        if actor_owners > 0 and not consumer_ready:
+        if fenced_handoff_notifier_required:
+            degraded_reason = "mailbox_handoff_notifier_unavailable"
+        elif actor_owners > 0 and not consumer_ready:
             degraded_reason = "actor_consumer_unavailable"
         elif self._consecutive_failures:
             degraded_reason = self._last_error_code or "durable_routing_failure"
@@ -299,12 +364,12 @@ class DurableRoutingService:
                     self._wake_event.clear()
                     self._last_scan_at = self._clock()
                     worked = False
-                    actor_target_available = self._actor_target_available()
+                    delivery_sink_available = self._delivery_sink_available()
                     can_process_jobs = (
-                        actor_target_available
+                        delivery_sink_available
                         or self._repository.active_actor_ownership_count() == 0
                     )
-                    if actor_target_available:
+                    if delivery_sink_available:
                         worked = await self._process_delivery_once(
                             wake_after_commit=True
                         )
@@ -369,7 +434,7 @@ class DurableRoutingService:
         return True
 
     async def _process_delivery_once(self, *, wake_after_commit: bool) -> bool:
-        if not self._actor_target_available():
+        if not self._delivery_sink_available():
             return False
         claim = self._repository.claim_next_delivery(worker_id=self._worker_id)
         if claim is None:
@@ -387,53 +452,239 @@ class DurableRoutingService:
             return True
 
         self._active_delivery = None
-        key = SessionKey(result.profile_id, result.session_id)
         self._relayed_delivery_count += 1
         self._record_success()
+        if result.wake_request.has_admission_fence:
+            if wake_after_commit:
+                await self._notify_fenced_mailbox_handoff(result)
+            return True
+        debt = PendingRouteWakeDebt(request=result.wake_request, event_id=result.event_id)
         if wake_after_commit:
-            await self._wake_after_commit(key)
+            await self._wake_after_commit(debt)
         else:
-            self._wake_debt.add(key)
+            self._remember_wake_debt(debt)
         return True
 
-    async def _wake_after_commit(self, key: SessionKey) -> None:
+    def _remember_wake_debt(self, debt: PendingRouteWakeDebt) -> None:
+        """Keep one durable wake debt in the bounded local discovery window."""
+
+        request = debt.request
+        self._wake_debt.pop(request, None)
+        self._wake_debt[request] = debt
+        while len(self._wake_debt) > _LEGACY_WAKE_STATE_CAPACITY:
+            self._wake_debt.popitem(last=False)
+
+    def _drop_wake_debt(self, debt: PendingRouteWakeDebt) -> None:
+        """Forget one local debt while leaving durable redrive evidence intact."""
+
+        if self._wake_debt.get(debt.request) == debt:
+            self._wake_debt.pop(debt.request, None)
+
+    def _attemptable_legacy_wake_debts(
+        self,
+    ) -> tuple[PendingRouteWakeDebt, ...]:
+        """Select a bounded page of unfenced legacy-compatible wake debt."""
+
+        result: list[PendingRouteWakeDebt] = []
+        for debt in self._wake_debt.values():
+            if debt.request.has_admission_fence:
+                continue
+            result.append(debt)
+            if len(result) >= _LEGACY_WAKE_DISCOVERY_LIMIT:
+                break
+        return tuple(result)
+
+    async def _wake_after_commit(
+        self,
+        debt: PendingRouteWakeDebt,
+        *,
+        recover_on_failure: bool = True,
+    ) -> None:
+        """Wake one committed unfenced mailbox event through the legacy target."""
+
+        request = debt.request
+        if request.has_admission_fence:
+            raise RuntimeError("fenced route debt must use mailbox handoff delivery")
+        self._remember_wake_debt(debt)
+        if self._closed:
+            return
         target = self._actor_wake_target
         if target is None:
-            self._wake_debt.add(key)
+            return
+        if not self._repository.is_pending_route_wake_debt(debt):
+            self._drop_wake_debt(debt)
+            return
+        target_epoch = self._legacy_wake_target_epoch
+        if (
+            self._closed
+            or target is not self._actor_wake_target
+            or target_epoch != self._legacy_wake_target_epoch
+        ):
             return
         try:
-            result = target.wake(key)
+            result = target.wake(request.key)
             if inspect.isawaitable(result):
                 await result
-            self._wake_debt.discard(key)
+            if (
+                not self._closed
+                and target is self._actor_wake_target
+                and target_epoch == self._legacy_wake_target_epoch
+            ):
+                self._drop_wake_debt(debt)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            self._wake_debt.add(key)
             self._record_failure(exc)
             logger.exception(
                 format_log_event(
                     "durable_routing.actor_wake_failed",
-                    profile_id=key.profile_id,
-                    session_id=key.session_id,
+                    profile_id=request.key.profile_id,
+                    session_id=request.key.session_id,
+                    ownership_generation=request.ownership_generation,
                 )
             )
-            await self._recover_wake_debt()
+            if recover_on_failure:
+                await self._recover_wake_debt()
+
+    async def _notify_fenced_mailbox_handoff(
+        self,
+        result: RouteRelayResult,
+    ) -> None:
+        """Send an advisory hint for one exact durable fenced route mailbox.
+
+        The source service does not inspect, claim, or settle the handoff. A
+        missing or failing notifier leaves the sidecar as durable pull debt and
+        must never fall back to a key-only wake.
+        """
+
+        mailbox_id = result.mailbox_id
+        wake_request = result.wake_request
+        notifier = self._mailbox_handoff_notifier
+        if notifier is None:
+            logger.debug(
+                format_log_event(
+                    "durable_routing.fenced_mailbox_handoff_deferred",
+                    mailbox_id=mailbox_id,
+                    profile_id=wake_request.key.profile_id,
+                    session_id=wake_request.key.session_id,
+                    ownership_generation=wake_request.ownership_generation,
+                    admission_fence_id=wake_request.admission_fence_id,
+                    admission_fence_generation=wake_request.admission_fence_generation,
+                )
+            )
+            return
+        try:
+            notification = notifier.notify(mailbox_id)
+            if inspect.isawaitable(notification):
+                await notification
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                format_log_event(
+                    "durable_routing.fenced_mailbox_handoff_notify_failed",
+                    mailbox_id=mailbox_id,
+                    profile_id=wake_request.key.profile_id,
+                    session_id=wake_request.key.session_id,
+                    ownership_generation=wake_request.ownership_generation,
+                    admission_fence_id=wake_request.admission_fence_id,
+                    admission_fence_generation=wake_request.admission_fence_generation,
+                )
+            )
 
     async def _recover_wake_debt(self, *, force: bool = False) -> None:
-        if not self._actor_target_available():
-            return
-        if not force and not self._wake_debt:
+        """Serialize durable wake reconciliation across startup and polling."""
+
+        async with self._wake_recovery_lock:
+            await self._recover_wake_debt_locked(force=force)
+
+    async def _recover_wake_debt_locked(self, *, force: bool) -> None:
+        """Reconcile wake debt while one service pass owns recovery state."""
+
+        if self._closed:
             return
         target = self._actor_wake_target
-        assert target is not None
+        if target is None or not self._legacy_actor_target_available():
+            return
         try:
-            result = target.recover()
-            if inspect.isawaitable(result):
-                await result
+            self._wake_debt = OrderedDict(
+                (request, debt)
+                for request, debt in self._wake_debt.items()
+                if not debt.request.has_admission_fence
+                and self._repository.is_pending_route_wake_debt(debt)
+            )
+            self._legacy_broad_wake_fenced_debt = (
+                self._repository.has_retained_fenced_mailbox_debt()
+            )
+            self._refresh_legacy_wake_debt(force=force)
         except Exception as exc:
             self._record_failure(exc)
-            logger.exception("durable_routing_actor_recovery_failed")
+            logger.exception("durable_routing_legacy_wake_fence_scan_failed")
             return
-        self._wake_debt.clear()
+        if (
+            not force
+            and not self._wake_debt
+            and not self._legacy_broad_wake_fenced_debt
+        ):
+            return
+        target_epoch = self._legacy_wake_target_epoch
+        if (
+            self._closed
+            or target is not self._actor_wake_target
+            or target_epoch != self._legacy_wake_target_epoch
+        ):
+            return
+        # A short-lived routing pass cannot prove that a target did not create
+        # actors that outlive a recovery permit. It therefore never acquires or
+        # delegates a broad-recovery permit; only exact, unfenced wake debt is
+        # eligible for this legacy compatibility path.
+        await self._wake_legacy_unfenced_debts(target, target_epoch)
+
+    async def _wake_legacy_unfenced_debts(
+        self,
+        target: AgentMailboxWakeTarget,
+        target_epoch: int,
+    ) -> None:
+        """Wake only locally known unfenced mailbox debt through a legacy target."""
+
+        for debt in self._attemptable_legacy_wake_debts():
+            if (
+                self._closed
+                or target is not self._actor_wake_target
+                or target_epoch != self._legacy_wake_target_epoch
+            ):
+                self.wake()
+                return
+            await self._wake_after_commit(debt, recover_on_failure=False)
+
+    def _refresh_legacy_wake_debt(self, *, force: bool) -> None:
+        """Page exact unfenced debt without invoking broad recovery.
+
+        A legacy target may receive only an individually identified unfenced
+        mailbox wake. The routing service never invokes a target's broad
+        recovery method, because it cannot retain a durable permit through any
+        actor task that target might create.
+        """
+
+        if force:
+            self._legacy_wake_discovery_cursor = None
+            self._wake_debt.clear()
+        cursor = self._legacy_wake_discovery_cursor
+        debts = self._repository.pending_route_wake_debts(
+            limit=_LEGACY_WAKE_DISCOVERY_LIMIT,
+            after=cursor,
+        )
+        if not debts and cursor is not None:
+            cursor = None
+            debts = self._repository.pending_route_wake_debts(
+                limit=_LEGACY_WAKE_DISCOVERY_LIMIT,
+            )
+        for debt in debts:
+            if not debt.request.has_admission_fence:
+                self._remember_wake_debt(debt)
+        self._legacy_wake_discovery_cursor = (
+            _route_wake_cursor_for_debt(debts[-1]) if debts else cursor
+        )
 
     def _retry_or_fail_job(
         self,
@@ -481,7 +732,7 @@ class DurableRoutingService:
             if can_process_jobs
             else []
         )
-        if self._actor_target_available():
+        if self._delivery_sink_available():
             deadlines.append(self._repository.next_delivery_available_at())
         now = self._clock()
         due = [deadline for deadline in deadlines if deadline is not None]
@@ -500,12 +751,30 @@ class DurableRoutingService:
             delay = self._retry_max_seconds
         return max(0.01, min(delay, self._retry_max_seconds))
 
-    def _actor_target_available(self) -> bool:
+    def _legacy_actor_target_available(self) -> bool:
+        """Return whether the legacy key-based consumer can receive unfenced work."""
+
         target = self._actor_wake_target
         if target is None:
             return False
         accepting = getattr(target, "accepting", True)
         return bool(accepting)
+
+    def _delivery_sink_available(self) -> bool:
+        """Return whether a route delivery can make durable post-commit progress."""
+
+        return (
+            self._legacy_actor_target_available()
+            or self._mailbox_handoff_notifier is not None
+        )
+
+    def _fenced_handoff_notifier_required(self) -> bool:
+        """Return whether fenced debt lacks even an advisory handoff hint sink."""
+
+        return (
+            self._mailbox_handoff_notifier is None
+            and self._legacy_broad_wake_fenced_debt
+        )
 
     def _release_job_for_shutdown(self, claim: ClaimedMessageRoutingJob) -> None:
         try:
@@ -569,6 +838,15 @@ def _nonnegative_finite(value: float, field_name: str) -> float:
     if not math.isfinite(normalized) or normalized < 0:
         raise ValueError(f"{field_name} must be finite and non-negative")
     return normalized
+
+
+def _route_wake_cursor_for_debt(debt: PendingRouteWakeDebt) -> RouteWakeCursor:
+    """Return the event-versioned cursor emitted by durable discovery."""
+
+    cursor = debt.cursor
+    if cursor is None:
+        raise RuntimeError("durable route wake debt must carry a keyset cursor")
+    return cursor
 
 
 __all__ = [

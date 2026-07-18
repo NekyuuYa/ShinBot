@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -31,8 +32,11 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     EffectHandlerRegistry,
     EffectHandlerResult,
     EffectLane,
+    EffectQuarantineReason,
     EffectRunStatus,
+    EffectSettlementResult,
     EffectSettlementStatus,
+    FencedEffectExecutionLeaseLost,
     completion_event_id,
     derived_effect_event_id,
     failure_event_id,
@@ -53,14 +57,27 @@ from shinbot.agent.runtime.session_actor.external_actions import (
     builtin_external_action_effect_contracts,
     materialize_external_action_effect,
 )
+from shinbot.agent.runtime.session_actor.model_execution_witness import (
+    ModelExecutionClaim,
+    SQLiteModelExecutionWitnessStore,
+)
 from shinbot.agent.runtime.session_actor.registry import AgentSessionActorRegistry
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
+from shinbot.core.dispatch.actor_v2_admission import ActorV2AdmissionGrant
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
+from shinbot.core.dispatch.fenced_wake_target_lease import FencedActorExecutionBinding
+from shinbot.core.dispatch.mailbox_handoff import (
+    MailboxHandoffEvidenceState,
+    MailboxHandoffState,
+    MailboxHandoffTarget,
+)
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.canonical_json import (
     MAX_CANONICAL_JSON_BYTES,
     MAX_CANONICAL_JSON_NODES,
 )
+from tests.agent_runtime_helpers import wait_for_session_actor_idle
 
 
 class _WakeRegistry:
@@ -133,6 +150,83 @@ async def _make_store(
         ),
         key,
     )
+
+
+async def _make_fenced_store(
+    tmp_path: Path,
+    now: list[float],
+    *,
+    contracts: tuple[EffectExecutionContract, ...] = (),
+) -> tuple[
+    DatabaseManager,
+    SQLiteDurableEffectStore,
+    SessionKey,
+    ActorV2AdmissionGrant,
+    int,
+]:
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "bot:group:fenced-room")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="effect-store-fenced-test",
+        ttl_seconds=3600.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="fenced effect store test",
+        admission_grant=grant,
+    ).ownership
+    await SQLiteSessionActorStore(database, clock=lambda: now[0]).ensure(
+        key,
+        ownership_generation=ownership.generation,
+    )
+    return (
+        database,
+        SQLiteDurableEffectStore(
+            database,
+            lease_seconds=5.0,
+            clock=lambda: now[0],
+            contract_authority=EffectContractAuthority(
+                (
+                    *builtin_effect_contract_authority().contracts(),
+                    _external_contract(),
+                    *contracts,
+                )
+            ),
+        ),
+        key,
+        grant,
+        ownership.generation,
+    )
+
+
+def _execution_binding(
+    database: DatabaseManager,
+    *,
+    key: SessionKey,
+    ownership_generation: int,
+    admission_grant: ActorV2AdmissionGrant,
+    target_incarnation_id: str = "effect-executor-incarnation-a",
+) -> FencedActorExecutionBinding:
+    """Acquire one exact target lease for a fenced effect-execution test."""
+
+    request = FencedMailboxWakeRequest(
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_fence_id=admission_grant.fence.fence_id,
+        admission_fence_generation=admission_grant.fence.generation,
+    )
+    grant = database.actor_v2_fenced_wake_target_leases.acquire(
+        request,
+        target=MailboxHandoffTarget(
+            "effect-executor-test-target",
+            target_incarnation_id,
+        ),
+        ttl_seconds=60.0,
+    )
+    return FencedActorExecutionBinding(request=request, target_lease=grant)
 
 
 def _seed_effect(
@@ -338,6 +432,37 @@ def _completion(
         causation_id=claim.effect.source_event_id,
         correlation_id=claim.effect.operation_id or claim.effect.effect_id,
         trace_id=claim.effect.trace_id,
+    )
+
+
+def _seed_model_execution_effect(
+    database: DatabaseManager,
+    key: SessionKey,
+    *,
+    effect_id: str,
+    operation_id: str,
+    now: float,
+) -> None:
+    """Seed one valid active-reply effect for expiry notice tests."""
+
+    contract = builtin_effect_contract("run_active_reply_workflow", version=2)
+    _seed_effect(
+        database,
+        key,
+        effect_id=effect_id,
+        kind=contract.effect_kind,
+        operation_id=operation_id,
+        contract=contract,
+        payload={
+            "plan_id": "plan-a",
+            "active_epoch": 1,
+            "activity_generation": 1,
+            "input_watermark": 1,
+            "input_ledger_sequence": 1,
+            "completion_event_id": f"completion:{effect_id}",
+            "failure_event_id": f"failure:{effect_id}",
+        },
+        now=now,
     )
 
 
@@ -675,6 +800,1072 @@ async def test_sqlite_effect_store_fences_aba_and_replays_same_settlement(
         "attempt_count": 2,
     }
     assert mailbox_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_settlement_returns_exact_fenced_wake_request(
+    tmp_path: Path,
+) -> None:
+    """Committed and replayed outcomes retain the same full owner fence."""
+
+    now = [100.0]
+    database, store, key, grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    _seed_effect(database, key)
+    claim = await store.claim_next(worker_id="fenced-settlement-worker")
+    assert claim is not None
+
+    expected = FencedMailboxWakeRequest(
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_fence_id=grant.fence.fence_id,
+        admission_fence_generation=grant.fence.generation,
+    )
+    envelope = _completion(claim)
+    committed = await store.complete_with_event(claim, envelope)
+    duplicate = await store.complete_with_event(claim, envelope)
+    with database.connect() as conn:
+        mailbox = conn.execute(
+            """
+            SELECT mailbox_id FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, envelope.event_id),
+        ).fetchone()
+
+    assert committed.status is EffectSettlementStatus.COMMITTED
+    assert committed.wake_request == expected
+    assert duplicate.status is EffectSettlementStatus.ALREADY_COMMITTED
+    assert duplicate.wake_request == expected
+    assert mailbox is not None
+    assert committed.mailbox_id == int(mailbox["mailbox_id"])
+    assert duplicate.mailbox_id == committed.mailbox_id
+
+
+@pytest.mark.asyncio
+async def test_scoped_effect_store_only_claims_its_exact_target_binding(
+    tmp_path: Path,
+) -> None:
+    """A target lease cannot scan another active Actor v2 session's outbox."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    other_key = SessionKey("profile-b", "bot:group:other-room")
+    other_ownership = database.agent_runtime_ownership.claim(
+        other_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="other scoped effect session",
+    ).ownership
+    await SQLiteSessionActorStore(database, clock=lambda: now[0]).ensure(
+        other_key,
+        ownership_generation=other_ownership.generation,
+    )
+    _seed_effect(database, other_key, effect_id="other-session-effect", now=now[0])
+    _seed_effect(database, key, effect_id="bound-session-effect", now=now[0])
+
+    claim = await store.claim_next(
+        worker_id="scoped-effect-worker",
+        execution_binding=binding,
+    )
+
+    assert claim is not None
+    assert claim.effect.effect_id == "bound-session-effect"
+    await store.complete_with_event(
+        claim,
+        _completion(claim),
+        execution_binding=binding,
+    )
+    assert (
+        await store.claim_next(
+            worker_id="scoped-effect-worker",
+            execution_binding=binding,
+        )
+        is None
+    )
+    assert await store.next_available_at(execution_binding=binding) is None
+    with database.connect() as conn:
+        other_status = conn.execute(
+            """
+            SELECT status FROM agent_effect_outbox
+            WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+            """,
+            (other_key.profile_id, other_key.session_id, "other-session-effect"),
+        ).fetchone()["status"]
+    assert other_status == DurableEffectStatus.PENDING.value
+
+
+@pytest.mark.asyncio
+async def test_scoped_effect_executor_leaves_foreign_maintenance_notifications_untouched(
+    tmp_path: Path,
+) -> None:
+    """A target-bound executor cannot consume another session's wake debt."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    _seed_effect(database, key, effect_id="bound-notification-effect", now=now[0])
+    foreign_notification = EffectSettlementResult(
+        status=EffectSettlementStatus.COMMITTED,
+        effect_id="foreign-maintenance-effect",
+        event_id="foreign-maintenance-event",
+        key=SessionKey("profile-b", "bot:group:foreign-maintenance"),
+    )
+    store._quarantine_notifications.append(foreign_notification)
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.register("external_write", handler)
+    handlers.seal()
+    wake_registry = _WakeRegistry()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        execution_binding=binding,
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert wake_registry.keys == []
+    assert await store.drain_quarantine_notifications() == (foreign_notification,)
+
+
+@pytest.mark.asyncio
+async def test_scoped_effect_store_rejects_every_claim_lifecycle_write_after_target_loss(
+    tmp_path: Path,
+) -> None:
+    """A released target lease cannot renew, settle, retry, or inspect its effect."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    _seed_effect(database, key, effect_id="target-loss-effect", now=now[0])
+    claim = await store.claim_next(
+        worker_id="target-loss-worker",
+        execution_binding=binding,
+    )
+    assert claim is not None
+    completion = _completion(claim)
+    failure = _failure(claim)
+
+    database.actor_v2_fenced_wake_target_leases.release(binding.target_lease)
+
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.claim_next(
+            worker_id="target-loss-worker",
+            execution_binding=binding,
+        )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.renew_lease(claim, execution_binding=binding)
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.complete_with_event(
+            claim,
+            completion,
+            execution_binding=binding,
+        )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.fail_with_event(
+            claim,
+            failure,
+            error="target lease is no longer live",
+            execution_binding=binding,
+        )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.release_for_retry(
+            claim,
+            error="target lease is no longer live",
+            available_at=now[0] + 1.0,
+            execution_binding=binding,
+        )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.defer_without_attempt(
+            claim,
+            reason="target lease is no longer live",
+            available_at=now[0] + 1.0,
+            execution_binding=binding,
+        )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.quarantine(
+            claim,
+            reason=EffectQuarantineReason.UNSUPPORTED_CONTRACT,
+            message="target lease is no longer live",
+            execution_binding=binding,
+        )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.release(
+            claim,
+            error="target lease is no longer live",
+            execution_binding=binding,
+        )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.next_available_at(execution_binding=binding)
+    with pytest.raises(ValueError, match="explicit recovery controller"):
+        await store.recover_expired(
+            worker_id="target-loss-worker",
+            execution_binding=binding,
+        )
+
+    with database.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner
+            FROM agent_effect_outbox
+            WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+            """,
+            (key.profile_id, key.session_id, claim.effect.effect_id),
+        ).fetchone()
+    assert dict(row) == {
+        "status": DurableEffectStatus.PROCESSING.value,
+        "claim_id": claim.claim_id,
+        "lease_owner": claim.worker_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_scoped_effect_executor_does_not_recover_other_session_expired_work(
+    tmp_path: Path,
+) -> None:
+    """Fenced startup is not a broad historical effect recovery mechanism."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    other_key = SessionKey("profile-b", "bot:group:expired-other-room")
+    other_ownership = database.agent_runtime_ownership.claim(
+        other_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="other expired effect session",
+    ).ownership
+    await SQLiteSessionActorStore(database, clock=lambda: now[0]).ensure(
+        other_key,
+        ownership_generation=other_ownership.generation,
+    )
+    _seed_effect(database, other_key, effect_id="expired-other-effect", now=now[0])
+    other_claim = await store.claim_next(worker_id="other-expired-worker")
+    assert other_claim is not None
+    now[0] = 106.0
+
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.seal()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=_WakeRegistry(),
+        execution_binding=binding,
+        poll_interval_seconds=0.01,
+    )
+    try:
+        assert await executor.start_fenced() == 0
+    finally:
+        await executor.shutdown(drain=False)
+
+    with database.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner
+            FROM agent_effect_outbox
+            WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+            """,
+            (other_key.profile_id, other_key.session_id, other_claim.effect.effect_id),
+        ).fetchone()
+    assert dict(row) == {
+        "status": DurableEffectStatus.PROCESSING.value,
+        "claim_id": other_claim.claim_id,
+        "lease_owner": other_claim.worker_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_scoped_effect_executor_refuses_to_start_after_target_loss(
+    tmp_path: Path,
+) -> None:
+    """A target that already lost its lease cannot spawn worker tasks."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.seal()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=_WakeRegistry(),
+        execution_binding=binding,
+    )
+    database.actor_v2_fenced_wake_target_leases.release(binding.target_lease)
+
+    try:
+        with pytest.raises(FencedEffectExecutionLeaseLost):
+            await executor.start_fenced()
+        assert executor.running is False
+    finally:
+        await executor.shutdown(drain=False)
+
+
+def test_scoped_effect_executor_requires_automatic_lease_renewal(tmp_path: Path) -> None:
+    """A fenced target cannot opt out of lost-lease detection while running."""
+
+    now = [100.0]
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "bot:group:renewal-required")
+    admission_grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="renewal-required-test",
+        ttl_seconds=60.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="renewal requirement test",
+        admission_grant=admission_grant,
+    ).ownership
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership.generation,
+        admission_grant=admission_grant,
+    )
+    store = SQLiteDurableEffectStore(database, clock=lambda: now[0])
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.seal()
+
+    with pytest.raises(ValueError, match="requires automatic lease renewal"):
+        DurableEffectExecutor(
+            store=store,
+            handlers=handlers,
+            session_registry=_WakeRegistry(),
+            execution_binding=binding,
+            renew_interval_seconds=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_scoped_effect_executor_rechecks_target_before_generic_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A target lost after claim cannot start an unwitnessed control handler."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    _seed_effect(database, key, effect_id="generic-handler-target-loss", now=now[0])
+    handler_calls = 0
+
+    async def generic_handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.register("external_write", generic_handler)
+    handlers.seal()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=_WakeRegistry(),
+        execution_binding=binding,
+    )
+    original_claim_next = store.claim_next
+
+    async def claim_then_lose_target(**kwargs: object):
+        claim = await original_claim_next(**kwargs)
+        if claim is not None:
+            database.actor_v2_fenced_wake_target_leases.release(binding.target_lease)
+        return claim
+
+    monkeypatch.setattr(store, "claim_next", claim_then_lose_target)
+
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await executor.run_once()
+    assert handler_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_scoped_effect_executor_cancels_handler_and_stops_after_target_loss(
+    tmp_path: Path,
+) -> None:
+    """A lost target lease cancels local work instead of scheduling a retry."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    _seed_effect(database, key, effect_id="target-loss-handler-effect", now=now[0])
+    handler_started = asyncio.Event()
+    handler_cancelled = asyncio.Event()
+
+    async def blocking_handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            handler_cancelled.set()
+            raise
+
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.register("external_write", blocking_handler)
+    handlers.seal()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=_WakeRegistry(),
+        execution_binding=binding,
+        poll_interval_seconds=0.01,
+        renew_interval_seconds=0.01,
+    )
+    try:
+        await executor.start_fenced()
+        await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+        database.actor_v2_fenced_wake_target_leases.release(binding.target_lease)
+        await asyncio.wait_for(handler_cancelled.wait(), timeout=1.0)
+        for _ in range(100):
+            if not executor.healthy:
+                break
+            await asyncio.sleep(0.01)
+        assert executor.healthy is False
+        assert isinstance(executor.binding_failure, FencedEffectExecutionLeaseLost)
+    finally:
+        await executor.shutdown(drain=False)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_skip_and_quarantine_return_exact_fenced_wake_request(
+    tmp_path: Path,
+) -> None:
+    """Every terminal mailbox variant projects its final actor incarnation."""
+
+    now = [100.0]
+    deadline_contract = _external_contract(
+        kind="fenced-deadline",
+        completion_event_kind="FencedDeadlineReached",
+        outcome_fence_fields=("completion_event_id", "input_watermark"),
+    )
+    database, store, key, grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+        contracts=(deadline_contract,),
+    )
+    expected = FencedMailboxWakeRequest(
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_fence_id=grant.fence.fence_id,
+        admission_fence_generation=grant.fence.generation,
+    )
+    _seed_operation(
+        database,
+        key,
+        operation_id="fenced-deadline-operation",
+        status="completed",
+        now=now[0],
+    )
+    _seed_effect(
+        database,
+        key,
+        effect_id="fenced-deadline-effect",
+        kind=deadline_contract.effect_kind,
+        contract=deadline_contract,
+        operation_id="fenced-deadline-operation",
+        payload={
+            "completion_event_id": "fenced-deadline:1",
+            "enqueue_only_if_operation_status": ["pending", "running"],
+            "input_watermark": 7,
+            "terminal_operation_disposition": "skip",
+        },
+    )
+    skipped_claim = await store.claim_next(worker_id="fenced-skip-worker")
+    assert skipped_claim is not None
+
+    skipped = await store.complete_with_event(
+        skipped_claim,
+        _completion(skipped_claim, contract=deadline_contract),
+    )
+    skipped_duplicate = await store.complete_with_event(
+        skipped_claim,
+        _completion(skipped_claim, contract=deadline_contract),
+    )
+
+    assert skipped.status is EffectSettlementStatus.PRECONDITION_SKIPPED
+    assert skipped.wake_request == expected
+    assert skipped_duplicate.status is EffectSettlementStatus.PRECONDITION_SKIPPED
+    assert skipped_duplicate.wake_request == expected
+    assert skipped.mailbox_id is not None
+    assert skipped_duplicate.mailbox_id == skipped.mailbox_id
+
+    _seed_effect(database, key, effect_id="fenced-quarantine-effect")
+    quarantine_claim = await store.claim_next(worker_id="fenced-quarantine-worker")
+    assert quarantine_claim is not None
+    quarantined = await store.quarantine(
+        quarantine_claim,
+        reason=EffectQuarantineReason.UNSUPPORTED_CONTRACT,
+        message="fenced quarantine test",
+    )
+    quarantine_duplicate = await store.quarantine(
+        quarantine_claim,
+        reason=EffectQuarantineReason.UNSUPPORTED_CONTRACT,
+        message="fenced quarantine test",
+    )
+
+    assert quarantined.status is EffectSettlementStatus.COMMITTED
+    assert quarantined.wake_request == expected
+    assert quarantine_duplicate.status is EffectSettlementStatus.ALREADY_COMMITTED
+    assert quarantine_duplicate.wake_request == expected
+    assert quarantined.mailbox_id is not None
+    assert quarantine_duplicate.mailbox_id == quarantined.mailbox_id
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_settlement_dual_writes_fenced_mailbox_handoff(
+    tmp_path: Path,
+) -> None:
+    """A newly settled fenced outcome records its immutable handoff evidence."""
+
+    now = [100.0]
+    database, store, key, grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    _seed_effect(database, key, effect_id="fenced-handoff-settlement")
+    claim = await store.claim_next(worker_id="fenced-handoff-worker")
+    assert claim is not None
+    envelope = _completion(claim)
+
+    result = await store.complete_with_event(claim, envelope)
+
+    assert result.status is EffectSettlementStatus.COMMITTED
+    assert result.mailbox_id is not None
+    with database.connect() as conn:
+        handoff = conn.execute(
+            """
+            SELECT handoff.mailbox_id, handoff.event_id, handoff.ownership_generation,
+                   handoff.evidence_state, handoff.admission_fence_id,
+                   handoff.admission_fence_generation, handoff.state
+            FROM agent_session_mailbox_handoffs AS handoff
+            JOIN agent_session_mailbox AS mailbox
+              ON mailbox.mailbox_id = handoff.mailbox_id
+            WHERE mailbox.profile_id = ?
+              AND mailbox.session_id = ?
+              AND mailbox.event_id = ?
+            """,
+            (key.profile_id, key.session_id, envelope.event_id),
+        ).fetchone()
+    assert handoff is not None
+    assert result.mailbox_id == int(handoff["mailbox_id"])
+    assert tuple(handoff)[1:] == (
+        envelope.event_id,
+        ownership_generation,
+        MailboxHandoffEvidenceState.FENCED.value,
+        grant.fence.fence_id,
+        grant.fence.generation,
+        MailboxHandoffState.PENDING.value,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_quarantine_dual_writes_unfenced_legacy_handoff(
+    tmp_path: Path,
+) -> None:
+    """A newly written unfenced diagnostic is explicitly blocked as legacy."""
+
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    _seed_effect(database, key, effect_id="legacy-handoff-quarantine")
+    claim = await store.claim_next(worker_id="legacy-handoff-worker")
+    assert claim is not None
+
+    result = await store.quarantine(
+        claim,
+        reason=EffectQuarantineReason.UNSUPPORTED_CONTRACT,
+        message="explicit legacy handoff test",
+    )
+
+    assert result.status is EffectSettlementStatus.COMMITTED
+    assert result.mailbox_id is not None
+    with database.connect() as conn:
+        handoff = conn.execute(
+            """
+            SELECT handoff.evidence_state, handoff.admission_fence_id,
+                   handoff.admission_fence_generation, handoff.state
+            FROM agent_session_mailbox_handoffs AS handoff
+            JOIN agent_session_mailbox AS mailbox
+              ON mailbox.mailbox_id = handoff.mailbox_id
+            WHERE mailbox.profile_id = ?
+              AND mailbox.session_id = ?
+              AND mailbox.event_id = ?
+            """,
+            (key.profile_id, key.session_id, result.event_id),
+        ).fetchone()
+    assert handoff is not None
+    assert tuple(handoff) == (
+        MailboxHandoffEvidenceState.UNFENCED_LEGACY.value,
+        "",
+        0,
+        MailboxHandoffState.BLOCKED.value,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sidecar_state", ("missing", "unknown"))
+async def test_sqlite_effect_replay_never_upgrades_historical_handoff_evidence(
+    tmp_path: Path,
+    sidecar_state: str,
+) -> None:
+    """A replay validates an existing mailbox but never refences it."""
+
+    now = [100.0]
+    database, store, key, _grant, _generation = await _make_fenced_store(tmp_path, now)
+    _seed_effect(database, key, effect_id=f"historical-handoff-{sidecar_state}")
+    claim = await store.claim_next(worker_id=f"historical-{sidecar_state}-worker")
+    assert claim is not None
+    envelope = _completion(claim)
+    payload_json = effect_store_module._json_dumps(envelope.payload)
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation,
+                kind, source, occurred_at,
+                payload_json, causation_id, correlation_id, trace_id,
+                status, attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, handled_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      'pending', 0, ?, '', '', NULL, ?, NULL, '')
+            """,
+            (
+                envelope.event_id,
+                key.profile_id,
+                key.session_id,
+                envelope.ownership_generation,
+                envelope.kind,
+                envelope.source,
+                now[0],
+                payload_json,
+                envelope.causation_id,
+                envelope.correlation_id,
+                envelope.trace_id,
+                now[0],
+                now[0],
+            ),
+        )
+        mailbox = conn.execute(
+            """
+            SELECT mailbox_id FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, envelope.event_id),
+        ).fetchone()
+    assert mailbox is not None
+    mailbox_id = int(mailbox["mailbox_id"])
+    if sidecar_state == "unknown":
+        with database.connect() as conn:
+            conn.execute("DROP TABLE agent_session_mailbox_handoffs")
+        database.initialize()
+
+    result = await store.complete_with_event(claim, envelope)
+
+    assert result.status is EffectSettlementStatus.COMMITTED
+    assert result.mailbox_id == mailbox_id
+    record = database.actor_v2_mailbox_handoffs.read(mailbox_id)
+    if sidecar_state == "missing":
+        assert record is None
+    else:
+        assert record is not None
+        assert record.evidence.state is MailboxHandoffEvidenceState.UNKNOWN
+        assert record.state is MailboxHandoffState.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_expired_model_notice_dual_writes_fenced_handoff(
+    tmp_path: Path,
+) -> None:
+    """Expired model execution evidence retains the original fence in its sidecar."""
+
+    now = [100.0]
+    database, store, key, grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    effect_id = "expired-model-handoff"
+    _seed_model_execution_effect(
+        database,
+        key,
+        effect_id=effect_id,
+        operation_id="expired-model-handoff-operation",
+        now=now[0],
+    )
+    claim = await store.claim_next(worker_id="expired-model-handoff-worker")
+    assert claim is not None
+    witness = SQLiteModelExecutionWitnessStore(database, clock=lambda: now[0])
+    model_claim = ModelExecutionClaim(
+        key=claim.key,
+        ownership_generation=claim.effect.ownership_generation,
+        effect_id=claim.effect.effect_id,
+        operation_id=claim.effect.operation_id,
+        effect_kind=claim.effect.kind,
+        contract_version=claim.effect.contract_version,
+        contract_signature=claim.effect.contract_signature,
+        claim_id=claim.claim_id,
+        worker_id=claim.worker_id,
+    )
+    await witness.begin_execution(model_claim)
+
+    now[0] = 106.0
+    assert await store.recover_expired(worker_id="expired-model-handoff-recovery") == 0
+    notifications = await store.drain_quarantine_notifications()
+
+    assert len(notifications) == 1
+    notice = notifications[0]
+    assert notice.status is EffectSettlementStatus.COMMITTED
+    with database.connect() as conn:
+        handoff = conn.execute(
+            """
+            SELECT handoff.event_id, handoff.ownership_generation,
+                   handoff.evidence_state, handoff.admission_fence_id,
+                   handoff.admission_fence_generation, handoff.state
+            FROM agent_session_mailbox_handoffs AS handoff
+            JOIN agent_session_mailbox AS mailbox
+              ON mailbox.mailbox_id = handoff.mailbox_id
+            WHERE mailbox.profile_id = ?
+              AND mailbox.session_id = ?
+              AND mailbox.event_id = ?
+            """,
+            (key.profile_id, key.session_id, notice.event_id),
+        ).fetchone()
+    assert handoff is not None
+    assert tuple(handoff) == (
+        notice.event_id,
+        ownership_generation,
+        MailboxHandoffEvidenceState.FENCED.value,
+        grant.fence.fence_id,
+        grant.fence.generation,
+        MailboxHandoffState.PENDING.value,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_expired_notice_handoff_trigger_rolls_back_candidate(
+    tmp_path: Path,
+) -> None:
+    """A fence lost after sidecar staging rolls back the entire expiry notice."""
+
+    now = [100.0]
+    database, store, key, _grant, _ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    effect_id = "expired-model-handoff-trigger"
+    _seed_model_execution_effect(
+        database,
+        key,
+        effect_id=effect_id,
+        operation_id="expired-model-handoff-trigger-operation",
+        now=now[0],
+    )
+    claim = await store.claim_next(worker_id="expired-model-trigger-worker")
+    assert claim is not None
+    witness = SQLiteModelExecutionWitnessStore(database, clock=lambda: now[0])
+    await witness.begin_execution(
+        ModelExecutionClaim(
+            key=claim.key,
+            ownership_generation=claim.effect.ownership_generation,
+            effect_id=claim.effect.effect_id,
+            operation_id=claim.effect.operation_id,
+            effect_kind=claim.effect.kind,
+            contract_version=claim.effect.contract_version,
+            contract_signature=claim.effect.contract_signature,
+            claim_id=claim.claim_id,
+            worker_id=claim.worker_id,
+        )
+    )
+    with database.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER remove_expired_notice_fence_after_handoff
+            AFTER INSERT ON agent_session_mailbox_handoffs
+            WHEN NEW.profile_id = 'profile-a'
+              AND NEW.session_id = 'bot:group:fenced-room'
+            BEGIN
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = NEW.profile_id AND session_id = NEW.session_id;
+            END
+            """
+        )
+
+    now[0] = 106.0
+    with pytest.raises(EffectClaimLost, match="ownership generation"):
+        await store.recover_expired(worker_id="expired-model-trigger-recovery")
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner, last_error
+            FROM agent_effect_outbox
+            WHERE effect_id = ?
+            """,
+            (effect_id,),
+        ).fetchone()
+        execution = conn.execute(
+            """
+            SELECT execution_status, unknown_at, unknown_reason
+            FROM agent_model_execution_runs
+            WHERE effect_id = ?
+            """,
+            (effect_id,),
+        ).fetchone()
+        mailbox_count = conn.execute("SELECT COUNT(*) FROM agent_session_mailbox").fetchone()[0]
+        handoff_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox_handoffs"
+        ).fetchone()[0]
+        fence = conn.execute(
+            """
+            SELECT status
+            FROM agent_session_actor_v2_admission_fences
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+    assert effect is not None
+    assert tuple(effect) == ("processing", claim.claim_id, claim.worker_id, "")
+    assert execution is not None
+    assert tuple(execution) == ("running", None, "")
+    assert mailbox_count == 0
+    assert handoff_count == 0
+    assert fence is not None
+    assert fence["status"] == "committed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fence_state", ("missing", "revoked", "expired"))
+async def test_sqlite_effect_settlement_fails_closed_for_invalid_admission_fence(
+    tmp_path: Path,
+    fence_state: str,
+) -> None:
+    """An invalid committed fence cannot emit a mailbox outcome or retry it."""
+
+    now = [100.0]
+    database, store, key, grant, _generation = await _make_fenced_store(tmp_path, now)
+    _seed_effect(database, key)
+    claim = await store.claim_next(worker_id="invalid-fence-worker")
+    assert claim is not None
+    if fence_state == "missing":
+        with database.connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = ? AND session_id = ?
+                """,
+                (key.profile_id, key.session_id),
+            )
+    elif fence_state == "revoked":
+        database.actor_v2_admission_fences.revoke(
+            grant,
+            reason="effect settlement fence test",
+        )
+    else:
+        with database.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_session_actor_v2_admission_fences
+                SET expires_at = 0
+                WHERE profile_id = ? AND session_id = ?
+                """,
+                (key.profile_id, key.session_id),
+            )
+
+    with pytest.raises(EffectClaimLost, match="ownership generation"):
+        await store.complete_with_event(claim, _completion(claim))
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner, completed_at
+            FROM agent_effect_outbox
+            WHERE effect_id = ?
+            """,
+            (claim.effect.effect_id,),
+        ).fetchone()
+        mailbox_count = conn.execute("SELECT COUNT(*) FROM agent_session_mailbox").fetchone()[0]
+    assert effect is not None
+    assert tuple(effect) == ("processing", claim.claim_id, claim.worker_id, None)
+    assert mailbox_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_final_fence_gate_rolls_back_mailbox_and_outbox(
+    tmp_path: Path,
+) -> None:
+    """A fence lost after terminal staging leaves no settlement mutation visible."""
+
+    now = [100.0]
+    database, store, key, _grant, _generation = await _make_fenced_store(tmp_path, now)
+    _seed_effect(database, key)
+    claim = await store.claim_next(worker_id="final-gate-worker")
+    assert claim is not None
+    with database.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER remove_effect_settlement_fence_before_final_gate
+            AFTER UPDATE OF status ON agent_effect_outbox
+            WHEN NEW.effect_id = 'effect-1' AND NEW.status = 'completed'
+            BEGIN
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = NEW.profile_id AND session_id = NEW.session_id;
+            END
+            """
+        )
+
+    with pytest.raises(EffectClaimLost, match="ownership generation"):
+        await store.complete_with_event(claim, _completion(claim))
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner, completed_at
+            FROM agent_effect_outbox
+            WHERE effect_id = ?
+            """,
+            (claim.effect.effect_id,),
+        ).fetchone()
+        mailbox_count = conn.execute("SELECT COUNT(*) FROM agent_session_mailbox").fetchone()[0]
+        handoff_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox_handoffs"
+        ).fetchone()[0]
+        fence = conn.execute(
+            """
+            SELECT status
+            FROM agent_session_actor_v2_admission_fences
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+    assert effect is not None
+    assert tuple(effect) == ("processing", claim.claim_id, claim.worker_id, None)
+    assert mailbox_count == 0
+    assert handoff_count == 0
+    assert fence is not None
+    assert fence["status"] == "committed"
+
+
+@pytest.mark.asyncio
+async def test_sqlite_quarantine_final_fence_gate_rolls_back_all_candidate_writes(
+    tmp_path: Path,
+) -> None:
+    """A lost fence rolls back the diagnostic mailbox, outbox, and gate mutation."""
+
+    now = [100.0]
+    database, store, key, _grant, _generation = await _make_fenced_store(tmp_path, now)
+    _seed_effect(database, key, effect_id="quarantine-final-gate-effect")
+    claim = await store.claim_next(worker_id="quarantine-final-gate-worker")
+    assert claim is not None
+    with database.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER remove_quarantine_fence_before_final_gate
+            AFTER UPDATE OF status ON agent_effect_outbox
+            WHEN NEW.effect_id = 'quarantine-final-gate-effect' AND NEW.status = 'failed'
+            BEGIN
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = NEW.profile_id AND session_id = NEW.session_id;
+            END
+            """
+        )
+
+    with pytest.raises(EffectClaimLost, match="ownership generation"):
+        await store.quarantine(
+            claim,
+            reason=EffectQuarantineReason.UNSUPPORTED_CONTRACT,
+            message="final gate rollback test",
+        )
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner, completed_at, last_error
+            FROM agent_effect_outbox
+            WHERE effect_id = ?
+            """,
+            (claim.effect.effect_id,),
+        ).fetchone()
+        mailbox_count = conn.execute("SELECT COUNT(*) FROM agent_session_mailbox").fetchone()[0]
+        handoff_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox_handoffs"
+        ).fetchone()[0]
+        fence = conn.execute(
+            """
+            SELECT status
+            FROM agent_session_actor_v2_admission_fences
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+    assert effect is not None
+    assert tuple(effect) == ("processing", claim.claim_id, claim.worker_id, None, "")
+    assert mailbox_count == 0
+    assert handoff_count == 0
+    assert fence is not None
+    assert fence["status"] == "committed"
 
 
 @pytest.mark.asyncio
@@ -1466,6 +2657,62 @@ async def test_only_malformed_claim_still_wakes_its_diagnostic_mailbox(
 
 
 @pytest.mark.asyncio
+async def test_malformed_effect_quarantine_returns_exact_fenced_wake_request(
+    tmp_path: Path,
+) -> None:
+    """Store-owned diagnostics retain the final admission-fenced identity."""
+
+    now = [100.0]
+    database, store, key, grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    _seed_effect(database, key, effect_id="fenced-malformed-effect")
+    with database.connect() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET contract_version = 'abc'
+            WHERE effect_id = 'fenced-malformed-effect'
+            """
+        )
+
+    assert await store.claim_next(worker_id="fenced-malformed-worker") is None
+
+    notifications = await store.drain_quarantine_notifications()
+    assert len(notifications) == 1
+    assert notifications[0].status is EffectSettlementStatus.COMMITTED
+    assert notifications[0].wake_request == FencedMailboxWakeRequest(
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_fence_id=grant.fence.fence_id,
+        admission_fence_generation=grant.fence.generation,
+    )
+    with database.connect() as conn:
+        handoff = conn.execute(
+            """
+            SELECT handoff.evidence_state, handoff.admission_fence_id,
+                   handoff.admission_fence_generation, handoff.state
+            FROM agent_session_mailbox_handoffs AS handoff
+            JOIN agent_session_mailbox AS mailbox
+              ON mailbox.mailbox_id = handoff.mailbox_id
+            WHERE mailbox.profile_id = ?
+              AND mailbox.session_id = ?
+              AND mailbox.event_id = ?
+            """,
+            (key.profile_id, key.session_id, notifications[0].event_id),
+        ).fetchone()
+    assert handoff is not None
+    assert tuple(handoff) == (
+        MailboxHandoffEvidenceState.FENCED.value,
+        grant.fence.fence_id,
+        grant.fence.generation,
+        MailboxHandoffState.PENDING.value,
+    )
+
+
+@pytest.mark.asyncio
 async def test_lone_surrogate_is_quarantined_without_blocking_following_work(
     tmp_path: Path,
 ) -> None:
@@ -2143,14 +3390,14 @@ async def test_sqlite_effect_completion_wakes_and_drains_real_session_actor(
     )
     try:
         result = await executor.run_once()
-        await actor_registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, actor_registry, key)
     finally:
         await actor_registry.shutdown()
 
     assert result.status == EffectRunStatus.COMPLETED
     assert handler_calls == 1
-    assert wake_registry.wake_attempts == 1
-    assert wake_registry.recover_attempts == 1
+    assert wake_registry.wake_attempts == 2
+    assert wake_registry.recover_attempts == 0
     aggregate = await actor_store.load(key)
     assert aggregate.data == {"handled_effect_id": "effect-1"}
     assert aggregate.event_sequence == 1
@@ -2460,7 +3707,10 @@ def test_effect_outbox_migration_rebuilds_constraints_and_preserves_rows(
         owner.generation,
         "pending",
     )
-    assert "CHECK(status IN ('pending', 'processing', 'completed', 'failed'))" in (
+    assert (
+        "CHECK(status IN ('pending', 'processing', 'completed', 'failed', "
+        "'cancelled'))"
+    ) in (
         create_sql
     )
 
@@ -2472,7 +3722,8 @@ def test_effect_outbox_migration_rebuilds_constraints_and_preserves_rows(
         """FOREIGN KEY(profile_id, session_id)
             REFERENCES agent_session_aggregates(profile_id, session_id)
             ON DELETE CASCADE,""",
-        "CHECK(status IN ('pending', 'processing', 'completed', 'failed')),",
+        "CHECK(status IN ('pending', 'processing', 'completed', 'failed', "
+        "'cancelled')),",
         "CHECK(attempt_count <= 9223372036854775807),",
     ),
 )

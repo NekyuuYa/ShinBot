@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable, Coroutine
+import uuid
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from shinbot.core.dispatch.agent_identity import SessionKey, SessionKeyFactory
 from shinbot.core.message_analysis import is_self_mentioned
 from shinbot.core.message_routes import CommandMatch
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
@@ -25,36 +29,517 @@ if TYPE_CHECKING:
 logger = get_logger(__name__, source="dispatch", color="cyan")
 
 
+@dataclass(slots=True, frozen=True)
+class WaitingInputScope:
+    """Bind one legacy waiter to its base and optional Actor routing identity."""
+
+    legacy_session_id: str
+    session_key: SessionKey | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize the base session identifier used by legacy waiters."""
+
+        legacy_session_id = str(self.legacy_session_id or "").strip()
+        if not legacy_session_id:
+            raise ValueError("legacy_session_id must not be empty")
+        if self.session_key is not None and not isinstance(self.session_key, SessionKey):
+            raise TypeError("session_key must be a SessionKey or None")
+        object.__setattr__(self, "legacy_session_id", legacy_session_id)
+
+    @classmethod
+    def from_routing_identity(
+        cls,
+        *,
+        legacy_session_id: str,
+        bot_id: str = "",
+        bot_session_id: str = "",
+    ) -> WaitingInputScope:
+        """Build the exact waiter scope from the same identity ingress owns."""
+
+        return cls(
+            legacy_session_id=legacy_session_id,
+            session_key=SessionKeyFactory().create(
+                bot_config_id=bot_id,
+                bot_id=bot_id,
+                bot_session_id=bot_session_id,
+                base_session_id=legacy_session_id,
+            ),
+        )
+
+    def matches(self, other: WaitingInputScope) -> bool:
+        """Return whether two scopes may safely share one legacy waiter slot."""
+
+        if self.legacy_session_id != other.legacy_session_id:
+            return False
+        return self.session_key == other.session_key
+
+
+@dataclass(slots=True, frozen=True)
+class WaitingInputLease:
+    """Opaque single-slot claim held by one interactive handler."""
+
+    scope: WaitingInputScope
+    token: str
+    future: asyncio.Future[str]
+    managed: bool
+
+
+@dataclass(slots=True, frozen=True)
+class WaitingInputLeaseInspection:
+    """Read-only local ownership facts used before a lifecycle freeze."""
+
+    scope: WaitingInputScope
+    managed: bool
+    owner_task_done: bool
+
+
+class WaitingInputConsumeDisposition(StrEnum):
+    """Outcome from one atomic attempt to consume a legacy waiter."""
+
+    CONSUMED = "consumed"
+    ABSENT = "absent"
+    FROZEN = "frozen"
+    SCOPE_MISMATCH = "scope_mismatch"
+
+
+@dataclass(slots=True, frozen=True)
+class WaitingInputFreezeTicket:
+    """Opaque local freeze authority for one scoped legacy waiter slot."""
+
+    scope: WaitingInputScope
+    cutover_id: str
+    token: str
+
+
+@dataclass(slots=True, frozen=True)
+class WaitingInputQuiescenceReceipt:
+    """Observable result from waiting for a locally frozen waiter to stop."""
+
+    ticket: WaitingInputFreezeTicket
+    quiescent: bool
+    reason: str = ""
+
+
+class WaitingInputConflict(RuntimeError):
+    """Raised when a session attempts to register more than one live waiter."""
+
+
+class WaitingInputFrozen(RuntimeError):
+    """Raised when a local cutover freeze rejects a new waiter registration."""
+
+
+class WaitingInputScopeConflict(RuntimeError):
+    """Raised when one base session is associated with conflicting scopes."""
+
+
+class WaitingInputFreezeError(RuntimeError):
+    """Raised when a freeze ticket no longer names the current local freeze."""
+
+
+@dataclass(slots=True)
+class _WaitingInputLeaseState:
+    """Mutable lifecycle evidence retained until the handler releases its lease."""
+
+    lease: WaitingInputLease
+    owner_task: asyncio.Task[Any] | None
+    finalized: asyncio.Event
+    open: bool = True
+
+
+@dataclass(slots=True)
+class _WaitingInputFreezeState:
+    """One immutable snapshot of leases that must drain before a cutover."""
+
+    ticket: WaitingInputFreezeTicket
+    leases: tuple[_WaitingInputLeaseState, ...]
+
+
 class WaitingInputRegistry:
-    """Tracks sessions that are waiting for the next user message."""
+    """Track one tokenized interactive waiter slot per legacy base session.
+
+    The registry is intentionally process-local. Its freeze/quiescence API is
+    a future lifecycle-controller primitive, not a replacement for a durable
+    admission fence or a cross-process ingress barrier.
+
+    A freeze is deliberately base-session-wide. Legacy handlers and their
+    session lock share only that base identity, so a local drain cannot accept
+    another bot scope for the same base session while one scope is frozen.
+    """
 
     def __init__(self) -> None:
-        self._waiting: dict[str, asyncio.Future[str]] = {}
+        self._open_by_session: dict[str, _WaitingInputLeaseState] = {}
+        self._lease_by_session: dict[str, _WaitingInputLeaseState] = {}
+        self._lease_by_token: dict[str, _WaitingInputLeaseState] = {}
+        self._freeze_by_session: dict[str, _WaitingInputFreezeState] = {}
 
     def is_waiting(self, session_id: str) -> bool:
-        """Return whether a session is currently waiting for user input."""
-        return session_id in self._waiting
+        """Return whether a session has an open waiter that ingress may consume."""
+
+        state = self._open_by_session.get(session_id)
+        return state is not None and state.open
+
+    def open_scope(self, session_id: str) -> WaitingInputScope | None:
+        """Return the scope of one open waiter without consuming it."""
+
+        state = self._open_by_session.get(session_id)
+        return state.lease.scope if state is not None and state.open else None
+
+    def active_lease_inspection(
+        self,
+        session_id: str,
+    ) -> WaitingInputLeaseInspection | None:
+        """Return drain-relevant ownership facts for a live handler lease."""
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id must not be empty")
+        state = self._lease_by_session.get(normalized_session_id)
+        if state is None:
+            return None
+        owner_task = state.owner_task
+        return WaitingInputLeaseInspection(
+            scope=state.lease.scope,
+            managed=state.lease.managed,
+            owner_task_done=owner_task is None or owner_task.done(),
+        )
+
+    def is_frozen(self, session_id: str) -> bool:
+        """Return whether local lifecycle control froze this base session slot."""
+
+        return session_id in self._freeze_by_session
+
+    def active_freeze_ticket(
+        self,
+        session_id: str,
+    ) -> WaitingInputFreezeTicket | None:
+        """Return the current local waiter freeze without changing its state."""
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id must not be empty")
+        frozen = self._freeze_by_session.get(normalized_session_id)
+        return None if frozen is None else frozen.ticket
 
     def register(self, session_id: str) -> asyncio.Future[str]:
-        """Create and store a Future for the given session."""
+        """Register an unscoped compatibility waiter and return its Future.
+
+        New framework code should call :meth:`acquire` and always release the
+        returned lease in ``finally``. Compatibility waiters are auto-released
+        on Future completion and therefore cannot establish handler quiescence.
+        """
+
+        lease = self.acquire(
+            WaitingInputScope(session_id),
+            track_owner=False,
+        )
+        lease.future.add_done_callback(lambda _future: self.release(lease))
+        return lease.future
+
+    def acquire(
+        self,
+        scope: WaitingInputScope,
+        *,
+        owner_task: asyncio.Task[Any] | None = None,
+        track_owner: bool = True,
+    ) -> WaitingInputLease:
+        """Acquire one scoped lease for an interactive handler.
+
+        Raises:
+            WaitingInputConflict: If an earlier handler still owns the slot.
+            WaitingInputFrozen: If lifecycle control froze the base session.
+        """
+
+        if not isinstance(scope, WaitingInputScope):
+            raise TypeError("scope must be a WaitingInputScope")
+        session_id = scope.legacy_session_id
+        if session_id in self._freeze_by_session:
+            raise WaitingInputFrozen(
+                f"session {session_id!r} is frozen for lifecycle quiescence"
+            )
+        existing = self._lease_by_session.get(session_id)
+        if existing is not None:
+            if not existing.lease.scope.matches(scope):
+                raise WaitingInputScopeConflict(
+                    f"session {session_id!r} already belongs to another waiter scope"
+                )
+            raise WaitingInputConflict(
+                f"session {session_id!r} already waits for user input"
+            )
+        if track_owner and owner_task is None:
+            owner_task = asyncio.current_task()
+        managed = track_owner and owner_task is not None
+        if not managed:
+            owner_task = None
         loop = asyncio.get_event_loop()
-        fut: asyncio.Future[str] = loop.create_future()
-        self._waiting[session_id] = fut
-        return fut
+        future: asyncio.Future[str] = loop.create_future()
+        lease = WaitingInputLease(
+            scope=scope,
+            token=uuid.uuid4().hex,
+            future=future,
+            managed=managed,
+        )
+        state = _WaitingInputLeaseState(
+            lease=lease,
+            owner_task=owner_task,
+            finalized=asyncio.Event(),
+        )
+        self._open_by_session[session_id] = state
+        self._lease_by_session[session_id] = state
+        self._lease_by_token[lease.token] = state
+        return lease
+
+    def try_consume_open(
+        self,
+        scope: WaitingInputScope,
+        text: str,
+    ) -> WaitingInputConsumeDisposition:
+        """Atomically consume an open waiter only when its scope still matches."""
+
+        if not isinstance(scope, WaitingInputScope):
+            raise TypeError("scope must be a WaitingInputScope")
+        session_id = scope.legacy_session_id
+        if session_id in self._freeze_by_session:
+            return WaitingInputConsumeDisposition.FROZEN
+        state = self._open_by_session.get(session_id)
+        if state is None or not state.open:
+            return WaitingInputConsumeDisposition.ABSENT
+        if not state.lease.scope.matches(scope):
+            return WaitingInputConsumeDisposition.SCOPE_MISMATCH
+        if state.lease.future.done():
+            # A timeout or cancellation may finish the Future before its
+            # owning handler reaches ``finally``. It is no longer eligible for
+            # delivery, but its exact lease remains until that cleanup runs.
+            state.open = False
+            self._open_by_session.pop(session_id, None)
+            return WaitingInputConsumeDisposition.ABSENT
+        state.open = False
+        self._open_by_session.pop(session_id, None)
+        if not state.lease.future.done():
+            state.lease.future.set_result(text)
+        return WaitingInputConsumeDisposition.CONSUMED
 
     def resolve(self, session_id: str, text: str) -> bool:
-        """Resolve the pending Future with received text. Returns True if resolved."""
-        fut = self._waiting.pop(session_id, None)
-        if fut is not None and not fut.done():
-            fut.set_result(text)
-            return True
-        return False
+        """Consume one compatibility waiter and return whether it accepted text."""
+
+        return (
+            self.try_consume_open(WaitingInputScope(session_id), text)
+            is WaitingInputConsumeDisposition.CONSUMED
+        )
 
     def cancel(self, session_id: str) -> None:
-        """Cancel and remove the pending Future."""
-        fut = self._waiting.pop(session_id, None)
-        if fut is not None and not fut.done():
-            fut.cancel()
+        """Cancel one unscoped compatibility waiter by its legacy session id."""
+
+        state = self._open_by_session.get(session_id)
+        if state is None or state.lease.scope.session_key is not None:
+            return
+        self._open_by_session.pop(session_id, None)
+        state.open = False
+        if not state.lease.future.done():
+            state.lease.future.cancel()
+
+    def release(self, lease: WaitingInputLease) -> bool:
+        """Release one exact lease after its owning handler exits its wait block."""
+
+        state = self._lease_by_token.get(lease.token)
+        if state is None or state.lease is not lease:
+            return False
+        session_id = lease.scope.legacy_session_id
+        if self._open_by_session.get(session_id) is state:
+            self._open_by_session.pop(session_id, None)
+        if self._lease_by_session.get(session_id) is state:
+            self._lease_by_session.pop(session_id, None)
+        self._lease_by_token.pop(lease.token, None)
+        state.open = False
+        if not state.lease.future.done():
+            state.lease.future.cancel()
+        state.finalized.set()
+        return True
+
+    def freeze(
+        self,
+        scope: WaitingInputScope,
+        *,
+        cutover_id: str,
+    ) -> WaitingInputFreezeTicket:
+        """Freeze one local slot, reject new waiters, and cancel its open Future."""
+
+        if not isinstance(scope, WaitingInputScope):
+            raise TypeError("scope must be a WaitingInputScope")
+        normalized_cutover_id = str(cutover_id or "").strip()
+        if not normalized_cutover_id:
+            raise ValueError("cutover_id must not be empty")
+        session_id = scope.legacy_session_id
+        existing_freeze = self._freeze_by_session.get(session_id)
+        if existing_freeze is not None:
+            if (
+                existing_freeze.ticket.scope == scope
+                and existing_freeze.ticket.cutover_id == normalized_cutover_id
+            ):
+                return existing_freeze.ticket
+            raise WaitingInputFrozen(
+                f"session {session_id!r} is already frozen for another cutover"
+            )
+        state = self._lease_by_session.get(session_id)
+        if state is not None and not state.lease.scope.matches(scope):
+            raise WaitingInputScopeConflict(
+                f"session {session_id!r} has a waiter for another scope"
+            )
+        ticket = WaitingInputFreezeTicket(
+            scope=scope,
+            cutover_id=normalized_cutover_id,
+            token=uuid.uuid4().hex,
+        )
+        leases = (state,) if state is not None else ()
+        self._freeze_by_session[session_id] = _WaitingInputFreezeState(
+            ticket=ticket,
+            leases=leases,
+        )
+        if state is not None and state.open:
+            self._open_by_session.pop(session_id, None)
+            state.open = False
+            if not state.lease.future.done():
+                state.lease.future.cancel()
+        return ticket
+
+    async def await_quiescent(
+        self,
+        ticket: WaitingInputFreezeTicket,
+        *,
+        timeout: float | None,
+    ) -> WaitingInputQuiescenceReceipt:
+        """Wait for frozen leases and their managed handler tasks to finish."""
+
+        frozen = self._require_freeze(ticket)
+        if timeout is not None and timeout < 0:
+            raise ValueError("timeout must be non-negative or None")
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+
+        unmanaged = tuple(
+            state.lease.token for state in frozen.leases if not state.lease.managed
+        )
+        if unmanaged:
+            return WaitingInputQuiescenceReceipt(
+                ticket=ticket,
+                quiescent=False,
+                reason="unmanaged_waiter",
+            )
+        owner_tasks = tuple(
+            state.owner_task
+            for state in frozen.leases
+            if state.owner_task is not None
+        )
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task in owner_tasks:
+            return WaitingInputQuiescenceReceipt(
+                ticket=ticket,
+                quiescent=False,
+                reason="owner_task_is_current",
+            )
+        finalized = tuple(
+            state.finalized.wait()
+            for state in frozen.leases
+            if not state.finalized.is_set()
+        )
+        if finalized and not await self._await_all(finalized, deadline):
+            if not self._freeze_is_current(ticket):
+                return self._freeze_lost_receipt(ticket)
+            return WaitingInputQuiescenceReceipt(
+                ticket=ticket,
+                quiescent=False,
+                reason="lease_release_timeout",
+            )
+        if not self._freeze_is_current(ticket):
+            return self._freeze_lost_receipt(ticket)
+        task_waits = tuple(asyncio.shield(task) for task in owner_tasks if not task.done())
+        if task_waits and not await self._await_all(task_waits, deadline):
+            if not self._freeze_is_current(ticket):
+                return self._freeze_lost_receipt(ticket)
+            return WaitingInputQuiescenceReceipt(
+                ticket=ticket,
+                quiescent=False,
+                reason="owner_task_timeout",
+            )
+        if not self._freeze_is_current(ticket):
+            return self._freeze_lost_receipt(ticket)
+        return WaitingInputQuiescenceReceipt(ticket=ticket, quiescent=True)
+
+    def thaw(self, ticket: WaitingInputFreezeTicket) -> bool:
+        """Release a locally quiescent freeze without restoring cancelled input.
+
+        Raises:
+            WaitingInputFreezeError: If the snapshot cannot yet prove local
+                handler quiescence.
+        """
+
+        frozen = self._require_freeze(ticket)
+        if not self._freeze_snapshot_is_quiescent(frozen):
+            raise WaitingInputFreezeError(
+                "cannot thaw a freeze before every scoped handler has stopped"
+            )
+        self._freeze_by_session.pop(frozen.ticket.scope.legacy_session_id, None)
+        return True
+
+    def _require_freeze(
+        self,
+        ticket: WaitingInputFreezeTicket,
+    ) -> _WaitingInputFreezeState:
+        if not isinstance(ticket, WaitingInputFreezeTicket):
+            raise TypeError("ticket must be a WaitingInputFreezeTicket")
+        frozen = self._freeze_by_session.get(ticket.scope.legacy_session_id)
+        if frozen is None or frozen.ticket != ticket:
+            raise WaitingInputFreezeError("freeze ticket is no longer active")
+        return frozen
+
+    def _freeze_is_current(self, ticket: WaitingInputFreezeTicket) -> bool:
+        """Return whether one receipt still refers to the active freeze epoch."""
+
+        frozen = self._freeze_by_session.get(ticket.scope.legacy_session_id)
+        return frozen is not None and frozen.ticket == ticket
+
+    @staticmethod
+    def _freeze_snapshot_is_quiescent(frozen: _WaitingInputFreezeState) -> bool:
+        """Return whether a frozen snapshot can safely permit a new waiter."""
+
+        for state in frozen.leases:
+            if not state.finalized.is_set() or not state.lease.managed:
+                return False
+            if state.owner_task is None or not state.owner_task.done():
+                return False
+        return True
+
+    @staticmethod
+    def _freeze_lost_receipt(
+        ticket: WaitingInputFreezeTicket,
+    ) -> WaitingInputQuiescenceReceipt:
+        """Return a negative receipt when the lifecycle epoch changed mid-drain."""
+
+        return WaitingInputQuiescenceReceipt(
+            ticket=ticket,
+            quiescent=False,
+            reason="freeze_lost",
+        )
+
+    async def _await_all(
+        self,
+        awaitables: tuple[Awaitable[Any], ...],
+        deadline: float | None,
+    ) -> bool:
+        """Await a group against one absolute timeout without cancelling it."""
+
+        if not awaitables:
+            return True
+        timeout = None
+        if deadline is not None:
+            timeout = max(0.0, deadline - asyncio.get_running_loop().time())
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*awaitables, return_exceptions=True),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            return False
+        return True
 
 
 class MessageContext:
@@ -383,10 +868,20 @@ class MessageContext:
         if prompt:
             await self.send(prompt)
 
-        fut = self._waiting_registry.register(self.session_id)
-        if timeout is not None:
-            return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
-        return await fut
+        scope = WaitingInputScope.from_routing_identity(
+            legacy_session_id=self.session_id,
+            bot_id=self.bot_id,
+            bot_session_id=self.bot_session_id,
+        )
+        lease = self._waiting_registry.acquire(scope)
+        try:
+            if timeout is not None:
+                return await asyncio.wait_for(lease.future, timeout=timeout)
+            return await lease.future
+        finally:
+            # Token matching ensures a finished handler cannot release a
+            # later handler's waiter.
+            self._waiting_registry.release(lease)
 
 
 Interceptor = Callable[[MessageContext], Coroutine[Any, Any, bool]]

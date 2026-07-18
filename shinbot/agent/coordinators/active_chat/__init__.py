@@ -14,6 +14,9 @@ __all__ = [
     "ActiveChatCoordinator",
     "ActiveChatMessageSignal",
     "ActiveChatNotifyResult",
+    "ActiveChatRoundCommitDecision",
+    "ActiveChatRoundCommitHandler",
+    "ActiveChatRoundCommitIntent",
     "ActiveChatRoundHandler",
     "ActiveChatRoundResult",
     "ActiveChatStartResult",
@@ -25,6 +28,7 @@ __all__ = [
 
 _EXPORT_MODULES = {
     "ActiveChatCoordinator": "shinbot.agent.coordinators.active_chat.coordinator",
+    "ActiveChatRoundCommitHandler": "shinbot.agent.coordinators.active_chat.coordinator",
     "ActiveChatRoundHandler": "shinbot.agent.coordinators.active_chat.coordinator",
     "ActiveChatAttention": "shinbot.agent.coordinators.active_chat.attention",
     "ActiveChatAttentionConfig": "shinbot.agent.coordinators.active_chat.attention",
@@ -37,6 +41,8 @@ _EXPORT_MODULES = {
     "ActiveChatBatch": "shinbot.agent.coordinators.active_chat.models",
     "ActiveChatMessageSignal": "shinbot.agent.coordinators.active_chat.models",
     "ActiveChatNotifyResult": "shinbot.agent.coordinators.active_chat.models",
+    "ActiveChatRoundCommitDecision": "shinbot.agent.coordinators.active_chat.models",
+    "ActiveChatRoundCommitIntent": "shinbot.agent.coordinators.active_chat.models",
     "ActiveChatRoundResult": "shinbot.agent.coordinators.active_chat.models",
     "ActiveChatStartResult": "shinbot.agent.coordinators.active_chat.models",
 }

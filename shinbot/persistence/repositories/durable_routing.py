@@ -9,7 +9,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from shinbot.core.dispatch.agent_delivery import AgentRouteDelivery
@@ -22,6 +22,7 @@ from shinbot.core.dispatch.durable_routing import (
     MessageRoutingJobEnvelope,
     MessageRoutingJobStatus,
 )
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.routing import (
     MessageRoutingSkipReason,
@@ -36,6 +37,105 @@ if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
 
 _ROUTE_DECISION_VERSION = 1
+
+
+def _routing_job_work_eligibility(table_name: str) -> str:
+    """Return SQL that admits only active owners with a valid optional fence."""
+
+    if table_name != "message_routing_jobs":
+        raise ValueError("unsupported routing job table")
+    return f"""
+        (
+            (
+                {table_name}.profile_id = ''
+                AND {table_name}.session_id = ''
+                AND {table_name}.ownership_generation = 0
+                AND {table_name}.admission_fence_id = ''
+                AND {table_name}.admission_fence_generation = 0
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM agent_session_runtime_ownership AS ownership
+                WHERE ownership.profile_id = {table_name}.profile_id
+                  AND ownership.session_id = {table_name}.session_id
+                  AND ownership.status = 'active'
+                  AND ownership.generation = {table_name}.ownership_generation
+                  AND (
+                      (
+                          {table_name}.admission_fence_id = ''
+                          AND {table_name}.admission_fence_generation = 0
+                          AND ownership.admission_fence_id = ''
+                          AND ownership.admission_fence_generation = 0
+                      )
+                      OR (
+                          ownership.mode = 'actor_v2'
+                          AND {table_name}.admission_fence_id != ''
+                          AND {table_name}.admission_fence_generation >= 1
+                          AND ownership.admission_fence_id =
+                              {table_name}.admission_fence_id
+                          AND ownership.admission_fence_generation =
+                              {table_name}.admission_fence_generation
+                          AND EXISTS (
+                              SELECT 1
+                              FROM agent_session_actor_v2_admission_fences AS fence
+                              WHERE fence.profile_id = {table_name}.profile_id
+                                AND fence.session_id = {table_name}.session_id
+                                AND fence.fence_id = {table_name}.admission_fence_id
+                                AND fence.generation =
+                                    {table_name}.admission_fence_generation
+                                AND fence.status = 'committed'
+                                AND fence.expires_at > ?
+                          )
+                      )
+                  )
+            )
+        )
+    """
+
+
+def _route_outbox_work_eligibility(table_name: str) -> str:
+    """Return SQL that admits only the matching active Actor v2 owner."""
+
+    if table_name != "agent_route_outbox":
+        raise ValueError("unsupported Agent route outbox table")
+    return f"""
+        EXISTS (
+            SELECT 1
+            FROM agent_session_runtime_ownership AS ownership
+            WHERE ownership.profile_id = {table_name}.profile_id
+              AND ownership.session_id = {table_name}.session_id
+              AND ownership.mode = 'actor_v2'
+              AND ownership.status = 'active'
+              AND ownership.generation = {table_name}.ownership_generation
+              AND (
+                  (
+                      {table_name}.admission_fence_id = ''
+                      AND {table_name}.admission_fence_generation = 0
+                      AND ownership.admission_fence_id = ''
+                      AND ownership.admission_fence_generation = 0
+                  )
+                  OR (
+                      {table_name}.admission_fence_id != ''
+                      AND {table_name}.admission_fence_generation >= 1
+                      AND ownership.admission_fence_id =
+                          {table_name}.admission_fence_id
+                      AND ownership.admission_fence_generation =
+                          {table_name}.admission_fence_generation
+                      AND EXISTS (
+                          SELECT 1
+                          FROM agent_session_actor_v2_admission_fences AS fence
+                          WHERE fence.profile_id = {table_name}.profile_id
+                            AND fence.session_id = {table_name}.session_id
+                            AND fence.fence_id = {table_name}.admission_fence_id
+                            AND fence.generation =
+                                {table_name}.admission_fence_generation
+                            AND fence.status = 'committed'
+                            AND fence.expires_at > ?
+                      )
+                  )
+              )
+        )
+    """
 
 
 class DurableRoutingError(RuntimeError):
@@ -124,6 +224,8 @@ class ClaimedAgentRouteDelivery:
     correlation_id: str
     causation_id: str
     ownership_generation: int
+    admission_fence_id: str
+    admission_fence_generation: int
     claim_id: str
     worker_id: str
     attempt_count: int
@@ -143,15 +245,111 @@ class RouteRelayResult:
 
     delivery_id: str
     event_id: str
+    mailbox_id: int
     profile_id: str
     session_id: str
     mailbox_inserted: bool
+    wake_request: FencedMailboxWakeRequest
+
+    def __post_init__(self) -> None:
+        """Require the exact committed mailbox identity for post-commit hints."""
+
+        if isinstance(self.mailbox_id, bool) or not isinstance(self.mailbox_id, int):
+            raise ValueError("mailbox_id must be an integer")
+        if self.mailbox_id < 1:
+            raise ValueError("mailbox_id must be positive")
 
     @property
     def duplicate(self) -> bool:
         """Return whether the canonical mailbox event already existed."""
 
         return not self.mailbox_inserted
+
+
+@dataclass(slots=True, frozen=True)
+class RouteWakeCursor:
+    """Stable keyset position for one current route mailbox wake debt."""
+
+    mailbox_id: int
+    profile_id: str
+    session_id: str
+    ownership_generation: int
+    admission_fence_id: str = ""
+    admission_fence_generation: int = 0
+
+    def __post_init__(self) -> None:
+        """Reject a cursor that cannot identify one ordered mailbox debt row."""
+
+        if isinstance(self.mailbox_id, bool) or not isinstance(self.mailbox_id, int):
+            raise ValueError("mailbox_id must be an integer")
+        if self.mailbox_id < 1:
+            raise ValueError("mailbox_id must be positive")
+        profile_id = str(self.profile_id or "").strip()
+        session_id = str(self.session_id or "").strip()
+        if not profile_id or not session_id:
+            raise ValueError("route wake cursor requires a complete session key")
+        if (
+            isinstance(self.ownership_generation, bool)
+            or not isinstance(self.ownership_generation, int)
+            or self.ownership_generation < 1
+        ):
+            raise ValueError("ownership_generation must be a positive integer")
+        fence_id = str(self.admission_fence_id or "").strip()
+        fence_generation = self.admission_fence_generation
+        if isinstance(fence_generation, bool) or not isinstance(fence_generation, int):
+            raise ValueError("admission_fence_generation must be an integer")
+        if fence_generation < 0 or bool(fence_id) != bool(fence_generation):
+            raise ValueError("route wake cursor fence identity is inconsistent")
+        object.__setattr__(self, "profile_id", profile_id)
+        object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "admission_fence_id", fence_id)
+
+
+@dataclass(slots=True, frozen=True)
+class PendingRouteWakeDebt:
+    """One pending route mailbox event for an exact Actor incarnation.
+
+    ``FencedMailboxWakeRequest`` deliberately identifies an Actor ownership
+    incarnation, not an individual mailbox row.  Keeping the event identity
+    alongside it lets a supervisor acknowledge one post-commit wake without
+    suppressing a later route delivery for that same Actor.
+    """
+
+    request: FencedMailboxWakeRequest
+    event_id: str
+    cursor: RouteWakeCursor | None = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Reject incomplete cache identities before they suppress retries."""
+
+        if not isinstance(self.request, FencedMailboxWakeRequest):
+            raise TypeError("request must be a FencedMailboxWakeRequest")
+        event_id = str(self.event_id or "").strip()
+        if not event_id:
+            raise ValueError("event_id must not be empty")
+        cursor = self.cursor
+        if cursor is not None:
+            if not isinstance(cursor, RouteWakeCursor):
+                raise TypeError("cursor must be a RouteWakeCursor")
+            if (
+                cursor.profile_id != self.request.key.profile_id
+                or cursor.session_id != self.request.key.session_id
+                or cursor.ownership_generation != self.request.ownership_generation
+                or cursor.admission_fence_id != self.request.admission_fence_id
+                or cursor.admission_fence_generation
+                != self.request.admission_fence_generation
+            ):
+                raise ValueError("route wake cursor differs from its request identity")
+        object.__setattr__(self, "event_id", event_id)
+
+
+@dataclass(slots=True, frozen=True)
+class _CapturedOutboxAdmission:
+    """Identity captured before a route-decision candidate can mutate durable rows."""
+
+    delivery_id: str
+    request: FencedMailboxWakeRequest
+    inserted: bool
 
 
 class DurableMessageRoutingRepository(Repository):
@@ -184,6 +382,12 @@ class DurableMessageRoutingRepository(Repository):
         self._database = db
 
     @property
+    def legacy_recovery_gate(self) -> object:
+        """Return the database-wide gate used before guarded legacy recovery."""
+
+        return self._database.actor_v2_legacy_recovery_gate
+
+    @property
     def lease_seconds(self) -> float:
         """Return the configured claim lease duration."""
 
@@ -209,17 +413,21 @@ class DurableMessageRoutingRepository(Repository):
         available_at = envelope.available_at or now
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            existing = self._find_job_by_identity(conn, envelope)
+            persisted_envelope = self._resolve_admission_envelope_for_persistence(
+                conn,
+                envelope,
+            )
+            existing = self._find_job_by_identity(conn, persisted_envelope)
             if existing is not None:
                 self._validate_existing_job(
                     existing,
-                    envelope=envelope,
+                    envelope=persisted_envelope,
                     message_fingerprint=message_fingerprint,
                     payload_json=payload_json,
                     payload_digest=payload_digest,
                 )
                 return PersistRoutingJobResult(
-                    routing_job_id=envelope.job_id,
+                    routing_job_id=persisted_envelope.job_id,
                     message_log_id=int(existing["message_log_id"]),
                     inserted=False,
                     status=_job_status(str(existing["status"])),
@@ -231,26 +439,29 @@ class DurableMessageRoutingRepository(Repository):
                 INSERT INTO message_routing_jobs (
                     routing_job_id, idempotency_key, message_log_id, version,
                     profile_id, session_id, ownership_generation,
+                    admission_fence_id, admission_fence_generation,
                     message_fingerprint, payload_json, payload_digest,
                     trace_id, correlation_id, causation_id, occurred_at, status,
                     attempt_count, available_at, claim_id, lease_owner,
                     lease_until, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, ?)
                 """,
                 (
-                    envelope.job_id,
-                    envelope.idempotency_key,
+                    persisted_envelope.job_id,
+                    persisted_envelope.idempotency_key,
                     message_log_id,
-                    envelope.version,
-                    envelope.profile_id,
-                    envelope.session_id,
-                    envelope.ownership_generation,
+                    persisted_envelope.version,
+                    persisted_envelope.profile_id,
+                    persisted_envelope.session_id,
+                    persisted_envelope.ownership_generation,
+                    persisted_envelope.admission_fence_id,
+                    persisted_envelope.admission_fence_generation,
                     message_fingerprint,
                     payload_json,
                     payload_digest,
-                    envelope.trace_id,
-                    envelope.correlation_id,
-                    envelope.causation_id,
+                    persisted_envelope.trace_id,
+                    persisted_envelope.correlation_id,
+                    persisted_envelope.causation_id,
                     occurred_at,
                     available_at,
                     now,
@@ -259,7 +470,7 @@ class DurableMessageRoutingRepository(Repository):
             )
         record.id = message_log_id
         return PersistRoutingJobResult(
-            routing_job_id=envelope.job_id,
+            routing_job_id=persisted_envelope.job_id,
             message_log_id=message_log_id,
             inserted=True,
             status=MessageRoutingJobStatus.PENDING,
@@ -290,41 +501,27 @@ class DurableMessageRoutingRepository(Repository):
         now = self._clock()
         lease_expires_at = now + self._lease_seconds
         claim_id = uuid.uuid4().hex
+        eligibility = _routing_job_work_eligibility("message_routing_jobs")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM message_routing_jobs
                 WHERE (
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                 )
-                  AND (
-                    (
-                        profile_id = ''
-                        AND session_id = ''
-                        AND ownership_generation = 0
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM agent_session_runtime_ownership AS ownership
-                        WHERE ownership.profile_id = message_routing_jobs.profile_id
-                          AND ownership.session_id = message_routing_jobs.session_id
-                          AND ownership.status = 'active'
-                          AND ownership.generation =
-                              message_routing_jobs.ownership_generation
-                    )
-                )
+                  AND {eligibility}
                 ORDER BY routing_job_seq ASC
                 LIMIT 1
                 """,
-                (now, now),
+                (now, now, now),
             ).fetchone()
             if row is None:
                 return None
             updated = conn.execute(
-                """
+                f"""
                 UPDATE message_routing_jobs
                 SET status = 'processing',
                     attempt_count = attempt_count + 1,
@@ -339,22 +536,7 @@ class DurableMessageRoutingRepository(Repository):
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                   )
-                  AND (
-                    (
-                        profile_id = ''
-                        AND session_id = ''
-                        AND ownership_generation = 0
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM agent_session_runtime_ownership AS ownership
-                        WHERE ownership.profile_id = message_routing_jobs.profile_id
-                          AND ownership.session_id = message_routing_jobs.session_id
-                          AND ownership.status = 'active'
-                          AND ownership.generation =
-                              message_routing_jobs.ownership_generation
-                    )
-                  )
+                  AND {eligibility}
                 """,
                 (
                     claim_id,
@@ -362,6 +544,7 @@ class DurableMessageRoutingRepository(Repository):
                     lease_expires_at,
                     now,
                     row["routing_job_seq"],
+                    now,
                     now,
                     now,
                 ),
@@ -401,10 +584,11 @@ class DurableMessageRoutingRepository(Repository):
         lease_expires_at = now + self._lease_seconds
         claim_id = uuid.uuid4().hex
         ignore_deadline = 1 if ignore_available_at else 0
+        eligibility = _routing_job_work_eligibility("message_routing_jobs")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM message_routing_jobs
                 WHERE routing_job_id = ?
@@ -418,29 +602,14 @@ class DurableMessageRoutingRepository(Repository):
                         AND COALESCE(lease_until, 0) <= ?
                     )
                   )
-                  AND (
-                    (
-                        profile_id = ''
-                        AND session_id = ''
-                        AND ownership_generation = 0
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM agent_session_runtime_ownership AS ownership
-                        WHERE ownership.profile_id = message_routing_jobs.profile_id
-                          AND ownership.session_id = message_routing_jobs.session_id
-                          AND ownership.status = 'active'
-                          AND ownership.generation =
-                              message_routing_jobs.ownership_generation
-                    )
-                  )
+                  AND {eligibility}
                 """,
-                (job_id, ignore_deadline, now, now),
+                (job_id, ignore_deadline, now, now, now),
             ).fetchone()
             if row is None:
                 return None
             updated = conn.execute(
-                """
+                f"""
                 UPDATE message_routing_jobs
                 SET status = 'processing',
                     attempt_count = attempt_count + 1,
@@ -461,22 +630,7 @@ class DurableMessageRoutingRepository(Repository):
                         AND COALESCE(lease_until, 0) <= ?
                     )
                   )
-                  AND (
-                    (
-                        profile_id = ''
-                        AND session_id = ''
-                        AND ownership_generation = 0
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM agent_session_runtime_ownership AS ownership
-                        WHERE ownership.profile_id = message_routing_jobs.profile_id
-                          AND ownership.session_id = message_routing_jobs.session_id
-                          AND ownership.status = 'active'
-                          AND ownership.generation =
-                              message_routing_jobs.ownership_generation
-                    )
-                  )
+                  AND {eligibility}
                 """,
                 (
                     claim_id,
@@ -485,6 +639,7 @@ class DurableMessageRoutingRepository(Repository):
                     now,
                     row["routing_job_seq"],
                     ignore_deadline,
+                    now,
                     now,
                     now,
                 ),
@@ -632,36 +787,28 @@ class DurableMessageRoutingRepository(Repository):
         now = self._clock()
         lease_expires_at = now + self._lease_seconds
         claim_id = uuid.uuid4().hex
+        eligibility = _route_outbox_work_eligibility("agent_route_outbox")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM agent_route_outbox
                 WHERE (
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                 )
-                  AND EXISTS (
-                    SELECT 1
-                    FROM agent_session_runtime_ownership AS ownership
-                    WHERE ownership.profile_id = agent_route_outbox.profile_id
-                      AND ownership.session_id = agent_route_outbox.session_id
-                      AND ownership.mode = 'actor_v2'
-                      AND ownership.status = 'active'
-                      AND ownership.generation =
-                          agent_route_outbox.ownership_generation
-                )
+                  AND {eligibility}
                 ORDER BY outbox_seq ASC
                 LIMIT 1
                 """,
-                (now, now),
+                (now, now, now),
             ).fetchone()
             if row is None:
                 return None
             delivery = self._delivery_from_outbox_row(row)
             updated = conn.execute(
-                """
+                f"""
                 UPDATE agent_route_outbox
                 SET status = 'processing',
                     attempt_count = attempt_count + 1,
@@ -676,16 +823,7 @@ class DurableMessageRoutingRepository(Repository):
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                   )
-                  AND EXISTS (
-                    SELECT 1
-                    FROM agent_session_runtime_ownership AS ownership
-                    WHERE ownership.profile_id = agent_route_outbox.profile_id
-                      AND ownership.session_id = agent_route_outbox.session_id
-                      AND ownership.mode = 'actor_v2'
-                      AND ownership.status = 'active'
-                      AND ownership.generation =
-                          agent_route_outbox.ownership_generation
-                  )
+                  AND {eligibility}
                 """,
                 (
                     claim_id,
@@ -693,6 +831,7 @@ class DurableMessageRoutingRepository(Repository):
                     lease_expires_at,
                     now,
                     row["outbox_seq"],
+                    now,
                     now,
                     now,
                 ),
@@ -705,6 +844,8 @@ class DurableMessageRoutingRepository(Repository):
                 correlation_id=str(row["correlation_id"]),
                 causation_id=str(row["causation_id"]),
                 ownership_generation=int(row["ownership_generation"]),
+                admission_fence_id=str(row["admission_fence_id"]),
+                admission_fence_generation=int(row["admission_fence_generation"]),
                 claim_id=claim_id,
                 worker_id=worker,
                 attempt_count=int(row["attempt_count"]) + 1,
@@ -763,9 +904,22 @@ class DurableMessageRoutingRepository(Repository):
                 )
             delivery = self._delivery_from_outbox_row(row)
             self._validate_claimed_delivery(row, claim, delivery)
+            wake_request = FencedMailboxWakeRequest(
+                key=delivery.session_key,
+                ownership_generation=int(row["ownership_generation"]),
+                admission_fence_id=str(row["admission_fence_id"]),
+                admission_fence_generation=int(row["admission_fence_generation"]),
+            )
             if str(row["status"]) == AgentRouteOutboxStatus.COMPLETED.value:
-                self._validate_mailbox_event(conn, row, delivery)
-                return self._relay_result(delivery, mailbox_inserted=False)
+                mailbox_id = self._validate_mailbox_event(conn, row, delivery)
+                return self._relay_result(
+                    delivery,
+                    ownership_generation=wake_request.ownership_generation,
+                    admission_fence_id=wake_request.admission_fence_id,
+                    admission_fence_generation=wake_request.admission_fence_generation,
+                    mailbox_id=mailbox_id,
+                    mailbox_inserted=False,
+                )
             self._validate_live_claim(
                 row,
                 claim_id=claim.claim_id,
@@ -776,79 +930,116 @@ class DurableMessageRoutingRepository(Repository):
             self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
                 conn,
                 delivery.session_key,
-                expected_generation=int(row["ownership_generation"]),
+                expected_generation=wake_request.ownership_generation,
+                expected_admission_fence_id=wake_request.admission_fence_id,
+                expected_admission_fence_generation=wake_request.admission_fence_generation,
             )
-            ownership_generation = int(row["ownership_generation"])
-            self._ensure_actor_aggregate(
-                conn,
-                delivery,
-                ownership_generation=ownership_generation,
-                now=now,
-            )
-            payload_json = _canonical_json_object(delivery.to_mailbox_payload())
-            inserted = conn.execute(
-                """
-                INSERT OR IGNORE INTO agent_session_mailbox (
-                    event_id, profile_id, session_id, ownership_generation,
-                    kind, source, occurred_at, payload_json, causation_id,
-                    correlation_id, trace_id,
-                    status, attempt_count, available_at, claim_id, lease_owner,
-                    lease_until, created_at, handled_at, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, NULL, '')
-                """,
-                (
-                    delivery.event_id,
-                    delivery.session_key.profile_id,
-                    delivery.session_key.session_id,
-                    ownership_generation,
-                    AGENT_ROUTE_MAILBOX_KIND,
-                    AGENT_ROUTE_MAILBOX_SOURCE,
-                    delivery.observed_at,
-                    payload_json,
-                    str(row["routing_job_id"]),
-                    str(row["routing_job_id"]),
-                    delivery.trace_id,
-                    now,
-                    now,
-                ),
-            )
-            if inserted.rowcount != 1:
-                self._validate_mailbox_event(conn, row, delivery)
-            updated = conn.execute(
-                """
-                UPDATE agent_route_outbox
-                SET status = 'completed',
-                    claim_id = '',
-                    lease_owner = '',
-                    lease_until = NULL,
-                    updated_at = ?,
-                    completed_at = ?,
-                    failed_at = NULL,
-                    last_error_code = '',
-                    last_error_message = ''
-                WHERE delivery_id = ?
-                  AND status = 'processing'
-                  AND claim_id = ?
-                  AND lease_owner = ?
-                  AND COALESCE(lease_until, 0) > ?
-                """,
-                (
-                    now,
-                    now,
-                    delivery.delivery_id,
-                    claim.claim_id,
-                    claim.worker_id,
-                    now,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise DurableRoutingLeaseLost(
-                    "Agent route delivery lease is expired or no longer owned"
+            conn.execute("SAVEPOINT route_relay_candidate")
+            try:
+                ownership_generation = wake_request.ownership_generation
+                self._ensure_actor_aggregate(
+                    conn,
+                    delivery,
+                    ownership_generation=ownership_generation,
+                    now=now,
                 )
-            return self._relay_result(
-                delivery,
-                mailbox_inserted=inserted.rowcount == 1,
-            )
+                payload_json = _canonical_json_object(delivery.to_mailbox_payload())
+                inserted = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO agent_session_mailbox (
+                        event_id, profile_id, session_id, ownership_generation,
+                        kind, source, occurred_at, payload_json, causation_id,
+                        correlation_id, trace_id,
+                        status, attempt_count, available_at, claim_id, lease_owner,
+                        lease_until, created_at, handled_at, last_error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, NULL, '')
+                    """,
+                    (
+                        delivery.event_id,
+                        delivery.session_key.profile_id,
+                        delivery.session_key.session_id,
+                        ownership_generation,
+                        AGENT_ROUTE_MAILBOX_KIND,
+                        AGENT_ROUTE_MAILBOX_SOURCE,
+                        delivery.observed_at,
+                        payload_json,
+                        str(row["routing_job_id"]),
+                        str(row["routing_job_id"]),
+                        delivery.trace_id,
+                        now,
+                        now,
+                    ),
+                )
+                if inserted.rowcount == 1:
+                    mailbox_id = int(inserted.lastrowid)
+                    if mailbox_id < 1:
+                        raise DurableRoutingConflict(
+                            "new route mailbox does not have a durable primary key"
+                        )
+                    if wake_request.has_admission_fence:
+                        self._database.actor_v2_mailbox_handoffs.record_fenced_handoff_in_transaction(
+                            conn,
+                            mailbox_id,
+                            wake_request,
+                        )
+                    else:
+                        self._database.actor_v2_mailbox_handoffs.record_unfenced_legacy_handoff_in_transaction(
+                            conn,
+                            mailbox_id,
+                        )
+                else:
+                    mailbox_id = self._validate_mailbox_event(conn, row, delivery)
+                updated = conn.execute(
+                    """
+                    UPDATE agent_route_outbox
+                    SET status = 'completed',
+                        claim_id = '',
+                        lease_owner = '',
+                        lease_until = NULL,
+                        updated_at = ?,
+                        completed_at = ?,
+                        failed_at = NULL,
+                        last_error_code = '',
+                        last_error_message = ''
+                    WHERE delivery_id = ?
+                      AND status = 'processing'
+                      AND claim_id = ?
+                      AND lease_owner = ?
+                      AND COALESCE(lease_until, 0) > ?
+                    """,
+                    (
+                        now,
+                        now,
+                        delivery.delivery_id,
+                        claim.claim_id,
+                        claim.worker_id,
+                        now,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise DurableRoutingLeaseLost(
+                        "Agent route delivery lease is expired or no longer owned"
+                    )
+                self._require_outbox_delivery_admission(
+                    conn,
+                    delivery_id=delivery.delivery_id,
+                    routing_job_id=str(row["routing_job_id"]),
+                    request=wake_request,
+                )
+                result = self._relay_result(
+                    delivery,
+                    ownership_generation=ownership_generation,
+                    admission_fence_id=wake_request.admission_fence_id,
+                    admission_fence_generation=wake_request.admission_fence_generation,
+                    mailbox_id=mailbox_id,
+                    mailbox_inserted=inserted.rowcount == 1,
+                )
+            except BaseException:
+                conn.execute("ROLLBACK TO SAVEPOINT route_relay_candidate")
+                conn.execute("RELEASE SAVEPOINT route_relay_candidate")
+                raise
+            conn.execute("RELEASE SAVEPOINT route_relay_candidate")
+            return result
 
     def retry_or_fail_delivery(
         self,
@@ -874,9 +1065,11 @@ class DurableMessageRoutingRepository(Repository):
     def next_job_available_at(self) -> float | None:
         """Return the next pending deadline or expired-lease recovery time."""
 
+        now = self._clock()
+        eligibility = _routing_job_work_eligibility("message_routing_jobs")
         with self.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT MIN(
                     CASE
                         WHEN status = 'pending' THEN available_at
@@ -885,23 +1078,9 @@ class DurableMessageRoutingRepository(Repository):
                 ) AS next_at
                 FROM message_routing_jobs
                 WHERE status IN ('pending', 'processing')
-                  AND (
-                    (
-                        profile_id = ''
-                        AND session_id = ''
-                        AND ownership_generation = 0
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM agent_session_runtime_ownership AS ownership
-                        WHERE ownership.profile_id = message_routing_jobs.profile_id
-                          AND ownership.session_id = message_routing_jobs.session_id
-                          AND ownership.status = 'active'
-                          AND ownership.generation =
-                              message_routing_jobs.ownership_generation
-                    )
-                  )
-                """
+                  AND {eligibility}
+                """,
+                (now,),
             ).fetchone()
         if row is None or row["next_at"] is None:
             return None
@@ -910,9 +1089,11 @@ class DurableMessageRoutingRepository(Repository):
     def next_delivery_available_at(self) -> float | None:
         """Return the next Agent outbox deadline or lease recovery time."""
 
+        now = self._clock()
+        eligibility = _route_outbox_work_eligibility("agent_route_outbox")
         with self.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT MIN(
                     CASE
                         WHEN status = 'pending' THEN available_at
@@ -921,17 +1102,9 @@ class DurableMessageRoutingRepository(Repository):
                 ) AS next_at
                 FROM agent_route_outbox
                 WHERE status IN ('pending', 'processing')
-                  AND EXISTS (
-                    SELECT 1
-                    FROM agent_session_runtime_ownership AS ownership
-                    WHERE ownership.profile_id = agent_route_outbox.profile_id
-                      AND ownership.session_id = agent_route_outbox.session_id
-                      AND ownership.mode = 'actor_v2'
-                      AND ownership.status = 'active'
-                      AND ownership.generation =
-                          agent_route_outbox.ownership_generation
-                  )
-                """
+                  AND {eligibility}
+                """,
+                (now,),
             ).fetchone()
         if row is None or row["next_at"] is None:
             return None
@@ -956,6 +1129,385 @@ class DurableMessageRoutingRepository(Repository):
                 """
             ).fetchone()
         return int(jobs["count"]), int(deliveries["count"])
+
+    def pending_route_wake_debts(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        after: RouteWakeCursor | None = None,
+        fenced_only: bool = False,
+    ) -> tuple[PendingRouteWakeDebt, ...]:
+        """Return the newest pending route event for each exact Actor identity.
+
+        A post-commit wake reaches an Actor, rather than claiming a mailbox
+        row. One current event is therefore sufficient to make durable debt
+        discoverable, while its ``event_id`` keeps an accepted wake from
+        masking a newer committed route event for the same Actor incarnation.
+        ``after`` advances a stable event-versioned mailbox keyset; ``offset``
+        remains available only for callers that cannot retain a cursor.
+        """
+
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        if after is not None and not isinstance(after, RouteWakeCursor):
+            raise TypeError("after must be a RouteWakeCursor")
+        if after is not None and offset:
+            raise ValueError("offset cannot be combined with a keyset cursor")
+        if not isinstance(fenced_only, bool):
+            raise TypeError("fenced_only must be a bool")
+        now = self._clock()
+        fenced_clause = " AND ownership.admission_fence_id != ''" if fenced_only else ""
+        after_clause = ""
+        after_params: tuple[object, ...] = ()
+        if after is not None:
+            after_clause = """
+              AND (
+                    debt.mailbox_id > ?
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id = ?
+                    AND debt.ownership_generation > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id = ?
+                    AND debt.ownership_generation = ?
+                    AND debt.admission_fence_id > ?
+                 )
+                 OR (
+                        debt.mailbox_id = ?
+                    AND debt.profile_id = ?
+                    AND debt.session_id = ?
+                    AND debt.ownership_generation = ?
+                    AND debt.admission_fence_id = ?
+                    AND debt.admission_fence_generation > ?
+                 )
+              )
+            """
+            after_params = _route_wake_cursor_parameters(after)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                WITH ranked_route_mailbox AS (
+                    SELECT mailbox.profile_id,
+                           mailbox.session_id,
+                           mailbox.event_id,
+                           mailbox.mailbox_id,
+                           ownership.generation AS ownership_generation,
+                           ownership.admission_fence_id AS admission_fence_id,
+                           ownership.admission_fence_generation
+                               AS admission_fence_generation,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY mailbox.profile_id,
+                                            mailbox.session_id,
+                                            ownership.generation,
+                                            ownership.admission_fence_id,
+                                            ownership.admission_fence_generation
+                               ORDER BY mailbox.mailbox_id DESC
+                           ) AS mailbox_rank
+                    FROM agent_session_mailbox AS mailbox
+                    JOIN agent_session_runtime_ownership AS ownership
+                      ON ownership.profile_id = mailbox.profile_id
+                     AND ownership.session_id = mailbox.session_id
+                     AND ownership.mode = 'actor_v2'
+                     AND ownership.status = 'active'
+                     AND ownership.generation = mailbox.ownership_generation
+                    LEFT JOIN agent_session_actor_v2_admission_fences AS admission
+                      ON admission.profile_id = ownership.profile_id
+                     AND admission.session_id = ownership.session_id
+                     AND admission.fence_id = ownership.admission_fence_id
+                     AND admission.generation = ownership.admission_fence_generation
+                    WHERE mailbox.kind = ?
+                      AND mailbox.source = ?
+                      AND mailbox.status IN ('pending', 'processing')
+                      AND (
+                            ownership.admission_fence_id = ''
+                         OR (
+                                admission.status = 'committed'
+                            AND admission.expires_at > ?
+                              )
+                      )
+                      {fenced_clause}
+                )
+                SELECT profile_id, session_id, event_id, mailbox_id,
+                       ownership_generation, admission_fence_id,
+                       admission_fence_generation
+                FROM ranked_route_mailbox AS debt
+                WHERE debt.mailbox_rank = 1
+                {after_clause}
+                ORDER BY mailbox_id ASC,
+                         profile_id ASC,
+                         session_id ASC,
+                         ownership_generation ASC,
+                         admission_fence_id ASC,
+                         admission_fence_generation ASC
+                LIMIT ? OFFSET ?
+                """,
+                (
+                    AGENT_ROUTE_MAILBOX_KIND,
+                    AGENT_ROUTE_MAILBOX_SOURCE,
+                    now,
+                    *after_params,
+                    limit,
+                    offset,
+                ),
+            ).fetchall()
+        return tuple(
+            PendingRouteWakeDebt(
+                request=FencedMailboxWakeRequest(
+                    key=SessionKey(
+                        str(row["profile_id"]),
+                        str(row["session_id"]),
+                    ),
+                    ownership_generation=int(row["ownership_generation"]),
+                    admission_fence_id=str(row["admission_fence_id"]),
+                    admission_fence_generation=int(
+                        row["admission_fence_generation"]
+                    ),
+                ),
+                event_id=str(row["event_id"]),
+                cursor=RouteWakeCursor(
+                    mailbox_id=int(row["mailbox_id"]),
+                    profile_id=str(row["profile_id"]),
+                    session_id=str(row["session_id"]),
+                    ownership_generation=int(row["ownership_generation"]),
+                    admission_fence_id=str(row["admission_fence_id"]),
+                    admission_fence_generation=int(
+                        row["admission_fence_generation"]
+                    ),
+                ),
+            )
+            for row in rows
+        )
+
+    def pending_route_wake_requests(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        after: RouteWakeCursor | None = None,
+        fenced_only: bool = False,
+    ) -> tuple[FencedMailboxWakeRequest, ...]:
+        """Project route wake debt to exact Actor ownership identities.
+
+        This compatibility projection intentionally omits the mailbox event
+        id. Callers which cache accepted fenced wakes must use
+        :meth:`pending_route_wake_debts` instead.
+        """
+
+        requests: list[FencedMailboxWakeRequest] = []
+        seen: set[FencedMailboxWakeRequest] = set()
+        for debt in self.pending_route_wake_debts(
+            limit=limit,
+            offset=offset,
+            after=after,
+            fenced_only=fenced_only,
+        ):
+            if debt.request in seen:
+                continue
+            seen.add(debt.request)
+            requests.append(debt.request)
+        return tuple(requests)
+
+    def has_pending_fenced_route_wake_requests(self) -> bool:
+        """Return whether a legacy broad wake would cross a live fence boundary."""
+
+        return bool(self.pending_route_wake_requests(limit=1, fenced_only=True))
+
+    def has_retained_fenced_mailbox_debt(self) -> bool:
+        """Return whether broad legacy recovery could wake a fenced mailbox.
+
+        ``AgentSessionActorRegistry.recover()`` scans every pending mailbox
+        kind, not only route relay events. A currently active Actor v2 owner
+        with a matching fenced generation therefore blocks that broad API even
+        if the retained fence is revoked or expired. Once ownership changes,
+        the registry's own generation join excludes the historical mailbox.
+        """
+
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM agent_session_mailbox AS mailbox
+                JOIN agent_session_runtime_ownership AS ownership
+                  ON ownership.profile_id = mailbox.profile_id
+                 AND ownership.session_id = mailbox.session_id
+                 AND ownership.mode = 'actor_v2'
+                 AND ownership.status = 'active'
+                 AND ownership.generation = mailbox.ownership_generation
+                WHERE mailbox.status IN ('pending', 'processing')
+                  AND ownership.admission_fence_id != ''
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
+
+    def has_retained_fenced_route_mailbox_debt(self) -> bool:
+        """Return whether any pending route mailbox retains a fence identity.
+
+        A legacy registry's ``recover()`` operates on mailbox keys alone and
+        cannot distinguish a revoked or expired Actor incarnation.  This query
+        therefore intentionally includes historical fenced deliveries instead
+        of only currently live admission fences.
+        """
+
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM agent_session_mailbox AS mailbox
+                JOIN agent_route_outbox AS outbox
+                  ON outbox.profile_id = mailbox.profile_id
+                 AND outbox.session_id = mailbox.session_id
+                 AND outbox.ownership_generation = mailbox.ownership_generation
+                 AND outbox.event_id = mailbox.event_id
+                WHERE mailbox.kind = ?
+                  AND mailbox.source = ?
+                  AND mailbox.status IN ('pending', 'processing')
+                  AND outbox.admission_fence_id != ''
+                LIMIT 1
+                """,
+                (AGENT_ROUTE_MAILBOX_KIND, AGENT_ROUTE_MAILBOX_SOURCE),
+            ).fetchone()
+        return row is not None
+
+    def is_pending_route_wake_request(
+        self,
+        request: FencedMailboxWakeRequest,
+    ) -> bool:
+        """Return whether one exact wake identity still has live mailbox debt."""
+
+        if not isinstance(request, FencedMailboxWakeRequest):
+            raise TypeError("request must be a FencedMailboxWakeRequest")
+        now = self._clock()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM agent_session_mailbox AS mailbox
+                JOIN agent_session_runtime_ownership AS ownership
+                  ON ownership.profile_id = mailbox.profile_id
+                 AND ownership.session_id = mailbox.session_id
+                 AND ownership.mode = 'actor_v2'
+                 AND ownership.status = 'active'
+                 AND ownership.generation = mailbox.ownership_generation
+                LEFT JOIN agent_session_actor_v2_admission_fences AS admission
+                  ON admission.profile_id = ownership.profile_id
+                 AND admission.session_id = ownership.session_id
+                 AND admission.fence_id = ownership.admission_fence_id
+                 AND admission.generation = ownership.admission_fence_generation
+                WHERE mailbox.profile_id = ?
+                  AND mailbox.session_id = ?
+                  AND mailbox.ownership_generation = ?
+                  AND ownership.admission_fence_id = ?
+                  AND ownership.admission_fence_generation = ?
+                  AND mailbox.kind = ?
+                  AND mailbox.source = ?
+                  AND mailbox.status IN ('pending', 'processing')
+                  AND (
+                        ownership.admission_fence_id = ''
+                     OR (
+                            admission.status = 'committed'
+                        AND admission.expires_at > ?
+                          )
+                  )
+                LIMIT 1
+                """,
+                (
+                    request.key.profile_id,
+                    request.key.session_id,
+                    request.ownership_generation,
+                    request.admission_fence_id,
+                    request.admission_fence_generation,
+                    AGENT_ROUTE_MAILBOX_KIND,
+                    AGENT_ROUTE_MAILBOX_SOURCE,
+                    now,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def is_pending_route_wake_debt(self, debt: PendingRouteWakeDebt) -> bool:
+        """Return whether one exact route mailbox event remains live.
+
+        This is intentionally stricter than
+        :meth:`is_pending_route_wake_request`: retry and accepted-wake caches
+        must be invalidated for the event that they actually observed, while a
+        newer event for the same Actor incarnation remains independently
+        discoverable.
+        """
+
+        if not isinstance(debt, PendingRouteWakeDebt):
+            raise TypeError("debt must be a PendingRouteWakeDebt")
+        request = debt.request
+        cursor_clause = ""
+        cursor_params: tuple[object, ...] = ()
+        if debt.cursor is not None:
+            cursor_clause = " AND mailbox.mailbox_id = ?"
+            cursor_params = (debt.cursor.mailbox_id,)
+        now = self._clock()
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT 1
+                FROM agent_session_mailbox AS mailbox
+                JOIN agent_session_runtime_ownership AS ownership
+                  ON ownership.profile_id = mailbox.profile_id
+                 AND ownership.session_id = mailbox.session_id
+                 AND ownership.mode = 'actor_v2'
+                 AND ownership.status = 'active'
+                 AND ownership.generation = mailbox.ownership_generation
+                LEFT JOIN agent_session_actor_v2_admission_fences AS admission
+                  ON admission.profile_id = ownership.profile_id
+                 AND admission.session_id = ownership.session_id
+                 AND admission.fence_id = ownership.admission_fence_id
+                 AND admission.generation = ownership.admission_fence_generation
+                WHERE mailbox.profile_id = ?
+                  AND mailbox.session_id = ?
+                  AND mailbox.ownership_generation = ?
+                  AND mailbox.event_id = ?
+                  {cursor_clause}
+                  AND ownership.admission_fence_id = ?
+                  AND ownership.admission_fence_generation = ?
+                  AND mailbox.kind = ?
+                  AND mailbox.source = ?
+                  AND mailbox.status IN ('pending', 'processing')
+                  AND (
+                        ownership.admission_fence_id = ''
+                     OR (
+                            admission.status = 'committed'
+                        AND admission.expires_at > ?
+                          )
+                  )
+                LIMIT 1
+                """,
+                (
+                    request.key.profile_id,
+                    request.key.session_id,
+                    request.ownership_generation,
+                    debt.event_id,
+                    *cursor_params,
+                    request.admission_fence_id,
+                    request.admission_fence_generation,
+                    AGENT_ROUTE_MAILBOX_KIND,
+                    AGENT_ROUTE_MAILBOX_SOURCE,
+                    now,
+                ),
+            ).fetchone()
+        return row is not None
 
     def active_actor_ownership_count(self) -> int:
         """Return active actor-v2 owners used by supervisor readiness checks."""
@@ -993,6 +1545,7 @@ class DurableMessageRoutingRepository(Repository):
                     f"message routing job does not exist: {claim.routing_job_id}"
                 )
             self._validate_claimed_job(row, claim)
+            job_envelope = self._validate_routing_job_admission(conn, row)
             message_row = conn.execute(
                 "SELECT session_id FROM message_logs WHERE id = ?",
                 (claim.message_log_id,),
@@ -1042,86 +1595,105 @@ class DurableMessageRoutingRepository(Repository):
                 now=now,
                 subject="message routing job",
             )
-            inserted_delivery_count = 0
-            for delivery in normalized:
-                if (
-                    expected_ownership_generations is not None
-                    and delivery.session_key not in expected_ownership_generations
-                ):
-                    raise DurableRoutingConflict(
-                        "routing decision omitted an expected ownership generation"
+            conn.execute("SAVEPOINT route_decision_candidate")
+            try:
+                inserted_delivery_count = 0
+                captured_deliveries: list[_CapturedOutboxAdmission] = []
+                for delivery in normalized:
+                    if (
+                        expected_ownership_generations is not None
+                        and delivery.session_key not in expected_ownership_generations
+                    ):
+                        raise DurableRoutingConflict(
+                            "routing decision omitted an expected ownership generation"
+                        )
+                    captured_delivery = self._insert_outbox_delivery(
+                        conn,
+                        row,
+                        delivery,
+                        now=now,
+                        expected_ownership_generation=(
+                            expected_ownership_generations.get(delivery.session_key)
+                            if expected_ownership_generations is not None
+                            else None
+                        ),
                     )
-                inserted_delivery_count += self._insert_outbox_delivery(
-                    conn,
-                    row,
-                    delivery,
-                    now=now,
-                    expected_ownership_generation=(
-                        expected_ownership_generations.get(delivery.session_key)
-                        if expected_ownership_generations is not None
-                        else None
+                    inserted_delivery_count += int(captured_delivery.inserted)
+                    captured_deliveries.append(captured_delivery)
+                conn.execute(
+                    """
+                    UPDATE message_logs
+                    SET routing_status = ?, routed_at = ?, routing_skip_reason = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        routing_status_value(routing_status),
+                        now * 1000,
+                        routing_skip_reason,
+                        claim.message_log_id,
                     ),
                 )
-            conn.execute(
-                """
-                UPDATE message_logs
-                SET routing_status = ?, routed_at = ?, routing_skip_reason = ?
-                WHERE id = ?
-                """,
-                (
-                    routing_status_value(routing_status),
-                    now * 1000,
-                    routing_skip_reason,
-                    claim.message_log_id,
-                ),
-            )
-            updated = conn.execute(
-                """
-                UPDATE message_routing_jobs
-                SET status = 'completed',
-                    claim_id = '',
-                    lease_owner = '',
-                    lease_until = NULL,
-                    decision_version = ?,
-                    decision_kind = ?,
-                    decision_id = ?,
-                    decision_payload_json = ?,
-                    decision_payload_digest = ?,
-                    updated_at = ?,
-                    completed_at = ?,
-                    failed_at = NULL,
-                    last_error_code = '',
-                    last_error_message = ''
-                WHERE routing_job_id = ?
-                  AND status = 'processing'
-                  AND claim_id = ?
-                  AND lease_owner = ?
-                  AND COALESCE(lease_until, 0) > ?
-                """,
-                (
-                    _ROUTE_DECISION_VERSION,
-                    decision_kind,
-                    decision_id,
-                    decision_payload_json,
-                    decision_payload_digest,
-                    now,
-                    now,
-                    claim.routing_job_id,
-                    claim.claim_id,
-                    claim.worker_id,
-                    now,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise DurableRoutingLeaseLost(
-                    "message routing job lease is expired or no longer owned"
+                updated = conn.execute(
+                    """
+                    UPDATE message_routing_jobs
+                    SET status = 'completed',
+                        claim_id = '',
+                        lease_owner = '',
+                        lease_until = NULL,
+                        decision_version = ?,
+                        decision_kind = ?,
+                        decision_id = ?,
+                        decision_payload_json = ?,
+                        decision_payload_digest = ?,
+                        updated_at = ?,
+                        completed_at = ?,
+                        failed_at = NULL,
+                        last_error_code = '',
+                        last_error_message = ''
+                    WHERE routing_job_id = ?
+                      AND status = 'processing'
+                      AND claim_id = ?
+                      AND lease_owner = ?
+                      AND COALESCE(lease_until, 0) > ?
+                    """,
+                    (
+                        _ROUTE_DECISION_VERSION,
+                        decision_kind,
+                        decision_id,
+                        decision_payload_json,
+                        decision_payload_digest,
+                        now,
+                        now,
+                        claim.routing_job_id,
+                        claim.claim_id,
+                        claim.worker_id,
+                        now,
+                    ),
                 )
-            return RouteDecisionResult(
-                routing_job_id=claim.routing_job_id,
-                decision_id=decision_id,
-                delivery_ids=tuple(item.delivery_id for item in normalized),
-                inserted_delivery_count=inserted_delivery_count,
-            )
+                if updated.rowcount != 1:
+                    raise DurableRoutingLeaseLost(
+                        "message routing job lease is expired or no longer owned"
+                    )
+                self._require_persisted_routing_job_admission(conn, job_envelope)
+                for captured_delivery in captured_deliveries:
+                    self._require_outbox_delivery_admission(
+                        conn,
+                        delivery_id=captured_delivery.delivery_id,
+                        routing_job_id=claim.routing_job_id,
+                        request=captured_delivery.request,
+                    )
+                result = RouteDecisionResult(
+                    routing_job_id=claim.routing_job_id,
+                    decision_id=decision_id,
+                    delivery_ids=tuple(item.delivery_id for item in normalized),
+                    inserted_delivery_count=inserted_delivery_count,
+                )
+            except BaseException:
+                conn.execute("ROLLBACK TO SAVEPOINT route_decision_candidate")
+                conn.execute("RELEASE SAVEPOINT route_decision_candidate")
+                raise
+            conn.execute("RELEASE SAVEPOINT route_decision_candidate")
+            return result
 
     def _normalize_deliveries(
         self,
@@ -1156,6 +1728,127 @@ class DurableMessageRoutingRepository(Repository):
             normalized.append(delivery)
         return tuple(sorted(normalized, key=lambda item: item.delivery_id))
 
+    def _validate_routing_job_admission(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> MessageRoutingJobEnvelope:
+        """Require a committed matching actor owner for a fenced routing job."""
+
+        envelope = _job_envelope_from_row(row)
+        self._require_routing_job_admission(conn, envelope)
+        return envelope
+
+    def _require_routing_job_admission(
+        self,
+        conn: sqlite3.Connection,
+        envelope: MessageRoutingJobEnvelope,
+    ) -> None:
+        """Require the exact ownership evidence captured by one routing job."""
+
+        if not envelope.has_admission_fence:
+            return
+        if envelope.ownership_generation < 1:
+            raise DurableRoutingConflict(
+                "reserved admission routing work cannot be decided before ownership commits"
+            )
+        self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            conn,
+            SessionKey(envelope.profile_id, envelope.session_id),
+            expected_generation=envelope.ownership_generation,
+            expected_admission_fence_id=envelope.admission_fence_id,
+            expected_admission_fence_generation=envelope.admission_fence_generation,
+        )
+
+    def _require_persisted_routing_job_admission(
+        self,
+        conn: sqlite3.Connection,
+        envelope: MessageRoutingJobEnvelope,
+    ) -> None:
+        """Verify a candidate did not rewrite the job identity before final gating."""
+
+        row = conn.execute(
+            """
+            SELECT profile_id, session_id, ownership_generation,
+                   admission_fence_id, admission_fence_generation
+            FROM message_routing_jobs
+            WHERE routing_job_id = ?
+            """,
+            (envelope.job_id,),
+        ).fetchone()
+        if row is None:
+            raise DurableRoutingConflict(
+                "routing job disappeared before final admission gate"
+            )
+        persisted = (
+            str(row["profile_id"]),
+            str(row["session_id"]),
+            int(row["ownership_generation"]),
+            str(row["admission_fence_id"]),
+            int(row["admission_fence_generation"]),
+        )
+        captured = (
+            envelope.profile_id,
+            envelope.session_id,
+            envelope.ownership_generation,
+            envelope.admission_fence_id,
+            envelope.admission_fence_generation,
+        )
+        if persisted != captured:
+            raise DurableRoutingConflict(
+                "routing job admission identity changed before final admission gate"
+            )
+        self._require_routing_job_admission(conn, envelope)
+
+    def _require_outbox_delivery_admission(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        delivery_id: str,
+        routing_job_id: str,
+        request: FencedMailboxWakeRequest,
+    ) -> None:
+        """Require one candidate delivery's original ownership identity."""
+
+        row = conn.execute(
+            """
+            SELECT profile_id, session_id, ownership_generation,
+                   admission_fence_id, admission_fence_generation
+            FROM agent_route_outbox
+            WHERE delivery_id = ? AND routing_job_id = ?
+            """,
+            (delivery_id, routing_job_id),
+        ).fetchone()
+        if row is None:
+            raise DurableRoutingConflict(
+                "route delivery disappeared before final admission gate"
+            )
+        persisted = (
+            str(row["profile_id"]),
+            str(row["session_id"]),
+            int(row["ownership_generation"]),
+            str(row["admission_fence_id"]),
+            int(row["admission_fence_generation"]),
+        )
+        captured = (
+            request.key.profile_id,
+            request.key.session_id,
+            request.ownership_generation,
+            request.admission_fence_id,
+            request.admission_fence_generation,
+        )
+        if persisted != captured:
+            raise DurableRoutingConflict(
+                "route delivery identity changed before final admission gate"
+            )
+        self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            conn,
+            request.key,
+            expected_generation=request.ownership_generation,
+            expected_admission_fence_id=request.admission_fence_id,
+            expected_admission_fence_generation=request.admission_fence_generation,
+        )
+
     def _insert_outbox_delivery(
         self,
         conn: sqlite3.Connection,
@@ -1164,24 +1857,41 @@ class DurableMessageRoutingRepository(Repository):
         *,
         now: float,
         expected_ownership_generation: int | None,
-    ) -> int:
+    ) -> _CapturedOutboxAdmission:
         payload_json = _canonical_json_object(delivery.to_payload())
         payload_digest = _digest(payload_json)
+        job_envelope = self._validate_routing_job_admission(conn, job_row)
+        if job_envelope.has_admission_fence and delivery.session_key != SessionKey(
+            job_envelope.profile_id,
+            job_envelope.session_id,
+        ):
+            raise DurableRoutingConflict(
+                "fenced routing job cannot create an Agent delivery for another session"
+            )
         ownership = self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
             conn,
             delivery.session_key,
             expected_generation=expected_ownership_generation,
+            expected_admission_fence_id=job_envelope.admission_fence_id,
+            expected_admission_fence_generation=job_envelope.admission_fence_generation,
+        )
+        request = FencedMailboxWakeRequest(
+            key=delivery.session_key,
+            ownership_generation=ownership.generation,
+            admission_fence_id=job_envelope.admission_fence_id,
+            admission_fence_generation=job_envelope.admission_fence_generation,
         )
         inserted = conn.execute(
             """
             INSERT OR IGNORE INTO agent_route_outbox (
                 delivery_id, idempotency_key, routing_job_id, profile_id,
                 session_id, message_log_id, route_rule_id, version,
-                ownership_generation, event_id, payload_json, payload_digest,
+                ownership_generation, admission_fence_id,
+                admission_fence_generation, event_id, payload_json, payload_digest,
                 trace_id, correlation_id,
                 causation_id, status, attempt_count, available_at, claim_id,
                 lease_owner, lease_until, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, ?)
             """,
             (
                 delivery.delivery_id,
@@ -1193,6 +1903,8 @@ class DurableMessageRoutingRepository(Repository):
                 delivery.route_rule_id,
                 delivery.version,
                 ownership.generation,
+                job_envelope.admission_fence_id,
+                job_envelope.admission_fence_generation,
                 delivery.event_id,
                 payload_json,
                 payload_digest,
@@ -1233,11 +1945,17 @@ class DurableMessageRoutingRepository(Repository):
             delivery=delivery,
             routing_job_id=str(job_row["routing_job_id"]),
             correlation_id=str(job_row["correlation_id"]),
-            ownership_generation=ownership.generation,
+            ownership_generation=request.ownership_generation,
+            admission_fence_id=request.admission_fence_id,
+            admission_fence_generation=request.admission_fence_generation,
             payload_json=payload_json,
             payload_digest=payload_digest,
         )
-        return 1 if inserted.rowcount == 1 else 0
+        return _CapturedOutboxAdmission(
+            delivery_id=delivery.delivery_id,
+            request=request,
+            inserted=inserted.rowcount == 1,
+        )
 
     def _delivery_from_outbox_row(self, row: sqlite3.Row) -> AgentRouteDelivery:
         payload_json = str(row["payload_json"])
@@ -1256,6 +1974,8 @@ class DurableMessageRoutingRepository(Repository):
             routing_job_id=str(row["routing_job_id"]),
             correlation_id=str(row["correlation_id"]),
             ownership_generation=int(row["ownership_generation"]),
+            admission_fence_id=str(row["admission_fence_id"]),
+            admission_fence_generation=int(row["admission_fence_generation"]),
             payload_json=canonical_payload_json,
             payload_digest=_digest(canonical_payload_json),
         )
@@ -1275,6 +1995,8 @@ class DurableMessageRoutingRepository(Repository):
             str(row["profile_id"]),
             str(row["session_id"]),
             int(row["ownership_generation"]),
+            str(row["admission_fence_id"]),
+            int(row["admission_fence_generation"]),
             str(row["payload_json"]),
             str(row["payload_digest"]),
             str(row["trace_id"]),
@@ -1290,6 +2012,8 @@ class DurableMessageRoutingRepository(Repository):
             claim.envelope.profile_id,
             claim.envelope.session_id,
             claim.envelope.ownership_generation,
+            claim.envelope.admission_fence_id,
+            claim.envelope.admission_fence_generation,
             payload_json,
             _digest(payload_json),
             claim.envelope.trace_id,
@@ -1312,6 +2036,8 @@ class DurableMessageRoutingRepository(Repository):
             str(row["correlation_id"]),
             str(row["causation_id"]),
             int(row["ownership_generation"]),
+            str(row["admission_fence_id"]),
+            int(row["admission_fence_generation"]),
         )
         claimed = (
             claim.delivery,
@@ -1319,6 +2045,8 @@ class DurableMessageRoutingRepository(Repository):
             claim.correlation_id,
             claim.causation_id,
             claim.ownership_generation,
+            claim.admission_fence_id,
+            claim.admission_fence_generation,
         )
         if persisted != claimed:
             raise DurableRoutingConflict("outbox claim no longer matches durable work")
@@ -1331,6 +2059,8 @@ class DurableMessageRoutingRepository(Repository):
         routing_job_id: str,
         correlation_id: str,
         ownership_generation: int,
+        admission_fence_id: str,
+        admission_fence_generation: int,
         payload_json: str,
         payload_digest: str,
     ) -> None:
@@ -1344,6 +2074,8 @@ class DurableMessageRoutingRepository(Repository):
             str(row["route_rule_id"]),
             int(row["version"]),
             int(row["ownership_generation"]),
+            str(row["admission_fence_id"]),
+            int(row["admission_fence_generation"]),
             str(row["event_id"]),
             str(row["payload_json"]),
             str(row["payload_digest"]),
@@ -1361,6 +2093,8 @@ class DurableMessageRoutingRepository(Repository):
             delivery.route_rule_id,
             delivery.version,
             ownership_generation,
+            admission_fence_id,
+            admission_fence_generation,
             delivery.event_id,
             payload_json,
             payload_digest,
@@ -1416,6 +2150,8 @@ class DurableMessageRoutingRepository(Repository):
                 routing_job_id=str(row["routing_job_id"]),
                 correlation_id=str(row["correlation_id"]),
                 ownership_generation=int(outbox["ownership_generation"]),
+                admission_fence_id=str(outbox["admission_fence_id"]),
+                admission_fence_generation=int(outbox["admission_fence_generation"]),
                 payload_json=payload_json,
                 payload_digest=_digest(payload_json),
             )
@@ -1561,7 +2297,7 @@ class DurableMessageRoutingRepository(Repository):
         conn: sqlite3.Connection,
         outbox_row: sqlite3.Row,
         delivery: AgentRouteDelivery,
-    ) -> None:
+    ) -> int:
         row = conn.execute(
             """
             SELECT *
@@ -1601,19 +2337,34 @@ class DurableMessageRoutingRepository(Repository):
             raise DurableRoutingConflict(
                 f"mailbox event id {delivery.event_id!r} is already used by different work"
             )
+        mailbox_id = int(row["mailbox_id"])
+        if mailbox_id < 1:
+            raise DurableRoutingConflict("route mailbox event does not have a durable primary key")
+        return mailbox_id
 
     @staticmethod
     def _relay_result(
         delivery: AgentRouteDelivery,
         *,
+        ownership_generation: int,
+        admission_fence_id: str,
+        admission_fence_generation: int,
+        mailbox_id: int,
         mailbox_inserted: bool,
     ) -> RouteRelayResult:
         return RouteRelayResult(
             delivery_id=delivery.delivery_id,
             event_id=delivery.event_id,
+            mailbox_id=mailbox_id,
             profile_id=delivery.session_key.profile_id,
             session_id=delivery.session_key.session_id,
             mailbox_inserted=mailbox_inserted,
+            wake_request=FencedMailboxWakeRequest(
+                key=delivery.session_key,
+                ownership_generation=ownership_generation,
+                admission_fence_id=admission_fence_id,
+                admission_fence_generation=admission_fence_generation,
+            ),
         )
 
     @staticmethod
@@ -1643,6 +2394,81 @@ class DurableMessageRoutingRepository(Repository):
         return rows[0] if rows else None
 
     @staticmethod
+    def _resolve_admission_envelope_for_persistence(
+        conn: sqlite3.Connection,
+        envelope: MessageRoutingJobEnvelope,
+    ) -> MessageRoutingJobEnvelope:
+        """Bind a stale reserved ingress envelope to its current fence state.
+
+        Ingress may observe ``reserved`` immediately before the owner claim
+        commits. This function runs inside the message/job transaction, so a
+        post-commit insert is written directly against the committed owner
+        rather than leaving a generation-zero job behind the retarget pass.
+        """
+
+        if not envelope.has_admission_fence:
+            return envelope
+        fence = conn.execute(
+            """
+            SELECT status
+            FROM agent_session_actor_v2_admission_fences
+            WHERE profile_id = ?
+              AND session_id = ?
+              AND fence_id = ?
+              AND generation = ?
+            """,
+            (
+                envelope.profile_id,
+                envelope.session_id,
+                envelope.admission_fence_id,
+                envelope.admission_fence_generation,
+            ),
+        ).fetchone()
+        if fence is None:
+            raise DurableRoutingConflict(
+                "routing job admission fence does not match durable reservation history"
+            )
+        status = str(fence["status"])
+        if status == "reserved":
+            if envelope.ownership_generation != 0:
+                raise DurableRoutingConflict(
+                    "reserved admission fence cannot persist an owned routing job"
+                )
+            return envelope
+        if status == "revoked":
+            return envelope
+        if status != "committed":
+            raise DurableRoutingConflict("routing job admission fence has an invalid status")
+        ownership = conn.execute(
+            """
+            SELECT mode, status, generation, admission_fence_id,
+                   admission_fence_generation
+            FROM agent_session_runtime_ownership
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (envelope.profile_id, envelope.session_id),
+        ).fetchone()
+        if ownership is None or (
+            str(ownership["mode"]) != "actor_v2"
+            or str(ownership["status"]) != "active"
+            or str(ownership["admission_fence_id"])
+            != envelope.admission_fence_id
+            or int(ownership["admission_fence_generation"])
+            != envelope.admission_fence_generation
+        ):
+            raise DurableRoutingConflict(
+                "committed admission fence has no matching active Actor v2 ownership"
+            )
+        ownership_generation = int(ownership["generation"])
+        if envelope.ownership_generation not in {0, ownership_generation}:
+            raise DurableRoutingConflict(
+                "routing job ownership generation differs from committed admission owner"
+            )
+        if envelope.ownership_generation == ownership_generation:
+            return envelope
+        return replace(envelope, ownership_generation=ownership_generation)
+
+    @staticmethod
     def _validate_existing_job(
         row: sqlite3.Row,
         *,
@@ -1658,6 +2484,8 @@ class DurableMessageRoutingRepository(Repository):
             str(row["profile_id"]),
             str(row["session_id"]),
             int(row["ownership_generation"]),
+            str(row["admission_fence_id"]),
+            int(row["admission_fence_generation"]),
             str(row["message_fingerprint"]),
             str(row["payload_json"]),
             str(row["payload_digest"]),
@@ -1672,6 +2500,8 @@ class DurableMessageRoutingRepository(Repository):
             envelope.profile_id,
             envelope.session_id,
             envelope.ownership_generation,
+            envelope.admission_fence_id,
+            envelope.admission_fence_generation,
             message_fingerprint,
             payload_json,
             payload_digest,
@@ -1720,6 +2550,8 @@ def _job_envelope_from_row(row: sqlite3.Row) -> MessageRoutingJobEnvelope:
         profile_id=str(row["profile_id"]),
         session_id=str(row["session_id"]),
         ownership_generation=int(row["ownership_generation"]),
+        admission_fence_id=str(row["admission_fence_id"]),
+        admission_fence_generation=int(row["admission_fence_generation"]),
         correlation_id=str(row["correlation_id"]),
         causation_id=str(row["causation_id"]),
         occurred_at=float(row["occurred_at"]),
@@ -1811,6 +2643,42 @@ def _finite_nonnegative(value: float, field_name: str) -> float:
     return numeric
 
 
+def _route_wake_cursor_parameters(
+    cursor: RouteWakeCursor,
+) -> tuple[object, ...]:
+    """Expand one route wake cursor for the deterministic SQL keyset chain."""
+
+    mailbox_id = cursor.mailbox_id
+    profile_id = cursor.profile_id
+    session_id = cursor.session_id
+    ownership_generation = cursor.ownership_generation
+    fence_id = cursor.admission_fence_id
+    fence_generation = cursor.admission_fence_generation
+    return (
+        mailbox_id,
+        mailbox_id,
+        profile_id,
+        mailbox_id,
+        profile_id,
+        session_id,
+        mailbox_id,
+        profile_id,
+        session_id,
+        ownership_generation,
+        mailbox_id,
+        profile_id,
+        session_id,
+        ownership_generation,
+        fence_id,
+        mailbox_id,
+        profile_id,
+        session_id,
+        ownership_generation,
+        fence_id,
+        fence_generation,
+    )
+
+
 def _job_status(value: str) -> MessageRoutingJobStatus:
     try:
         return MessageRoutingJobStatus(value)
@@ -1826,8 +2694,10 @@ __all__ = [
     "DurableRoutingError",
     "DurableRoutingLeaseLost",
     "DurableRoutingRecordNotFound",
+    "PendingRouteWakeDebt",
     "PersistRoutingJobResult",
     "PersistedMessageRoutingJob",
+    "RouteWakeCursor",
     "RouteDecisionResult",
     "RouteRelayResult",
 ]

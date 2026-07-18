@@ -5,7 +5,11 @@ import logging
 
 import pytest
 
-from shinbot.agent.runtime.task_manager import AgentTaskManager
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskManager,
+    AgentTaskQuiescenceStatus,
+    cancel_and_wait_for_tasks,
+)
 
 
 @pytest.mark.asyncio
@@ -121,3 +125,61 @@ async def test_task_manager_retains_failure_snapshot_until_next_attempt() -> Non
     assert manager.failures(prefix="agent:test:review") == []
     replacement.cancel()
     await asyncio.gather(replacement, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_task_drain_reports_real_local_completion() -> None:
+    """A cancellation request is confirmed only after the task actually exits."""
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def worker() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    task = asyncio.create_task(worker(), name="review-session-task")
+    await started.wait()
+
+    report = await cancel_and_wait_for_tasks([task], timeout_seconds=0.5)
+
+    assert cancelled.is_set()
+    assert report.status is AgentTaskQuiescenceStatus.QUIESCENT
+    assert report.locally_confirmed_quiescent is True
+    assert report.matched_task_names == ("review-session-task",)
+    assert report.cancelled_task_names == ("review-session-task",)
+    assert report.remaining_task_names == ()
+
+
+@pytest.mark.asyncio
+async def test_task_drain_reports_a_cancellation_resistant_tail_as_timeout() -> None:
+    """A task that ignores cancellation cannot be mistaken for quiescent work."""
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def worker() -> None:
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+
+    task = asyncio.create_task(worker(), name="late-reply-tail")
+    await started.wait()
+
+    report = await cancel_and_wait_for_tasks([task], timeout_seconds=0.0)
+
+    assert cancelled.is_set()
+    assert report.status is AgentTaskQuiescenceStatus.TIMED_OUT
+    assert report.locally_confirmed_quiescent is False
+    assert report.remaining_task_names == ("late-reply-tail",)
+
+    release.set()
+    await asyncio.wait_for(task, timeout=0.5)

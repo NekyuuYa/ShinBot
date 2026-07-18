@@ -12,6 +12,8 @@ from agent_scheduler_support import (
     pytest,
 )
 
+from shinbot.agent.scheduler.models import ReviewPlan
+
 
 @pytest.mark.asyncio
 async def test_scheduler_ticks_active_chat_without_returning_idle() -> None:
@@ -41,6 +43,55 @@ async def test_scheduler_ticks_active_chat_without_returning_idle() -> None:
     )
     assert decision.active_chat_state.tick_count == 1
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+
+
+def test_scheduler_applies_frozen_interest_exit_planning_request() -> None:
+    """Round-driven exits use the same fenced model-plan apply path as timer exits."""
+
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 70.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=15.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+
+    request = scheduler.prepare_idle_review_planning_for_interest_adjustment(
+        "bot:group:room",
+        delta=-5.0,
+        force_exit=True,
+        active_epoch=completion.active_chat_state.active_epoch,
+        reason="round_exit",
+        now=70.0,
+    )
+
+    assert request is not None
+    assert request.trigger.value == "active_chat_interest_adjustment"
+    assert request.expected_active_chat_state == completion.active_chat_state
+    assert request.force_exit is True
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+
+    planned_review = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=321.0,
+        reason="round_model_plan",
+        updated_at=70.0,
+    )
+    decision = scheduler.apply_idle_review_planning_request(
+        request,
+        next_review_plan=planned_review,
+    )
+
+    assert decision.returned_to_idle is True
+    assert decision.next_review_plan == planned_review
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert scheduler.review_plan_for("bot:group:room") == planned_review
 
 
 @pytest.mark.asyncio
@@ -319,6 +370,35 @@ def test_scheduler_force_exits_active_chat_from_interest_adjustment() -> None:
     assert scheduler.active_chat_state_for("bot:group:room") is None
     assert timer.cancelled == ["bot:group:room"]
     assert dispatcher.active_chat_stops == ["bot:group:room"]
+
+
+def test_scheduler_rejects_active_chat_interest_adjustment_for_stale_epoch() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=15.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+
+    decision = scheduler.adjust_active_chat_interest(
+        "bot:group:room",
+        force_exit=True,
+        active_epoch=completion.active_chat_state.active_epoch + 1,
+        reason="stale_round_exit",
+        now=70.0,
+    )
+
+    assert decision.skipped_reason == "active_epoch_mismatch"
+    assert decision.returned_to_idle is False
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert scheduler.review_plan_for("bot:group:room") is None
 
 
 def test_scheduler_previews_active_chat_interest_adjustment_exit() -> None:

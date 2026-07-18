@@ -11,8 +11,14 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
+from shinbot.agent.runtime.session_actor.execution_control import (
+    ReviewCancellationGateRequest,
+)
 from shinbot.agent.runtime.session_actor.message_ledger import (
     MessageLedgerMutation,
+)
+from shinbot.agent.runtime.session_actor.model_execution_cancellation_gate import (
+    ModelExecutionCancellationGateRequest,
 )
 
 if TYPE_CHECKING:
@@ -47,6 +53,28 @@ class ReviewScheduleStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SUPERSEDED = "superseded"
+
+
+class ReviewCancellationGateState(StrEnum):
+    """Persisted state of one atomic review-cancellation declaration.
+
+    This is intentionally distinct from the executor's quiescence observation.
+    The actor commit records what it proved about the target outbox row; the
+    control handler later proves whether a processing target has quiesced.
+    """
+
+    REQUESTED = "requested"
+    CANCELLED = "cancelled"
+    TERMINAL = "terminal"
+
+
+class ModelExecutionCancellationGateState(StrEnum):
+    """Persisted lifecycle of one generic model cancellation declaration."""
+
+    REQUESTED = "requested"
+    CANCELLED = "cancelled"
+    TERMINAL = "terminal"
+    BLOCKED = "blocked"
 
 
 @dataclass(slots=True, frozen=True)
@@ -409,6 +437,10 @@ class SessionTransition:
     message_ledger_mutations: tuple[MessageLedgerMutation, ...] = ()
     review_schedules: tuple[SessionReviewSchedule, ...] = ()
     review_schedule_events: tuple[SessionReviewScheduleEvent, ...] = ()
+    review_cancellation_gate_requests: tuple[ReviewCancellationGateRequest, ...] = ()
+    model_execution_cancellation_gate_requests: tuple[
+        ModelExecutionCancellationGateRequest, ...
+    ] = ()
     recovery_commit_intent: RecoveryCommitIntent | None = None
     result: dict[str, Any] = field(default_factory=dict)
     reason: str = ""
@@ -437,6 +469,58 @@ class SessionTransition:
                 self.caused_plan_id,
                 field_name="caused_plan_id",
             ),
+        )
+        requests = tuple(self.review_cancellation_gate_requests)
+        if not all(
+            isinstance(request, ReviewCancellationGateRequest)
+            for request in requests
+        ):
+            raise TypeError(
+                "review_cancellation_gate_requests must contain "
+                "ReviewCancellationGateRequest values"
+            )
+        cancellation_effect_ids = [
+            request.cancellation_effect_id for request in requests
+        ]
+        if len(cancellation_effect_ids) != len(set(cancellation_effect_ids)):
+            raise ValueError(
+                "review_cancellation_gate_requests contains duplicate "
+                "cancellation effect ids"
+            )
+        review_effect_ids = [request.review_effect_id for request in requests]
+        if len(review_effect_ids) != len(set(review_effect_ids)):
+            raise ValueError(
+                "review_cancellation_gate_requests contains duplicate "
+                "review effect ids"
+            )
+        object.__setattr__(self, "review_cancellation_gate_requests", requests)
+        model_requests = tuple(self.model_execution_cancellation_gate_requests)
+        if not all(
+            isinstance(request, ModelExecutionCancellationGateRequest)
+            for request in model_requests
+        ):
+            raise TypeError(
+                "model_execution_cancellation_gate_requests must contain "
+                "ModelExecutionCancellationGateRequest values"
+            )
+        cancellation_effect_ids = [
+            request.cancellation_effect_id for request in model_requests
+        ]
+        if len(cancellation_effect_ids) != len(set(cancellation_effect_ids)):
+            raise ValueError(
+                "model_execution_cancellation_gate_requests contains duplicate "
+                "cancellation effect ids"
+            )
+        target_effect_ids = [request.target_effect_id for request in model_requests]
+        if len(target_effect_ids) != len(set(target_effect_ids)):
+            raise ValueError(
+                "model_execution_cancellation_gate_requests contains duplicate "
+                "target effect ids"
+            )
+        object.__setattr__(
+            self,
+            "model_execution_cancellation_gate_requests",
+            model_requests,
         )
 
 
@@ -496,6 +580,8 @@ __all__ = [
     "ClaimedSessionEvent",
     "EventEnqueueResult",
     "MailboxEventStatus",
+    "ModelExecutionCancellationGateState",
+    "ReviewCancellationGateState",
     "ReviewScheduleStatus",
     "SessionEffect",
     "SessionEventEnvelope",

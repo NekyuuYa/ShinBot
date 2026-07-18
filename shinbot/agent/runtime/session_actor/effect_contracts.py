@@ -33,6 +33,67 @@ DEFAULT_OUTCOME_FENCE_FIELDS: tuple[str, ...] = (
 """Former global baseline for legacy contracts and direct store callers."""
 
 
+ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS: frozenset[tuple[str, int]] = frozenset(
+    {
+        ("active_chat_runtime_reconciliation", 1),
+        ("active_chat_runtime_reconciliation", 2),
+        ("idle_review_planning_cancellation_reconciliation", 1),
+        ("idle_review_planning_cancellation_reconciliation", 2),
+        ("cancel_idle_review_planning", 1),
+        ("cancel_idle_review_planning", 2),
+        ("stop_active_chat_runtime", 1),
+        ("stop_active_chat_runtime", 2),
+        ("cancel_review_workflow", 1),
+        ("run_active_chat_bootstrap", 1),
+        ("run_active_chat_bootstrap", 2),
+        ("run_active_chat_round", 1),
+        ("run_active_chat_round", 2),
+    }
+)
+"""Known historical contracts that cannot be claimed by a future clean-session graph.
+
+The complete effect authority retains these references to decode and audit old
+rows. They remain deliberately unhandled because their persisted shapes do not
+provide the actor-native cancellation and provenance guarantees required for
+new work.
+"""
+
+
+ACTOR_V2_CLEAN_SESSION_EFFECT_REFS: frozenset[tuple[str, int]] = frozenset(
+    {
+        ("cancel_model_execution", 3),
+        ("cancel_review_workflow", 2),
+        ("enqueue_active_chat_exit_request", 1),
+        ("enqueue_active_chat_exit_request", 2),
+        ("enqueue_active_chat_round_due", 1),
+        ("enqueue_active_chat_round_due", 2),
+        ("enqueue_idle_review_planning_deadline", 1),
+        ("enqueue_idle_review_planning_deadline", 2),
+        ("run_active_chat_bootstrap", 3),
+        ("run_active_chat_round", 3),
+        ("run_active_reply_workflow", 1),
+        ("run_active_reply_workflow", 2),
+        ("run_idle_review_planning", 1),
+        ("run_idle_review_planning", 2),
+        ("run_idle_review_planning", 3),
+        ("run_review_workflow", 1),
+        ("run_review_workflow", 2),
+        ("send_poke", 1),
+        ("send_poke", 2),
+        ("send_reaction", 1),
+        ("send_reaction", 2),
+        ("send_reply", 1),
+        ("send_reply", 2),
+    }
+)
+"""Explicitly audited contracts permitted for a future empty-domain canary.
+
+This is an allowlist by design. Adding a durable contract to complete Actor v2
+authority never makes it clean-session executable until its history and
+execution semantics are explicitly classified.
+"""
+
+
 _CURRENT_OUTCOME_FENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "enqueue_idle_review_planning_deadline": (
         "plan_id",
@@ -190,7 +251,20 @@ _ACTOR_NATIVE_ACTIVE_CHAT_V3_OUTCOME_FENCE_FIELDS: dict[str, tuple[str, ...]] = 
         "message_log_ids",
         "round_schedule_id",
     ),
+    "run_idle_review_planning": _CURRENT_OUTCOME_FENCE_FIELDS["run_idle_review_planning"],
 }
+
+_MODEL_EXECUTION_CANCELLATION_V3_OUTCOME_FENCE_FIELDS: tuple[str, ...] = (
+    "plan_id",
+    "active_epoch",
+    "activity_generation",
+    "input_watermark",
+    "input_ledger_sequence",
+    "completion_event_id",
+    "failure_event_id",
+    "superseded_by_event_id",
+)
+"""The v3 control fence that carries an exact nested model target fence."""
 
 
 _LEGACY_V1_OUTCOME_FENCE_FIELDS: dict[str, tuple[str, ...]] = {
@@ -330,10 +404,7 @@ class EffectExecutionContract:
             raise ValueError("effect max_attempts must be at least one")
         if not math.isfinite(retry_base_seconds) or retry_base_seconds < 0:
             raise ValueError("effect retry_base_seconds must be finite and non-negative")
-        if (
-            not math.isfinite(retry_max_seconds)
-            or retry_max_seconds < retry_base_seconds
-        ):
+        if not math.isfinite(retry_max_seconds) or retry_max_seconds < retry_base_seconds:
             raise ValueError(
                 "effect retry_max_seconds must be finite and at least retry_base_seconds"
             )
@@ -426,9 +497,7 @@ _NONNEGATIVE_INTEGER_FENCE_FIELDS = frozenset(
         "state_revision",
     }
 )
-_NONNEGATIVE_FINITE_NUMBER_FENCE_FIELDS = frozenset(
-    {"active_chat_interest_value"}
-)
+_NONNEGATIVE_FINITE_NUMBER_FENCE_FIELDS = frozenset({"active_chat_interest_value"})
 _NULLABLE_INTEGER_FENCE_FIELDS = frozenset(
     {
         "expected_active_epoch",
@@ -457,9 +526,7 @@ _TEXT_FENCE_FIELDS = frozenset(
     }
 )
 _NULLABLE_TEXT_FENCE_FIELDS = frozenset({"superseded_by_event_id"})
-_MESSAGE_LOG_ID_SEQUENCE_FENCE_FIELDS = frozenset(
-    {"handoff_message_log_ids", "message_log_ids"}
-)
+_MESSAGE_LOG_ID_SEQUENCE_FENCE_FIELDS = frozenset({"handoff_message_log_ids", "message_log_ids"})
 
 
 def resolved_outcome_fence_fields(
@@ -512,9 +579,7 @@ class EffectContractAuthority:
         by_ref: dict[tuple[str, int], EffectExecutionContract] = {}
         for contract in contracts:
             if not isinstance(contract, EffectExecutionContract):
-                raise TypeError(
-                    "effect contract authority requires EffectExecutionContract values"
-                )
+                raise TypeError("effect contract authority requires EffectExecutionContract values")
             effect_kind, version = contract.ref
             if type(effect_kind) is not str or type(version) is not int:
                 raise TypeError("effect contract authority requires canonical references")
@@ -675,8 +740,7 @@ def _validate_declared_fence_value(field_name: str, value: object) -> None:
             )
             if message_log_id in seen:
                 raise EffectDeclarationValidationError(
-                    f"effect.payload.{field_name} must not contain duplicate "
-                    "message log ids"
+                    f"effect.payload.{field_name} must not contain duplicate message log ids"
                 )
             seen.add(message_log_id)
         return
@@ -730,17 +794,13 @@ def _exact_text(value: object, *, field_name: str) -> str:
 def _positive_json_integer(value: object, *, field_name: str) -> int:
     result = _nonnegative_json_integer(value, field_name=field_name)
     if result < 1:
-        raise EffectDeclarationValidationError(
-            f"{field_name} must be a positive JSON integer"
-        )
+        raise EffectDeclarationValidationError(f"{field_name} must be a positive JSON integer")
     return result
 
 
 def _nonnegative_json_integer(value: object, *, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise EffectDeclarationValidationError(
-            f"{field_name} must be a non-negative JSON integer"
-        )
+        raise EffectDeclarationValidationError(f"{field_name} must be a non-negative JSON integer")
     return value
 
 
@@ -762,6 +822,45 @@ def builtin_effect_contract_authority() -> EffectContractAuthority:
             *builtin_external_action_effect_contracts(),
         )
     )
+
+
+@lru_cache(maxsize=1)
+def builtin_clean_session_actor_v2_effect_contracts() -> tuple[EffectExecutionContract, ...]:
+    """Return current contracts that a clean Actor v2 session may execute.
+
+    This is a readiness classification, not an activation authorization. The
+    complete authority continues to include every historical contract so
+    persisted rows can be decoded and isolated without executing them.
+    """
+
+    authority_contracts = builtin_effect_contract_authority().contracts()
+    authority_refs = frozenset(contract.ref for contract in authority_contracts)
+    overlap = ACTOR_V2_CLEAN_SESSION_EFFECT_REFS & ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS
+    classified_refs = ACTOR_V2_CLEAN_SESSION_EFFECT_REFS | ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS
+    unclassified = authority_refs - classified_refs
+    unknown_classifications = classified_refs - authority_refs
+    if overlap or unclassified or unknown_classifications:
+        parts: list[str] = []
+        if overlap:
+            parts.append("overlap=" + _render_effect_refs(overlap))
+        if unclassified:
+            parts.append("unclassified=" + _render_effect_refs(unclassified))
+        if unknown_classifications:
+            parts.append("unknown_classifications=" + _render_effect_refs(unknown_classifications))
+        raise RuntimeError(
+            "Actor v2 clean-session contract classification is incomplete: " + "; ".join(parts)
+        )
+    return tuple(
+        contract
+        for contract in authority_contracts
+        if contract.ref in ACTOR_V2_CLEAN_SESSION_EFFECT_REFS
+    )
+
+
+def _render_effect_refs(refs: Iterable[tuple[str, int]]) -> str:
+    """Render durable references in a stable diagnostic order."""
+
+    return ", ".join(f"{effect_kind}:v{version}" for effect_kind, version in sorted(refs))
 
 
 def builtin_session_actor_effect_contracts() -> tuple[EffectExecutionContract, ...]:
@@ -939,7 +1038,26 @@ def builtin_session_actor_effect_contracts() -> tuple[EffectExecutionContract, .
         )
         is not None
     )
-    return (*legacy_contracts, *current_contracts, *actor_native_active_chat_contracts)
+    model_execution_cancellation_contracts = (
+        EffectExecutionContract(
+            effect_kind="cancel_model_execution",
+            version=3,
+            lane=EffectLane.CONTROL,
+            completion_event_kind="ModelExecutionCancellationCompleted",
+            timeout_seconds=5.0,
+            max_attempts=5,
+            retry_base_seconds=0.5,
+            retry_max_seconds=10.0,
+            priority=2,
+            outcome_fence_fields=_MODEL_EXECUTION_CANCELLATION_V3_OUTCOME_FENCE_FIELDS,
+        ),
+    )
+    return (
+        *legacy_contracts,
+        *current_contracts,
+        *actor_native_active_chat_contracts,
+        *model_execution_cancellation_contracts,
+    )
 
 
 def builtin_effect_contract(
@@ -969,8 +1087,11 @@ __all__ = [
     "EffectExecutionContract",
     "EffectLane",
     "DEFAULT_OUTCOME_FENCE_FIELDS",
+    "ACTOR_V2_CLEAN_SESSION_EFFECT_REFS",
+    "ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS",
     "builtin_effect_contract",
     "builtin_effect_contract_authority",
+    "builtin_clean_session_actor_v2_effect_contracts",
     "builtin_session_actor_effect_contracts",
     "resolved_outcome_fence_fields",
     "validate_effect_declaration",

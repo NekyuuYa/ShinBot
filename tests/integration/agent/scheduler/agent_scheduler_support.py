@@ -98,7 +98,13 @@ class RecordingWorkflowDispatcher:
     def stop_active_chat(self, session_id: str) -> None:
         self.active_chat_stops.append(session_id)
 
-    async def plan_idle_review_after_active_chat(self, session_id: str) -> ReviewPlan | None:
+    async def plan_idle_review_after_active_chat(
+        self,
+        session_id: str,
+        *,
+        request: object | None = None,
+    ) -> ReviewPlan | None:
+        del request
         self.idle_review_plan_calls.append(session_id)
         if not self.idle_review_plans:
             return None

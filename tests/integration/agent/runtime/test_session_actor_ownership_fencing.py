@@ -19,10 +19,7 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     completion_event_id,
 )
 from shinbot.agent.runtime.session_actor.effect_store import SQLiteDurableEffectStore
-from shinbot.agent.runtime.session_actor.events import (
-    SessionEventEnvelope,
-    SessionTransition,
-)
+from shinbot.agent.runtime.session_actor.events import SessionEventEnvelope
 from shinbot.agent.runtime.session_actor.reducer import (
     AgentSessionEventKind,
     AgentSessionReducer,
@@ -30,6 +27,9 @@ from shinbot.agent.runtime.session_actor.reducer import (
     IdleExitReducerConfig,
 )
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
+from shinbot.core.dispatch.actor_v2_canary_isolation import (
+    ActorV2CanaryIsolationLeaseBlocked,
+)
 from shinbot.core.dispatch.agent_ownership import (
     AgentRuntimeOwnershipGenerationConflict,
     AgentRuntimeOwnershipMigrationConflict,
@@ -225,7 +225,11 @@ def _completion(effect: DurableEffectEnvelope) -> SessionEventEnvelope:
 
 
 @pytest.mark.asyncio
-async def test_actor_claim_and_commit_fail_after_migration_begins(tmp_path: Path) -> None:
+async def test_actor_migration_rejects_active_mailbox_handoff_atomically(
+    tmp_path: Path,
+) -> None:
+    """A new mailbox handoff prevents an unsafe actor refence."""
+
     database = _database(tmp_path)
     key = SessionKey("profile-a", "profile-a:group:room")
     owner = database.agent_runtime_ownership.claim(
@@ -237,25 +241,23 @@ async def test_actor_claim_and_commit_fail_after_migration_begins(tmp_path: Path
     await store.enqueue(_event(key, owner.generation))
     claim = await store.claim_next(key, worker_id="actor-worker")
     assert claim is not None
-    aggregate = await store.load(key)
-    transition = SessionTransition(
-        aggregate=aggregate.advance(data={"handled": True}),
-        disposition="handled",
-    )
 
-    database.agent_runtime_ownership.begin_migration(
-        key,
-        AgentRuntimeOwnershipMode.LEGACY,
-        expected_generation=owner.generation,
-        reason="switch runtime",
-    )
-
-    with pytest.raises(AgentRuntimeOwnershipGenerationConflict):
-        await store.commit(
-            claim,
-            transition,
-            expected_revision=aggregate.state_revision,
+    with pytest.raises(
+        AgentRuntimeOwnershipMigrationConflict,
+        match="mailbox handoff blocks actor refence",
+    ):
+        database.agent_runtime_ownership.begin_migration(
+            key,
+            AgentRuntimeOwnershipMode.LEGACY,
+            expected_generation=owner.generation,
+            reason="switch runtime",
         )
+
+    current = database.agent_runtime_ownership.get(key)
+    assert current is not None
+    assert current.mode is AgentRuntimeOwnershipMode.ACTOR_V2
+    assert current.status.value == "active"
+    assert current.generation == owner.generation
     assert await store.claim_next(key, worker_id="other-worker") is None
     with database.connect() as conn:
         row = conn.execute(
@@ -309,7 +311,54 @@ async def test_effect_settlement_fails_after_generation_changes(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_actor_abort_refences_and_releases_all_live_work(tmp_path: Path) -> None:
+async def test_canary_isolation_maps_existing_effect_claim_to_lost_ownership(
+    tmp_path: Path,
+) -> None:
+    """A newly added domain interlock uses the effect store's normal lost-claim path."""
+
+    database = _database(tmp_path)
+    key = SessionKey("profile-a", "profile-a:group:room")
+    owner = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="actor active before clean canary",
+    ).ownership
+    actor_store = SQLiteSessionActorStore(database, clock=lambda: 100.0)
+    await actor_store.ensure(key, ownership_generation=owner.generation)
+    _seed_effect(database, key, owner.generation)
+    effect_store = SQLiteDurableEffectStore(
+        database,
+        lease_seconds=5.0,
+        clock=lambda: 100.0,
+        contract_authority=EffectContractAuthority((_contract(),)),
+    )
+    canary = database.actor_v2_canary_isolation_leases.acquire(
+        holder_id="clean-canary-controller",
+    )
+
+    with pytest.raises(EffectClaimLost) as raised:
+        await effect_store.claim_next(
+            worker_id="effect-worker",
+            effect_contracts=(_contract().ref,),
+        )
+
+    assert isinstance(raised.value.__cause__, ActorV2CanaryIsolationLeaseBlocked)
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT status, attempt_count, claim_id FROM agent_effect_outbox"
+        ).fetchone()
+
+    assert row is not None
+    assert tuple(row) == ("pending", 0, "")
+    database.actor_v2_canary_isolation_leases.release(canary)
+
+
+@pytest.mark.asyncio
+async def test_actor_abort_refences_and_releases_non_mailbox_live_work(
+    tmp_path: Path,
+) -> None:
+    """A migration still refences live work that has no mailbox handoff."""
+
     database = _database(tmp_path)
     key = SessionKey("profile-a", "profile-a:group:room")
     owner = database.agent_runtime_ownership.claim(
@@ -318,9 +367,7 @@ async def test_actor_abort_refences_and_releases_all_live_work(tmp_path: Path) -
         reason="actor active",
     ).ownership
     actor_store = SQLiteSessionActorStore(database, clock=lambda: 100.0)
-    await actor_store.enqueue(_event(key, owner.generation))
-    mailbox_claim = await actor_store.claim_next(key, worker_id="actor-worker")
-    assert mailbox_claim is not None
+    await actor_store.ensure(key, ownership_generation=owner.generation)
     _seed_effect(database, key, owner.generation)
     effect_store = SQLiteDurableEffectStore(
         database,
@@ -355,12 +402,6 @@ async def test_actor_abort_refences_and_releases_all_live_work(tmp_path: Path) -
         aggregate = conn.execute(
             "SELECT ownership_generation FROM agent_session_aggregates"
         ).fetchone()
-        mailbox = conn.execute(
-            """
-            SELECT ownership_generation, status, claim_id, lease_owner, lease_until
-            FROM agent_session_mailbox
-            """
-        ).fetchone()
         effect = conn.execute(
             """
             SELECT ownership_generation, status, claim_id, lease_owner, lease_until
@@ -380,22 +421,22 @@ async def test_actor_abort_refences_and_releases_all_live_work(tmp_path: Path) -
             """
         ).fetchone()
     assert tuple(aggregate) == (restored.generation,)
-    assert tuple(mailbox) == (restored.generation, "pending", "", "", None)
     assert tuple(effect) == (restored.generation, "pending", "", "", None)
     assert tuple(ledger) == (restored.generation, ledger_canonical)
     assert tuple(consumption) == (restored.generation, consumption_canonical)
-    recovered_mailbox = await actor_store.claim_next(key, worker_id="actor-recovered")
     recovered_effect = await effect_store.claim_next(
         worker_id="effect-recovered",
         effect_contracts=(_contract().ref,),
     )
-    assert recovered_mailbox is not None
-    assert recovered_mailbox.envelope.ownership_generation == restored.generation
     assert recovered_effect is not None
     assert recovered_effect.effect.ownership_generation == restored.generation
 
 
-def test_legacy_to_actor_completion_refences_seeded_target_state(tmp_path: Path) -> None:
+def test_legacy_to_actor_completion_refences_seeded_target_state_without_mailbox(
+    tmp_path: Path,
+) -> None:
+    """Activation refences target state when no mailbox evidence is present."""
+
     database = _database(tmp_path)
     key = SessionKey("profile-a", "profile-a:group:room")
     legacy = database.agent_runtime_ownership.claim(
@@ -415,15 +456,6 @@ def test_legacy_to_actor_completion_refences_seeded_target_state(tmp_path: Path)
             INSERT INTO agent_session_aggregates (
                 profile_id, session_id, ownership_generation, created_at, updated_at
             ) VALUES (?, ?, ?, 100.0, 100.0)
-            """,
-            (key.profile_id, key.session_id, migrating.generation),
-        )
-        conn.execute(
-            """
-            INSERT INTO agent_session_mailbox (
-                event_id, profile_id, session_id, ownership_generation, kind,
-                occurred_at, available_at, created_at
-            ) VALUES ('seeded', ?, ?, ?, 'Seeded', 100.0, 100.0, 100.0)
             """,
             (key.profile_id, key.session_id, migrating.generation),
         )
@@ -448,8 +480,6 @@ def test_legacy_to_actor_completion_refences_seeded_target_state(tmp_path: Path)
                 """
                 SELECT ownership_generation FROM agent_session_aggregates
                 UNION ALL
-                SELECT ownership_generation FROM agent_session_mailbox
-                UNION ALL
                 SELECT ownership_generation FROM agent_message_ledger
                 UNION ALL
                 SELECT ownership_generation
@@ -469,6 +499,71 @@ def test_legacy_to_actor_completion_refences_seeded_target_state(tmp_path: Path)
         )
     assert generations == {activated.generation}
     assert set(canonicals) == {ledger_canonical, consumption_canonical}
+
+
+def test_legacy_to_actor_completion_rejects_missing_mailbox_handoff_sidecar(
+    tmp_path: Path,
+) -> None:
+    """Activation must not refence a mailbox without immutable handoff proof."""
+
+    database = _database(tmp_path)
+    key = SessionKey("profile-a", "profile-a:group:room")
+    legacy = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.LEGACY,
+        reason="legacy active",
+    ).ownership
+    migrating = database.agent_runtime_ownership.begin_migration(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        expected_generation=legacy.generation,
+        reason="seed mailbox without sidecar",
+    )
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_session_aggregates (
+                profile_id, session_id, ownership_generation, created_at, updated_at
+            ) VALUES (?, ?, ?, 100.0, 100.0)
+            """,
+            (key.profile_id, key.session_id, migrating.generation),
+        )
+        mailbox = conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation, kind,
+                occurred_at, available_at, created_at
+            ) VALUES ('missing-sidecar', ?, ?, ?, 'Seeded', 100.0, 100.0, 100.0)
+            """,
+            (key.profile_id, key.session_id, migrating.generation),
+        )
+        mailbox_id = int(mailbox.lastrowid)
+
+    with pytest.raises(
+        AgentRuntimeOwnershipMigrationConflict,
+        match="evidence_state=missing",
+    ):
+        database.agent_runtime_ownership.complete_migration(
+            key,
+            expected_generation=migrating.generation,
+            reason="must not refence missing mailbox evidence",
+        )
+
+    current = database.agent_runtime_ownership.get(key)
+    assert current is not None
+    assert current.status.value == "migrating"
+    assert current.generation == migrating.generation
+    with database.connect() as conn:
+        mailbox_row = conn.execute(
+            """
+            SELECT ownership_generation
+            FROM agent_session_mailbox
+            WHERE mailbox_id = ?
+            """,
+            (mailbox_id,),
+        ).fetchone()
+    assert mailbox_row is not None
+    assert int(mailbox_row["ownership_generation"]) == migrating.generation
 
 
 def test_legacy_to_actor_completion_rejects_live_target_lease(tmp_path: Path) -> None:

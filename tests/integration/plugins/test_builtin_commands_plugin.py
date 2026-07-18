@@ -399,7 +399,7 @@ async def test_builtin_commands_plugin_unmute_uses_cmd_mute_permission(
         )
     )
 
-    runtime.pause_session_until(session.id, pause_until=9999999999.0)
+    await runtime.pause_session_until(session.id, pause_until=9999999999.0)
 
     await bot.on_event(make_message_event(content="/unmute", instance_id="inst1"), adapter)
     await asyncio.sleep(0)

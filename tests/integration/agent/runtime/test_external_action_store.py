@@ -12,6 +12,7 @@ import pytest
 from shinbot.agent.runtime.session_actor.effect_executor import ClaimedEffect
 from shinbot.agent.runtime.session_actor.effect_store import SQLiteDurableEffectStore
 from shinbot.agent.runtime.session_actor.external_action_store import (
+    ClaimedExternalAction,
     ExternalActionClaimLost,
     ExternalActionConflict,
     ExternalActionEffectClaimLost,
@@ -30,11 +31,18 @@ from shinbot.agent.runtime.session_actor.external_actions import (
     materialize_external_action_effect,
 )
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
+from shinbot.core.dispatch.actor_v2_admission import ActorV2AdmissionGrant
 from shinbot.core.dispatch.agent_identity import SessionKey
 from shinbot.core.dispatch.agent_ownership import (
     AgentRuntimeOwnershipMigrationConflict,
     AgentRuntimeOwnershipMode,
 )
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
+from shinbot.core.dispatch.fenced_wake_target_lease import (
+    FencedActorExecutionBinding,
+    FencedWakeTargetLeaseError,
+)
+from shinbot.core.dispatch.mailbox_handoff import MailboxHandoffTarget
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
 
@@ -78,6 +86,82 @@ async def _make_store(
         ),
         resolved_key,
     )
+
+
+async def _make_fenced_store(
+    tmp_path: Path,
+    now: list[float],
+) -> tuple[
+    DatabaseManager,
+    SQLiteExternalActionReceiptStore,
+    SQLiteDurableEffectStore,
+    SessionKey,
+    ActorV2AdmissionGrant,
+    int,
+]:
+    """Create one active admission-fenced session for receipt lease tests."""
+
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "profile-a:group:fenced-action-room")
+    admission_grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="fenced-external-action-test",
+        ttl_seconds=3600.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="fenced external action receipt test",
+        admission_grant=admission_grant,
+    ).ownership
+    await SQLiteSessionActorStore(database, clock=lambda: now[0]).ensure(
+        key,
+        ownership_generation=ownership.generation,
+    )
+    return (
+        database,
+        SQLiteExternalActionReceiptStore(
+            database,
+            lease_seconds=5.0,
+            clock=lambda: now[0],
+        ),
+        SQLiteDurableEffectStore(
+            database,
+            lease_seconds=5.0,
+            clock=lambda: now[0],
+        ),
+        key,
+        admission_grant,
+        ownership.generation,
+    )
+
+
+def _execution_binding(
+    database: DatabaseManager,
+    *,
+    key: SessionKey,
+    ownership_generation: int,
+    admission_grant: ActorV2AdmissionGrant,
+    target_incarnation_id: str,
+) -> FencedActorExecutionBinding:
+    """Acquire one exact target capability for an external-action receipt."""
+
+    request = FencedMailboxWakeRequest(
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_fence_id=admission_grant.fence.fence_id,
+        admission_fence_generation=admission_grant.fence.generation,
+    )
+    target_lease = database.actor_v2_fenced_wake_target_leases.acquire(
+        request,
+        target=MailboxHandoffTarget(
+            "external-action-test-target",
+            target_incarnation_id,
+        ),
+        ttl_seconds=60.0,
+    )
+    return FencedActorExecutionBinding(request=request, target_lease=target_lease)
 
 
 async def _add_actor_key(
@@ -338,6 +422,102 @@ async def _claim_existing_effect(
     assert claim is not None
     assert claim.effect.effect_id == request.effect_id
     return claim
+
+
+@pytest.mark.asyncio
+async def test_fenced_receipt_store_rejects_lost_target_lifecycle_mutations(
+    tmp_path: Path,
+) -> None:
+    """A released target cannot prepare, claim, settle, or renew an action."""
+
+    now = [100.0]
+    (
+        database,
+        receipts,
+        effects,
+        key,
+        admission_grant,
+        ownership_generation,
+    ) = await _make_fenced_store(tmp_path, now)
+    request = _request(key, ownership_generation=ownership_generation)
+    effect_claim = await _seed_and_claim_effect(
+        database,
+        effects,
+        request,
+        worker_id="fenced-action-worker",
+        now=now[0],
+    )
+    first_binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+        target_incarnation_id="external-action-incarnation-a",
+    )
+    database.actor_v2_fenced_wake_target_leases.release(first_binding.target_lease)
+
+    with pytest.raises(FencedWakeTargetLeaseError):
+        await receipts.prepare(
+            request,
+            effect_claim=effect_claim,
+            execution_binding=first_binding,
+        )
+
+    second_binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+        target_incarnation_id="external-action-incarnation-b",
+    )
+    prepared = await receipts.prepare(
+        request,
+        effect_claim=effect_claim,
+        execution_binding=second_binding,
+    )
+    assert prepared.status is ExternalActionReceiptStatus.PREPARED
+    action_claim = await receipts.begin_execution(
+        request,
+        effect_claim=effect_claim,
+        execution_binding=second_binding,
+    )
+    assert isinstance(action_claim, ClaimedExternalAction)
+    database.actor_v2_fenced_wake_target_leases.release(second_binding.target_lease)
+
+    with pytest.raises(FencedWakeTargetLeaseError):
+        await receipts.renew_lease(
+            action_claim,
+            effect_claim=effect_claim,
+            execution_binding=second_binding,
+        )
+    with pytest.raises(FencedWakeTargetLeaseError):
+        await receipts.reject_before_dispatch(
+            action_claim,
+            reason_code="target_lease_lost",
+            execution_binding=second_binding,
+        )
+    with pytest.raises(FencedWakeTargetLeaseError):
+        await receipts.mark_unknown(
+            action_claim,
+            reason_code="target_lease_lost",
+            execution_binding=second_binding,
+        )
+    with pytest.raises(FencedWakeTargetLeaseError):
+        await receipts.settle_succeeded(
+            action_claim,
+            platform_result={"platform_message_id": "message-a"},
+            assistant_message=_assistant_message(request),
+            execution_binding=second_binding,
+        )
+    with database.connect() as conn:
+        status = conn.execute(
+            """
+            SELECT status FROM agent_external_action_receipts
+            WHERE idempotency_key = ?
+            """,
+            (request.idempotency_key,),
+        ).fetchone()["status"]
+    assert status == ExternalActionReceiptStatus.EXECUTING.value
 
 
 def test_fresh_database_installs_external_action_receipt_schema(

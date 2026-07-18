@@ -167,6 +167,23 @@ def test_ingress_job_envelope_carries_mutable_ownership_fence_outside_payload() 
     assert "ownership_generation" not in envelope.payload
 
 
+def test_ingress_job_envelope_supports_reserved_admission_scope_outside_payload() -> None:
+    payload = _ingress_payload()
+
+    envelope = payload.to_job_envelope(
+        ownership_generation=0,
+        admission_fence_id="fence-a",
+        admission_fence_generation=3,
+    )
+
+    assert envelope.profile_id == "bot-a"
+    assert envelope.session_id == "bot-a:group:room-a"
+    assert envelope.is_reserved_admission is True
+    assert envelope.admission_fence_id == "fence-a"
+    assert envelope.admission_fence_generation == 3
+    assert "admission_fence_id" not in envelope.payload
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -181,6 +198,39 @@ def test_ingress_job_envelope_carries_mutable_ownership_fence_outside_payload() 
     ],
 )
 def test_routing_job_rejects_partial_ownership_fence(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="provided together"):
+        MessageRoutingJobEnvelope(
+            job_id="job-a",
+            idempotency_key="ingress-a",
+            trace_id="trace-a",
+            **changes,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {
+            "profile_id": "bot-a",
+            "session_id": "bot-a:group:room-a",
+            "ownership_generation": 0,
+            "admission_fence_id": "fence-a",
+        },
+        {
+            "profile_id": "bot-a",
+            "session_id": "bot-a:group:room-a",
+            "ownership_generation": 0,
+            "admission_fence_generation": 1,
+        },
+        {
+            "admission_fence_id": "fence-a",
+            "admission_fence_generation": 1,
+        },
+    ],
+)
+def test_routing_job_rejects_partial_admission_fence(
     changes: dict[str, object],
 ) -> None:
     with pytest.raises(ValueError, match="provided together"):

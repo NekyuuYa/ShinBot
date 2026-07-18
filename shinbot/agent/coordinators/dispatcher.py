@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.coordinators.active_chat.models import ActiveChatMessageSignal
@@ -13,10 +14,15 @@ from shinbot.agent.coordinators.review.models import (
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
 )
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskQuiescence,
+    cancel_and_wait_for_tasks,
+)
 from shinbot.agent.scheduler.models import (
     ActiveChatState,
     ActiveReplyThreshold,
     HighPriorityEvent,
+    IdleReviewPlanningRequest,
     MentionSensitivity,
     ReviewPlan,
     UnreadMessage,
@@ -31,6 +37,27 @@ from shinbot.utils.logger import format_log_event, get_logger
 logger = get_logger(__name__, source="agent:workflow", color="green")
 
 ReviewRunRecorder = Callable[[str, Any, list[UnreadMessage]], None]
+
+
+@dataclass(slots=True, frozen=True)
+class IdleReviewPlanningRunResult:
+    """Sanitized result of one idle-review model planning invocation."""
+
+    plan: ReviewPlan | None
+    outcome: str
+    reason: str
+    failure_code: str = ""
+    model_execution_id: str = ""
+    prompt_signature: str = ""
+    requested_next_review_after_seconds: float | None = None
+    applied_next_review_after_seconds: float | None = None
+
+
+IdleReviewPlanningRecorder = Callable[
+    [IdleReviewPlanningRequest, IdleReviewPlanningRunResult],
+    None,
+]
+ActiveReplyCompletionHandler = Callable[[str], Awaitable[None]]
 
 if TYPE_CHECKING:
     from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
@@ -54,18 +81,24 @@ class ActiveReplyDispatcher:
         active_chat_workflow: ActiveChatCoordinator | None = None,
         summary_service: Any | None = None,
         review_config: ReviewWorkflowConfig | None = None,
+        active_reply_completion_handler: ActiveReplyCompletionHandler | None = None,
         idle_review_planning_runner: IdleReviewPlanningStageRunner | None = None,
+        idle_review_planning_recorder: IdleReviewPlanningRecorder | None = None,
         review_run_recorder: ReviewRunRecorder | None = None,
     ) -> None:
         self._review_coordinator = review_coordinator
         self._active_chat_workflow = active_chat_workflow
         self._summary_service = summary_service
         self._review_config = review_config or ReviewWorkflowConfig()
+        self._active_reply_completion_handler = active_reply_completion_handler
         self._idle_review_planning_runner = idle_review_planning_runner
+        self._idle_review_planning_recorder = idle_review_planning_recorder
         self._review_run_recorder = review_run_recorder
         self._agent_scheduler: AgentScheduler | None = None
         self.last_review_result: ReviewWorkflowResult | None = None
         self.last_review_explanation: ReviewWorkflowExplanation | None = None
+        self._active_reply_tasks: dict[str, asyncio.Task[None]] = {}
+        self._active_reply_task_scope: AgentTaskScope | None = None
         self._review_tasks: dict[str, asyncio.Task[None]] = {}
         self._review_task_scope: AgentTaskScope | None = None
 
@@ -77,6 +110,11 @@ class ActiveReplyDispatcher:
         """Bind the task scope used to run interruptible review workflows."""
 
         self._review_task_scope = scope
+
+    def bind_active_reply_task_scope(self, scope: AgentTaskScope) -> None:
+        """Bind the task scope used to run active reply outside scheduler entry."""
+
+        self._active_reply_task_scope = scope
 
     async def run_active_reply(
         self,
@@ -94,12 +132,74 @@ class ActiveReplyDispatcher:
         events: list[HighPriorityEvent],
         trace_id: str = "",
     ) -> None:
-        """Handle a high-priority message in ACTIVE_REPLY state.
+        """Start one high-priority reply workflow in ACTIVE_REPLY state.
 
         Active reply reuses the active-chat fast workflow as a one-shot reply
         path. It bypasses semantic waiting because mentions/replies already
-        passed the scheduler's high-priority policy.
+        passed the scheduler's high-priority policy. When the runtime provides
+        a task scope, the model-bearing portion is detached from scheduler
+        entry and completion is handed back through the runtime-owned fence.
         """
+        if self._active_reply_task_scope is not None:
+            task = self._active_reply_task_scope.create_task(
+                self._active_reply_task_key(session_id),
+                self._run_active_reply(
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    sender_id=sender_id,
+                    response_profile=response_profile,
+                    is_mentioned=is_mentioned,
+                    is_reply_to_bot=is_reply_to_bot,
+                    is_mention_to_other=is_mention_to_other,
+                    is_poke_to_bot=is_poke_to_bot,
+                    is_poke_to_other=is_poke_to_other,
+                    self_platform_id=self_platform_id,
+                    events=events,
+                    trace_id=trace_id,
+                ),
+                name=f"agent-active-reply:{session_id}",
+            )
+            self._active_reply_tasks[session_id] = task
+            task.add_done_callback(
+                lambda completed, target_session_id=session_id: self._finish_active_reply_task(
+                    target_session_id,
+                    completed,
+                )
+            )
+            return
+        await self._run_active_reply(
+            session_id=session_id,
+            message_log_id=message_log_id,
+            sender_id=sender_id,
+            response_profile=response_profile,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+            is_mention_to_other=is_mention_to_other,
+            is_poke_to_bot=is_poke_to_bot,
+            is_poke_to_other=is_poke_to_other,
+            self_platform_id=self_platform_id,
+            events=events,
+            trace_id=trace_id,
+        )
+
+    async def _run_active_reply(
+        self,
+        *,
+        session_id: str,
+        message_log_id: int,
+        sender_id: str,
+        response_profile: str,
+        is_mentioned: bool,
+        is_reply_to_bot: bool,
+        is_mention_to_other: bool,
+        is_poke_to_bot: bool,
+        is_poke_to_other: bool,
+        self_platform_id: str,
+        events: list[HighPriorityEvent],
+        trace_id: str = "",
+    ) -> None:
+        """Run the model-bearing active reply body outside scheduler admission."""
+
         if self._active_chat_workflow is None or self._agent_scheduler is None:
             logger.warning(
                 format_log_event(
@@ -117,8 +217,7 @@ class ActiveReplyDispatcher:
                     trace_id=trace_id,
                 )
             )
-            if self._agent_scheduler is not None:
-                await self._agent_scheduler.complete_active_reply(session_id)
+            await self._complete_active_reply(session_id)
             return
 
         now = time.time()
@@ -211,8 +310,7 @@ class ActiveReplyDispatcher:
         finally:
             if self._active_chat_workflow is not None:
                 self._active_chat_workflow.stop_active_chat(session_id)
-            if self._agent_scheduler is not None:
-                await self._agent_scheduler.complete_active_reply(session_id)
+            await self._complete_active_reply(session_id)
 
     async def run_review(
         self,
@@ -263,10 +361,51 @@ class ActiveReplyDispatcher:
         if previous is None or previous is asyncio.current_task():
             return False
         if not previous.done():
-            previous.cancel()
+            # A second cancellation can interrupt a workflow's durable cleanup tail.
+            if previous.cancelling() == 0:
+                previous.cancel()
             await asyncio.gather(previous, return_exceptions=True)
+            while not previous.done():
+                await asyncio.sleep(0)
         self._finish_review_task(session_id, previous)
         return True
+
+    async def _complete_active_reply(self, session_id: str) -> None:
+        """Return active-reply completion through the configured state owner."""
+
+        completion_handler = self._active_reply_completion_handler
+        if completion_handler is not None:
+            await completion_handler(session_id)
+            return
+        if self._agent_scheduler is not None:
+            await self._agent_scheduler.complete_active_reply(session_id)
+
+    @staticmethod
+    def _active_reply_task_key(session_id: str) -> str:
+        """Build the stable per-session active reply task suffix."""
+
+        return f"session:{session_id}"
+
+    def _finish_active_reply_task(
+        self,
+        session_id: str,
+        task: asyncio.Task[Any],
+    ) -> None:
+        """Forget a completed active reply task without masking its failure."""
+
+        if self._active_reply_tasks.get(session_id) is task:
+            self._active_reply_tasks.pop(session_id, None)
+
+    def cancel_active_reply(self, session_id: str) -> None:
+        """Cancel an in-flight active reply without cancelling its own completion task."""
+
+        task = self._active_reply_tasks.get(session_id)
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        if self._active_reply_task_scope is not None:
+            self._active_reply_task_scope.cancel(self._active_reply_task_key(session_id))
+            return
+        task.cancel()
 
     async def _run_review_workflow(
         self,
@@ -355,6 +494,41 @@ class ActiveReplyDispatcher:
         if task is None or task.done() or task is asyncio.current_task():
             return
         task.cancel()
+
+    def pending_session_tasks(self, session_id: str) -> list[asyncio.Task[Any]]:
+        """Return dispatcher-owned active reply and review tasks for one session.
+
+        Review stage tails such as bootstrap and reply-commit work belong to
+        ``ReviewCoordinator``. Callers that need a local task-drain observation
+        must quiesce that owner separately after these primary tasks.
+        """
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id must not be empty")
+        tasks = (
+            self._active_reply_tasks.get(normalized_session_id),
+            self._review_tasks.get(normalized_session_id),
+        )
+        return [task for task in tasks if task is not None and not task.done()]
+
+    async def quiesce_session_tasks(
+        self,
+        session_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> AgentTaskQuiescence:
+        """Cancel and observe dispatcher-owned active reply and review tasks locally.
+
+        This only observes the known asyncio task in this process. It neither
+        pauses future review admission nor proves anything about model calls,
+        outbound replies, or another runtime process.
+        """
+
+        return await cancel_and_wait_for_tasks(
+            self.pending_session_tasks(session_id),
+            timeout_seconds=timeout_seconds,
+        )
 
     def _record_review_run(
         self,
@@ -515,16 +689,45 @@ class ActiveReplyDispatcher:
     async def plan_idle_review_after_active_chat(
         self,
         session_id: str,
+        *,
+        request: IdleReviewPlanningRequest | None = None,
     ) -> ReviewPlan | None:
-        """Plan the next review before ACTIVE_CHAT returns to IDLE."""
+        """Plan the next review before ACTIVE_CHAT returns to IDLE.
+
+        When ``request`` is supplied, the scheduler has already frozen an
+        exit intent under its session mutex.  This method must then run only
+        external/model work and build its prompt from that snapshot rather
+        than reading mutable scheduler state again.
+        """
         if self._agent_scheduler is None or self._idle_review_planning_runner is None:
+            result = IdleReviewPlanningRunResult(
+                plan=None,
+                outcome="fallback",
+                reason="planner_unavailable",
+            )
+            self._record_idle_review_planning_result(request, result)
+            logger.info(
+                format_log_event(
+                    "agent.idle_review_planning.fallback",
+                    session_id=session_id,
+                    trigger=request.trigger.value if request is not None else "",
+                    reason="planner_unavailable",
+                )
+            )
             return None
         checked_at = time.time()
-        previous_plan = self._agent_scheduler.review_plan_for(session_id)
+        previous_plan = (
+            request.expected_review_plan
+            if request is not None
+            else self._agent_scheduler.review_plan_for(session_id)
+        )
         logger.debug(
             format_log_event(
                 "agent.idle_review_planning.start",
                 session_id=session_id,
+                trigger=request.trigger.value if request is not None else "",
+                signal_id=request.signal_id if request is not None else "",
+                active_epoch=request.active_epoch if request is not None else "",
                 previous_next_review_at=(
                     f"{previous_plan.next_review_at:.2f}"
                     if previous_plan is not None
@@ -535,25 +738,56 @@ class ActiveReplyDispatcher:
         stage_input = self._build_idle_review_planning_input(
             session_id=session_id,
             now=checked_at,
+            request=request,
         )
         try:
             output = await self._idle_review_planning_runner.run(stage_input)
         except Exception as exc:
+            result = IdleReviewPlanningRunResult(
+                plan=None,
+                outcome="fallback",
+                reason="planner_exception",
+                failure_code=type(exc).__name__,
+            )
+            self._record_idle_review_planning_result(request, result)
             logger.exception(
                 format_log_event(
                     "agent.idle_review_planning.failed",
                     session_id=session_id,
+                    trigger=request.trigger.value if request is not None else "",
+                    signal_id=request.signal_id if request is not None else "",
                     error_code=type(exc).__name__,
                 )
             )
             return None
         seconds = output.next_review_after_seconds
         if seconds is None:
-            logger.debug(
+            result = IdleReviewPlanningRunResult(
+                plan=None,
+                outcome="fallback",
+                reason=(
+                    output.failure_code
+                    or output.reason
+                    or "missing_next_review_after_seconds"
+                ),
+                failure_code=output.failure_code,
+                model_execution_id=output.model_execution_id,
+                prompt_signature=output.prompt_signature,
+            )
+            self._record_idle_review_planning_result(request, result)
+            logger.info(
                 format_log_event(
-                    "agent.idle_review_planning.skip",
+                    "agent.idle_review_planning.fallback",
                     session_id=session_id,
-                    reason="missing_next_review_after_seconds",
+                    trigger=request.trigger.value if request is not None else "",
+                    signal_id=request.signal_id if request is not None else "",
+                    reason=(
+                        output.failure_code
+                        or output.reason
+                        or "missing_next_review_after_seconds"
+                    ),
+                    model_execution_id=output.model_execution_id,
+                    prompt_signature=output.prompt_signature,
                 )
             )
             return None
@@ -562,7 +796,8 @@ class ActiveReplyDispatcher:
             min_seconds,
             self._review_config.idle_review_planning_max_after_seconds,
         )
-        seconds = min(max(seconds, min_seconds), max_seconds)
+        requested_seconds = seconds
+        seconds = min(max(requested_seconds, min_seconds), max_seconds)
         previous_threshold = (
             previous_plan.active_reply_threshold if previous_plan is not None else None
         )
@@ -591,20 +826,62 @@ class ActiveReplyDispatcher:
             ),
             updated_at=scheduled_from,
         )
+        self._record_idle_review_planning_result(
+            request,
+            IdleReviewPlanningRunResult(
+                plan=plan,
+                outcome="model_plan",
+                reason=plan.reason,
+                model_execution_id=output.model_execution_id,
+                prompt_signature=output.prompt_signature,
+                requested_next_review_after_seconds=requested_seconds,
+                applied_next_review_after_seconds=seconds,
+            ),
+        )
         logger.debug(
             format_log_event(
                 "agent.idle_review_planning.finish",
                 session_id=session_id,
+                trigger=request.trigger.value if request is not None else "",
+                signal_id=request.signal_id if request is not None else "",
+                active_epoch=request.active_epoch if request is not None else "",
                 planning_latency_seconds=f"{max(0.0, scheduled_from - checked_at):.2f}",
+                requested_next_review_after_seconds=f"{requested_seconds:.2f}",
                 next_review_after_seconds=f"{seconds:.2f}",
                 next_review_at=f"{plan.next_review_at:.2f}",
                 reason=plan.reason,
                 mention_sensitivity=plan.mention_sensitivity.value,
                 mention_wake_count=plan.active_reply_threshold.at_count,
                 mention_wake_window_seconds=plan.active_reply_threshold.window_seconds,
+                clamped=requested_seconds != seconds,
+                model_execution_id=output.model_execution_id,
+                prompt_signature=output.prompt_signature,
             )
         )
         return plan
+
+    def _record_idle_review_planning_result(
+        self,
+        request: IdleReviewPlanningRequest | None,
+        result: IdleReviewPlanningRunResult,
+    ) -> None:
+        """Report a sanitized model outcome without affecting scheduler liveness."""
+
+        recorder = self._idle_review_planning_recorder
+        if request is None or recorder is None:
+            return
+        try:
+            recorder(request, result)
+        except Exception as exc:
+            logger.warning(
+                format_log_event(
+                    "agent.idle_review_planning.record_failed",
+                    session_id=request.session_id,
+                    signal_id=request.signal_id,
+                    error_code=type(exc).__name__,
+                ),
+                exc_info=True,
+            )
 
 
     def _save_active_chat_summary(self, session_id: str) -> None:
@@ -648,6 +925,7 @@ class ActiveReplyDispatcher:
         *,
         session_id: str,
         now: float,
+        request: IdleReviewPlanningRequest | None = None,
     ) -> ReviewStageInput:
         snapshot = (
             self._active_chat_workflow.summary_snapshot_for(session_id)
@@ -655,14 +933,27 @@ class ActiveReplyDispatcher:
             else None
         )
         active_chat_state = (
-            self._agent_scheduler.active_chat_state_for(session_id)
-            if self._agent_scheduler is not None
-            else None
+            request.planning_active_chat_state
+            if request is not None
+            else (
+                self._agent_scheduler.active_chat_state_for(session_id)
+                if self._agent_scheduler is not None
+                else None
+            )
         )
         metadata: dict[str, object] = {
             "transition": "ACTIVE_CHAT->IDLE",
             "now": now,
         }
+        if request is not None:
+            metadata.update(
+                {
+                    "planner_trigger": request.trigger.value,
+                    "planner_signal_id": request.signal_id,
+                    "planner_checked_at": request.checked_at,
+                    "planner_active_epoch": request.active_epoch,
+                }
+            )
         if active_chat_state is not None:
             metadata.update(
                 {

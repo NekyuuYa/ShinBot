@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from agent_scheduler_support import (
     ActiveChatDisposition,
     ActiveChatPolicyConfig,
@@ -93,6 +95,228 @@ async def test_scheduler_accept_signal_applies_active_chat_bootstrap() -> None:
     assert decision.returned_to_idle is False
     assert decision.active_chat_state is not None
     assert decision.active_chat_state.bootstrap_disposition == ActiveChatDisposition.EXIT_SOON
+
+
+@pytest.mark.asyncio
+async def test_scheduler_bootstrap_exit_uses_idle_review_planner() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    planned_review = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=321.0,
+        reason="bootstrap_model_plan",
+        updated_at=61.0,
+    )
+    dispatcher.idle_review_plans.append(planned_review)
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=4.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+
+    decision = await scheduler.accept_signal(
+        make_active_chat_bootstrap_signal(
+            disposition=ActiveChatDisposition.EXIT_SOON,
+            active_epoch=completion.active_chat_state.active_epoch,
+            occurred_at=61.0,
+        )
+    )
+
+    assert decision is not None
+    assert decision.returned_to_idle is True
+    assert decision.next_review_plan == planned_review
+    assert scheduler.review_plan_for("bot:group:room") == planned_review
+    assert dispatcher.idle_review_plan_calls == ["bot:group:room"]
+
+
+def test_scheduler_applies_frozen_idle_planning_request_after_external_model_work() -> None:
+    """A caller can run planning outside the scheduler and commit the result once."""
+
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=4.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+    signal = make_active_chat_bootstrap_signal(
+        disposition=ActiveChatDisposition.EXIT_SOON,
+        active_epoch=completion.active_chat_state.active_epoch,
+        occurred_at=61.0,
+    )
+
+    request = scheduler.prepare_idle_review_planning_request(signal)
+
+    assert request is not None
+    assert request.signal_id == signal.signal_id
+    assert request.expected_active_chat_state == completion.active_chat_state
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    planned_review = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=321.0,
+        reason="frozen_model_plan",
+        updated_at=61.0,
+    )
+
+    decision = scheduler.apply_idle_review_planning_request(
+        request,
+        next_review_plan=planned_review,
+    )
+
+    assert decision.returned_to_idle is True
+    assert decision.next_review_plan == planned_review
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert scheduler.review_plan_for("bot:group:room") == planned_review
+
+
+def test_scheduler_rejects_frozen_idle_planning_request_after_active_state_changes() -> None:
+    """A model result cannot overwrite a message or timer update that won the race."""
+
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=4.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+    request = scheduler.prepare_idle_review_planning_request(
+        make_active_chat_bootstrap_signal(
+            disposition=ActiveChatDisposition.EXIT_SOON,
+            active_epoch=completion.active_chat_state.active_epoch,
+            occurred_at=61.0,
+        )
+    )
+    assert request is not None
+    scheduler._state_store.set_active_chat_state(
+        replace(
+            completion.active_chat_state,
+            interest_value=completion.active_chat_state.interest_value + 1.0,
+            updated_at=61.0,
+        )
+    )
+
+    decision = scheduler.apply_idle_review_planning_request(
+        request,
+        next_review_plan=ReviewPlan(
+            session_id="bot:group:room",
+            next_review_at=321.0,
+            reason="stale_model_plan",
+            updated_at=61.0,
+        ),
+    )
+
+    assert decision.skipped_reason == "idle_review_planning_stale"
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert scheduler.review_plan_for("bot:group:room") is None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_bootstrap_does_not_plan_while_active_chat_remains_live() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=15.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+
+    decision = await scheduler.accept_signal(
+        make_active_chat_bootstrap_signal(
+            disposition=ActiveChatDisposition.EXIT_SOON,
+            active_epoch=completion.active_chat_state.active_epoch,
+            occurred_at=61.0,
+        )
+    )
+
+    assert decision is not None
+    assert decision.bootstrap_applied is True
+    assert decision.returned_to_idle is False
+    assert dispatcher.idle_review_plan_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_bootstrap_rechecks_epoch_after_idle_review_planning() -> None:
+    class EpochChangingPlanner(RecordingWorkflowDispatcher):
+        scheduler: AgentScheduler | None = None
+
+        async def plan_idle_review_after_active_chat(
+            self,
+            session_id: str,
+        ) -> ReviewPlan | None:
+            self.idle_review_plan_calls.append(session_id)
+            assert self.scheduler is not None
+            active_chat_state = self.scheduler.active_chat_state_for(session_id)
+            assert active_chat_state is not None
+            self.scheduler._state_store.set_active_chat_state(
+                replace(active_chat_state, active_epoch=active_chat_state.active_epoch + 1)
+            )
+            return ReviewPlan(
+                session_id=session_id,
+                next_review_at=321.0,
+                reason="stale_bootstrap_model_plan",
+                updated_at=61.0,
+            )
+
+    dispatcher = EpochChangingPlanner()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    dispatcher.scheduler = scheduler
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=4.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+    original_epoch = completion.active_chat_state.active_epoch
+
+    decision = await scheduler.accept_signal(
+        make_active_chat_bootstrap_signal(
+            disposition=ActiveChatDisposition.EXIT_SOON,
+            active_epoch=original_epoch,
+            occurred_at=61.0,
+        )
+    )
+
+    assert decision is not None
+    assert decision.bootstrap_applied is False
+    assert decision.skipped_reason == "active_epoch_mismatch"
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert scheduler.review_plan_for("bot:group:room") is None
+    assert dispatcher.idle_review_plan_calls == ["bot:group:room"]
 
 
 def test_scheduler_active_chat_bootstrap_can_return_idle_and_stop_runtime() -> None:
@@ -287,6 +511,62 @@ async def test_active_chat_timer_service_drives_scheduler_idle_transition() -> N
     assert scheduler.review_plan_for("bot:group:room").reason == "timer_service_settled"
     assert dispatcher.idle_review_plan_calls == ["bot:group:room"]
     assert dispatcher.active_chat_stops == ["bot:group:room"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_tick_rechecks_epoch_after_idle_review_planning() -> None:
+    class EpochChangingPlanner(RecordingWorkflowDispatcher):
+        scheduler: AgentScheduler | None = None
+
+        async def plan_idle_review_after_active_chat(
+            self,
+            session_id: str,
+        ) -> ReviewPlan | None:
+            self.idle_review_plan_calls.append(session_id)
+            assert self.scheduler is not None
+            active_chat_state = self.scheduler.active_chat_state_for(session_id)
+            assert active_chat_state is not None
+            self.scheduler._state_store.set_active_chat_state(
+                replace(active_chat_state, active_epoch=active_chat_state.active_epoch + 1)
+            )
+            return ReviewPlan(
+                session_id=session_id,
+                next_review_at=321.0,
+                reason="stale_timer_model_plan",
+                updated_at=70.0,
+            )
+
+    dispatcher = EpochChangingPlanner()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=10.0,
+                idle_interest_threshold=5.0,
+                decay_half_life_seconds=5.0,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    dispatcher.scheduler = scheduler
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+
+    decision = await scheduler.accept_signal(
+        make_active_chat_tick_signal(occurred_at=70.0)
+    )
+
+    assert decision.skipped_reason == "active_epoch_mismatch"
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert scheduler.review_plan_for("bot:group:room") is None
+    assert dispatcher.idle_review_plan_calls == ["bot:group:room"]
 
 
 @pytest.mark.asyncio

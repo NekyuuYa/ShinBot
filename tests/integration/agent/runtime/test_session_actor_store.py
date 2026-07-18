@@ -34,7 +34,9 @@ from shinbot.agent.runtime.session_actor.store import (
     MailboxLeaseConflict,
     SQLiteSessionActorStore,
 )
+from shinbot.core.dispatch.actor_v2_admission import ActorV2AdmissionFenceNotFound
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
+from shinbot.core.dispatch.mailbox_handoff import MailboxHandoffEvidenceState
 from shinbot.persistence import DatabaseManager
 
 _TEST_EFFECT_CONTRACTS = {
@@ -235,6 +237,331 @@ async def test_sqlite_session_store_enqueue_is_durably_idempotent(
         _event("same-event", SessionKey("profile-b", key.session_id))
     )
     assert other_profile.inserted is True
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_store_records_fenced_handoff_for_new_mailbox(
+    tmp_path: Path,
+) -> None:
+    """A new fenced actor mailbox retains its exact admission evidence."""
+
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "instance:group:fenced-handoff")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="session-store-fenced-handoff",
+        ttl_seconds=300.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="session actor store fenced handoff test",
+        admission_grant=grant,
+    ).ownership
+    store = SQLiteSessionActorStore(database, clock=lambda: 100.0)
+
+    result = await store.enqueue(
+        replace(_event("fenced-handoff-event", key), ownership_generation=ownership.generation)
+    )
+
+    assert result.inserted is True
+    with database.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT mailbox_id
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, "fenced-handoff-event"),
+        ).fetchone()
+    assert row is not None
+    record = database.actor_v2_mailbox_handoffs.read(int(row["mailbox_id"]))
+    assert record is not None
+    assert record.evidence.state is MailboxHandoffEvidenceState.FENCED
+    assert record.evidence.as_fenced_wake_request().ownership_generation == ownership.generation
+    assert record.evidence.admission_fence_id == ownership.admission_fence_id
+    assert (
+        record.evidence.admission_fence_generation
+        == ownership.admission_fence_generation
+    )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_store_records_fenced_handoff_for_recovery_mailbox(
+    tmp_path: Path,
+) -> None:
+    """Recovery discovery uses the same exact sidecar producer boundary."""
+
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "instance:group:fenced-recovery-handoff")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="session-store-fenced-recovery-handoff",
+        ttl_seconds=300.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="session actor store fenced recovery handoff test",
+        admission_grant=grant,
+    ).ownership
+    store = SQLiteSessionActorStore(database, clock=lambda: 100.0)
+    await store.ensure(key, ownership_generation=ownership.generation)
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE agent_session_aggregates
+            SET state = 'active_chat_settling'
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        )
+
+    assert await store.enqueue_recovery_requests() == 1
+    with database.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT mailbox_id
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ?
+              AND kind = 'RecoveryRequested'
+              AND source = 'session_actor_recovery'
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+    assert row is not None
+    record = database.actor_v2_mailbox_handoffs.read(int(row["mailbox_id"]))
+    assert record is not None
+    assert record.evidence.state is MailboxHandoffEvidenceState.FENCED
+    assert record.evidence.as_fenced_wake_request().ownership_generation == ownership.generation
+    assert record.evidence.admission_fence_id == ownership.admission_fence_id
+    assert (
+        record.evidence.admission_fence_generation
+        == ownership.admission_fence_generation
+    )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_store_records_legacy_handoff_for_unfenced_mailbox(
+    tmp_path: Path,
+) -> None:
+    """A new unfenced actor mailbox is explicitly blocked as legacy evidence."""
+
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "instance:group:legacy-handoff")
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="session actor store legacy handoff test",
+    ).ownership
+    store = SQLiteSessionActorStore(database, clock=lambda: 100.0)
+
+    result = await store.enqueue(
+        replace(_event("legacy-handoff-event", key), ownership_generation=ownership.generation)
+    )
+
+    assert result.inserted is True
+    with database.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT mailbox_id
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, "legacy-handoff-event"),
+        ).fetchone()
+    assert row is not None
+    record = database.actor_v2_mailbox_handoffs.read(int(row["mailbox_id"]))
+    assert record is not None
+    assert record.evidence.state is MailboxHandoffEvidenceState.UNFENCED_LEGACY
+    assert record.evidence.admission_fence_id == ""
+    assert record.evidence.admission_fence_generation == 0
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_store_duplicate_does_not_upgrade_historical_handoff(
+    tmp_path: Path,
+) -> None:
+    """A duplicate must not infer or replace missing and unknown sidecar evidence."""
+
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "instance:group:historical-handoff")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="session-store-historical-handoff",
+        ttl_seconds=300.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="session actor store historical handoff test",
+        admission_grant=grant,
+    ).ownership
+    store = SQLiteSessionActorStore(database, clock=lambda: 100.0)
+    await store.ensure(key, ownership_generation=ownership.generation)
+    missing = replace(
+        _event("historical-missing-handoff", key),
+        ownership_generation=ownership.generation,
+    )
+    unknown = replace(
+        _event("historical-unknown-handoff", key),
+        ownership_generation=ownership.generation,
+    )
+    with database.connect() as conn:
+        for envelope in (missing, unknown):
+            inserted = conn.execute(
+                """
+                INSERT INTO agent_session_mailbox (
+                    event_id, profile_id, session_id, ownership_generation,
+                    kind, source, occurred_at, payload_json, causation_id,
+                    correlation_id, trace_id, available_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 100.0, ?, ?, ?, ?, 100.0, 100.0)
+                """,
+                (
+                    envelope.event_id,
+                    envelope.key.profile_id,
+                    envelope.key.session_id,
+                    envelope.ownership_generation,
+                    envelope.kind,
+                    envelope.source,
+                    json.dumps(
+                        envelope.payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    envelope.causation_id,
+                    envelope.correlation_id,
+                    envelope.trace_id,
+                ),
+            )
+            if envelope is unknown:
+                conn.execute(
+                    """
+                    INSERT INTO agent_session_mailbox_handoffs (
+                        mailbox_id, handoff_id,
+                        profile_id, session_id, event_id, ownership_generation,
+                        evidence_state, admission_fence_id, admission_fence_generation,
+                        state, attempt_count, available_at,
+                        claim_id, lease_owner, lease_until,
+                        target_id, target_incarnation_id, target_disposition,
+                        created_at, updated_at, claimed_at, settled_at, last_error
+                    ) VALUES (?, 'historical-unknown-handoff-sidecar',
+                              ?, ?, ?, ?, 'unknown', '', 0,
+                              'blocked', 0, 100.0, '', '', NULL,
+                              '', '', '', 100.0, 100.0, NULL, NULL, '')
+                    """,
+                    (
+                        int(inserted.lastrowid),
+                        envelope.key.profile_id,
+                        envelope.key.session_id,
+                        envelope.event_id,
+                        envelope.ownership_generation,
+                    ),
+                )
+
+    assert (await store.enqueue(missing)).inserted is False
+    assert (await store.enqueue(unknown)).inserted is False
+    with database.connect() as conn:
+        missing_row = conn.execute(
+            """
+            SELECT mailbox_id
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, missing.event_id),
+        ).fetchone()
+        unknown_row = conn.execute(
+            """
+            SELECT mailbox_id
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, unknown.event_id),
+        ).fetchone()
+    assert missing_row is not None
+    assert unknown_row is not None
+    assert database.actor_v2_mailbox_handoffs.read(int(missing_row["mailbox_id"])) is None
+    unknown_record = database.actor_v2_mailbox_handoffs.read(int(unknown_row["mailbox_id"]))
+    assert unknown_record is not None
+    assert unknown_record.evidence.state is MailboxHandoffEvidenceState.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_store_rolls_back_mailbox_when_final_fence_gate_fails(
+    tmp_path: Path,
+) -> None:
+    """Fence loss during sidecar insertion rolls back both durable producer rows."""
+
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "instance:group:fence-rollback")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="session-store-fence-rollback",
+        ttl_seconds=300.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="session actor store fence rollback test",
+        admission_grant=grant,
+    ).ownership
+    store = SQLiteSessionActorStore(database, clock=lambda: 100.0)
+    event_id = "fence-rollback-event"
+    with database.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER test_session_store_remove_admission_fence
+            AFTER INSERT ON agent_session_mailbox_handoffs
+            BEGIN
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = NEW.profile_id AND session_id = NEW.session_id;
+            END
+            """
+        )
+
+    with pytest.raises(ActorV2AdmissionFenceNotFound):
+        await store.enqueue(
+            replace(_event(event_id, key), ownership_generation=ownership.generation)
+        )
+
+    with database.connect() as conn:
+        mailbox_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, event_id),
+        ).fetchone()
+        handoff_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox_handoffs
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, event_id),
+        ).fetchone()
+        fence_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_actor_v2_admission_fences
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+        conn.execute("DROP TRIGGER test_session_store_remove_admission_fence")
+    assert mailbox_count is not None
+    assert handoff_count is not None
+    assert fence_count is not None
+    assert int(mailbox_count[0]) == 0
+    assert int(handoff_count[0]) == 0
+    assert int(fence_count[0]) == 1
 
 
 @pytest.mark.asyncio

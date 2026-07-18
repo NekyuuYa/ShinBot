@@ -17,6 +17,7 @@ from shinbot.agent.scheduler.active_chat_timer import ActiveChatTimer
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
+    ActiveChatBootstrapPreview,
     ActiveChatDisposition,
     ActiveChatInterestAdjustDecision,
     ActiveChatInterestAdjustmentPreview,
@@ -30,6 +31,8 @@ from shinbot.agent.scheduler.models import (
     AgentState,
     HighPriorityEvent,
     HighPriorityEventKind,
+    IdleReviewPlanningRequest,
+    IdleReviewPlanningTrigger,
     ReviewCompletionDecision,
     ReviewDueDecision,
     ReviewPlan,
@@ -38,6 +41,7 @@ from shinbot.agent.scheduler.models import (
     SchedulerTransitionTrigger,
     UnreadMessage,
     UnreadRange,
+    review_plan_fence_matches,
 )
 from shinbot.agent.scheduler.priority_policy import (
     DefaultPriorityPolicy,
@@ -59,6 +63,15 @@ AgentSignalDecision = (
     | ActiveChatTickDecision
     | ActiveChatBootstrapApplyDecision
 )
+IdleReviewPlanningApplyDecision = (
+    ActiveChatTickDecision
+    | ActiveChatBootstrapApplyDecision
+    | ActiveChatInterestAdjustDecision
+)
+IdleReviewPlanningApplicationRecorder = Callable[
+    [IdleReviewPlanningRequest, ReviewPlan | None, IdleReviewPlanningApplyDecision],
+    None,
+]
 SchedulerEventHandler = Callable[[SchedulerEvent], Awaitable[AgentSignalDecision | None]]
 PreparedMessageStateHandler = Callable[
     ["AgentScheduler", "PreparedMessageEvent"], Awaitable[AgentScheduleDecision]
@@ -93,6 +106,7 @@ class TransitionEffects:
 
     cancel_active_chat_timer: bool = False
     stop_active_chat_runtime: bool = False
+    cancel_active_reply_runtime: bool = False
     cancel_review_runtime: bool = False
     clear_active_reply_resume: bool = False
     clear_active_chat_state: bool = False
@@ -281,12 +295,16 @@ class AgentScheduler:
                 target_state=AgentState.IDLE,
                 effects=TransitionEffects(
                     cancel_active_chat_timer=True,
+                    cancel_active_reply_runtime=True,
                     clear_active_reply_resume=True,
                 ),
             ),
             AgentState.REVIEW: StateTransitionRule(
                 target_state=AgentState.REVIEW,
-                effects=TransitionEffects(clear_active_reply_resume=True),
+                effects=TransitionEffects(
+                    cancel_active_reply_runtime=True,
+                    clear_active_reply_resume=True,
+                ),
             ),
         },
         AgentState.ACTIVE_CHAT: {
@@ -330,6 +348,9 @@ class AgentScheduler:
         review_policy: ReviewPolicy | None = None,
         active_chat_policy: ActiveChatPolicy | None = None,
         active_chat_timer: ActiveChatTimer | None = None,
+        idle_review_planning_application_recorder: (
+            IdleReviewPlanningApplicationRecorder | None
+        ) = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._workflow_dispatcher = workflow_dispatcher
@@ -343,8 +364,12 @@ class AgentScheduler:
         self._review_policy = review_policy or DefaultReviewPolicy()
         self._active_chat_policy = active_chat_policy or DefaultActiveChatPolicy()
         self._active_chat_timer = active_chat_timer
+        self._idle_review_planning_application_recorder = (
+            idle_review_planning_application_recorder
+        )
         self._now = now or time.time
         self._unread_metadata: dict[tuple[str, int], UnreadMessage] = {}
+        self._idle_review_planning_sequence = 0
         bind_scheduler = getattr(self._workflow_dispatcher, "bind_agent_scheduler", None)
         if bind_scheduler is not None:
             bind_scheduler(self)
@@ -364,6 +389,299 @@ class AgentScheduler:
         decision = await self._accept_event(event)
         self._log_signal_decision(signal, decision)
         return decision
+
+    def prepare_idle_review_planning_request(
+        self,
+        signal: AgentSignal,
+    ) -> IdleReviewPlanningRequest | None:
+        """Freeze a model-planning intent for an imminent active-chat exit.
+
+        This method is deliberately synchronous and state-preserving.  A
+        runtime may call it while holding its session mutex, release that
+        mutex for the model request, then pass the returned value to
+        :meth:`apply_idle_review_planning_request`.  The latter rejects the
+        result unless the exact active-chat snapshot still owns the exit.
+
+        Only active-chat timer and bootstrap signals can produce an intent.
+        Other signals should follow the normal scheduler entry point.
+        """
+
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
+            checked_at = self._timer_checked_at(signal)
+            preview = self.preview_active_chat_tick(
+                signal.session_id,
+                now=checked_at,
+            )
+            if not preview.will_return_idle or preview.active_chat_state is None:
+                return None
+            expected_state = self._state_store.get_active_chat_state(signal.session_id)
+            if expected_state is None:
+                return None
+            return self._build_idle_review_planning_request(
+                session_id=signal.session_id,
+                signal_id=signal.signal_id,
+                checked_at=checked_at,
+                trigger=IdleReviewPlanningTrigger.ACTIVE_CHAT_TICK,
+                expected_active_chat_state=expected_state,
+                planning_active_chat_state=preview.active_chat_state,
+            )
+
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
+            payload = signal.active_chat_bootstrap
+            if payload is None:
+                return None
+            checked_at = signal.occurred_at
+            preview = self.preview_active_chat_bootstrap(
+                signal.session_id,
+                disposition=payload.disposition,
+                active_epoch=payload.active_epoch,
+                now=checked_at,
+            )
+            if not preview.will_return_idle or preview.active_chat_state is None:
+                return None
+            expected_state = self._state_store.get_active_chat_state(signal.session_id)
+            if expected_state is None:
+                return None
+            return self._build_idle_review_planning_request(
+                session_id=signal.session_id,
+                signal_id=signal.signal_id,
+                checked_at=checked_at,
+                trigger=IdleReviewPlanningTrigger.ACTIVE_CHAT_BOOTSTRAP,
+                expected_active_chat_state=expected_state,
+                planning_active_chat_state=preview.active_chat_state,
+                bootstrap_disposition=payload.disposition,
+            )
+
+        return None
+
+    def prepare_idle_review_planning_for_interest_adjustment(
+        self,
+        session_id: str,
+        *,
+        delta: float = 0.0,
+        force_exit: bool = False,
+        active_epoch: int | None = None,
+        reason: str = "",
+        now: float | None = None,
+    ) -> IdleReviewPlanningRequest | None:
+        """Freeze a planner request for a workflow-driven active-chat exit."""
+
+        checked_at = self._now() if now is None else now
+        preview = self.preview_active_chat_interest_adjustment(
+            session_id,
+            delta=delta,
+            force_exit=force_exit,
+            active_epoch=active_epoch,
+            now=checked_at,
+        )
+        if not preview.will_return_idle or preview.active_chat_state is None:
+            return None
+        expected_state = self._state_store.get_active_chat_state(session_id)
+        if expected_state is None:
+            return None
+        self._idle_review_planning_sequence += 1
+        return self._build_idle_review_planning_request(
+            session_id=session_id,
+            signal_id=(
+                "active-chat-interest:"
+                f"{session_id}:{expected_state.active_epoch}:"
+                f"{self._idle_review_planning_sequence}"
+            ),
+            checked_at=checked_at,
+            trigger=IdleReviewPlanningTrigger.ACTIVE_CHAT_INTEREST_ADJUSTMENT,
+            expected_active_chat_state=expected_state,
+            planning_active_chat_state=preview.active_chat_state,
+            interest_delta=delta,
+            force_exit=force_exit,
+            interest_reason=reason,
+        )
+
+    def apply_idle_review_planning_request(
+        self,
+        request: IdleReviewPlanningRequest,
+        *,
+        next_review_plan: ReviewPlan | None,
+    ) -> IdleReviewPlanningApplyDecision:
+        """Apply one externally computed plan only while its exit intent is fresh.
+
+        ``next_review_plan`` may be ``None`` when model planning is disabled,
+        fails, or explicitly delegates to the static policy.  In that case the
+        existing policy fallback remains the authoritative safe default.
+        """
+
+        current_state = self._state_store.get_state(request.session_id)
+        current_active_chat = self._state_store.get_active_chat_state(request.session_id)
+        current_review_plan = self._state_store.get_review_plan(request.session_id)
+        if (
+            current_state != AgentState.ACTIVE_CHAT
+            or current_active_chat != request.expected_active_chat_state
+            or not review_plan_fence_matches(
+                current_review_plan,
+                request.expected_review_plan,
+            )
+        ):
+            logger.info(
+                format_log_event(
+                    "agent.idle_review_planning.discarded",
+                    session_id=request.session_id,
+                    trigger=request.trigger.value,
+                    signal_id=request.signal_id,
+                    active_epoch=request.active_epoch,
+                    reason=(
+                        "state_changed"
+                        if current_state != AgentState.ACTIVE_CHAT
+                        else (
+                            "active_chat_snapshot_changed"
+                            if current_active_chat != request.expected_active_chat_state
+                            else "review_plan_changed"
+                        )
+                    ),
+                    planned_review_supplied=next_review_plan is not None,
+                )
+            )
+            if request.trigger == IdleReviewPlanningTrigger.ACTIVE_CHAT_TICK:
+                decision = ActiveChatTickDecision(
+                    session_id=request.session_id,
+                    state=current_state,
+                    active_chat_state=current_active_chat,
+                    skipped_reason="idle_review_planning_stale",
+                )
+            elif request.trigger == IdleReviewPlanningTrigger.ACTIVE_CHAT_BOOTSTRAP:
+                decision = ActiveChatBootstrapApplyDecision(
+                    session_id=request.session_id,
+                    state=current_state,
+                    active_chat_state=current_active_chat,
+                    skipped_reason="idle_review_planning_stale",
+                )
+            else:
+                decision = ActiveChatInterestAdjustDecision(
+                    session_id=request.session_id,
+                    state=current_state,
+                    active_chat_state=current_active_chat,
+                    delta=request.interest_delta,
+                    force_exit=request.force_exit,
+                    reason=request.interest_reason,
+                    skipped_reason="idle_review_planning_stale",
+                )
+            self._record_idle_review_planning_application(
+                request,
+                next_review_plan,
+                decision,
+            )
+            return decision
+
+        if request.trigger == IdleReviewPlanningTrigger.ACTIVE_CHAT_TICK:
+            decision = self.tick_active_chat(
+                request.session_id,
+                active_epoch=request.active_epoch,
+                next_review_plan=next_review_plan,
+                now=request.checked_at,
+            )
+        elif request.trigger == IdleReviewPlanningTrigger.ACTIVE_CHAT_BOOTSTRAP:
+            disposition = request.bootstrap_disposition
+            if disposition is None:
+                raise RuntimeError("idle review planning bootstrap request has no disposition")
+            decision = self.apply_active_chat_bootstrap(
+                request.session_id,
+                disposition=disposition,
+                active_epoch=request.active_epoch,
+                next_review_plan=next_review_plan,
+                now=request.checked_at,
+            )
+        elif request.trigger == IdleReviewPlanningTrigger.ACTIVE_CHAT_INTEREST_ADJUSTMENT:
+            decision = self.adjust_active_chat_interest(
+                request.session_id,
+                delta=request.interest_delta,
+                force_exit=request.force_exit,
+                active_epoch=request.active_epoch,
+                reason=request.interest_reason,
+                next_review_plan=next_review_plan,
+                now=request.checked_at,
+            )
+        else:
+            raise RuntimeError(
+                "unsupported idle review planning trigger: "
+                f"{request.trigger!r}"
+            )
+        self._record_idle_review_planning_application(
+            request,
+            next_review_plan,
+            decision,
+        )
+        return decision
+
+    def _record_idle_review_planning_application(
+        self,
+        request: IdleReviewPlanningRequest,
+        next_review_plan: ReviewPlan | None,
+        decision: IdleReviewPlanningApplyDecision,
+    ) -> None:
+        """Report a terminal apply outcome without changing state-machine behavior."""
+
+        recorder = self._idle_review_planning_application_recorder
+        if recorder is None:
+            return
+        try:
+            recorder(request, next_review_plan, decision)
+        except Exception as exc:
+            logger.warning(
+                format_log_event(
+                    "agent.idle_review_planning.application_record_failed",
+                    session_id=request.session_id,
+                    signal_id=request.signal_id,
+                    error_code=type(exc).__name__,
+                ),
+                exc_info=True,
+            )
+
+    def _build_idle_review_planning_request(
+        self,
+        *,
+        session_id: str,
+        signal_id: str,
+        checked_at: float,
+        trigger: IdleReviewPlanningTrigger,
+        expected_active_chat_state: ActiveChatState,
+        planning_active_chat_state: ActiveChatState,
+        bootstrap_disposition: ActiveChatDisposition | None = None,
+        interest_delta: float = 0.0,
+        force_exit: bool = False,
+        interest_reason: str = "",
+    ) -> IdleReviewPlanningRequest:
+        """Build and log one fenced external planning request."""
+
+        request = IdleReviewPlanningRequest(
+            session_id=session_id,
+            trigger=trigger,
+            signal_id=signal_id,
+            checked_at=checked_at,
+            expected_active_chat_state=expected_active_chat_state,
+            planning_active_chat_state=planning_active_chat_state,
+            expected_review_plan=self._state_store.get_review_plan(session_id),
+            bootstrap_disposition=bootstrap_disposition,
+            interest_delta=interest_delta,
+            force_exit=force_exit,
+            interest_reason=interest_reason,
+        )
+        logger.info(
+            format_log_event(
+                "agent.idle_review_planning.prepared",
+                session_id=request.session_id,
+                trigger=request.trigger.value,
+                signal_id=request.signal_id,
+                active_epoch=request.active_epoch,
+                expected_interest=f"{expected_active_chat_state.interest_value:.2f}",
+                planned_interest=f"{planning_active_chat_state.interest_value:.2f}",
+                bootstrap_disposition=(
+                    bootstrap_disposition.value
+                    if bootstrap_disposition is not None
+                    else ""
+                ),
+                interest_delta=f"{interest_delta:.2f}",
+                force_exit=force_exit,
+            )
+        )
+        return request
 
     def queue_paused_message(
         self,
@@ -477,7 +795,9 @@ class AgentScheduler:
         self,
         event: SchedulerEvent,
     ) -> ActiveChatBootstrapApplyDecision | None:
-        return self._accept_active_chat_bootstrap_signal(self._signal_from_event(event))
+        return await self._accept_active_chat_bootstrap_signal(
+            self._signal_from_event(event)
+        )
 
     async def _accept_message_signal(self, signal: AgentSignal) -> AgentScheduleDecision:
         """Accept one message signal and decide scheduler-side action."""
@@ -502,26 +822,48 @@ class AgentScheduler:
         checked_at = self._timer_checked_at(signal)
         next_review_plan = None
         preview = self.preview_active_chat_tick(signal.session_id, now=checked_at)
+        active_epoch = (
+            preview.active_chat_state.active_epoch
+            if preview.active_chat_state is not None
+            else None
+        )
         if preview.will_return_idle:
             next_review_plan = await self.plan_idle_review_after_active_chat(signal.session_id)
         return self.tick_active_chat(
             signal.session_id,
+            active_epoch=active_epoch,
             next_review_plan=next_review_plan,
             now=checked_at,
         )
 
-    def _accept_active_chat_bootstrap_signal(
+    async def _accept_active_chat_bootstrap_signal(
         self,
         signal: AgentSignal,
     ) -> ActiveChatBootstrapApplyDecision | None:
         payload = signal.active_chat_bootstrap
         if payload is None:
             return None
-        return self.apply_active_chat_bootstrap(
+        checked_at = signal.occurred_at
+        next_review_plan = None
+        preview = self.preview_active_chat_bootstrap(
             signal.session_id,
             disposition=payload.disposition,
             active_epoch=payload.active_epoch,
-            now=signal.occurred_at,
+            now=checked_at,
+        )
+        active_epoch = payload.active_epoch
+        if active_epoch is None and preview.active_chat_state is not None:
+            active_epoch = preview.active_chat_state.active_epoch
+        if preview.will_return_idle:
+            next_review_plan = await self.plan_idle_review_after_active_chat(
+                signal.session_id
+            )
+        return self.apply_active_chat_bootstrap(
+            signal.session_id,
+            disposition=payload.disposition,
+            active_epoch=active_epoch,
+            next_review_plan=next_review_plan,
+            now=checked_at,
         )
 
     def unread_messages(self, session_id: str) -> list[UnreadMessage]:
@@ -556,6 +898,51 @@ class AgentScheduler:
     def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
         """Mark whole unread ranges consumed by review."""
         self._inbox.mark_ranges_review_consumed(range_ids)
+
+    def consume_review_intervals(
+        self,
+        session_id: str,
+        intervals: list[tuple[int, int]],
+    ) -> None:
+        """Consume review-owned message intervals against the current unread view.
+
+        The caller supplies immutable message-log boundaries rather than
+        database range ids. Each boundary is resolved again immediately before
+        mutation because splitting one range invalidates its former id. This
+        keeps range ownership inside the scheduler and makes runtime-fenced
+        review commits independent of stale workflow snapshots.
+        """
+
+        whole_range_ids: list[int] = []
+        for start_message_log_id, end_message_log_id in intervals:
+            consume_start_bound = min(start_message_log_id, end_message_log_id)
+            consume_end_bound = max(start_message_log_id, end_message_log_id)
+            current_ranges = self.unread_ranges(session_id, limit=10_000)
+            for current_range in current_ranges:
+                if current_range.id is None:
+                    continue
+                consume_start = max(
+                    consume_start_bound,
+                    current_range.start_msg_log_id,
+                )
+                consume_end = min(
+                    consume_end_bound,
+                    current_range.end_msg_log_id,
+                )
+                if consume_start > consume_end:
+                    continue
+                if (
+                    consume_start == current_range.start_msg_log_id
+                    and consume_end == current_range.end_msg_log_id
+                ):
+                    whole_range_ids.append(current_range.id)
+                    continue
+                self.split_review_consumed(
+                    range_id=current_range.id,
+                    consumed_start_msg_log_id=consume_start,
+                    consumed_end_msg_log_id=consume_end,
+                )
+        self.mark_ranges_review_consumed(list(dict.fromkeys(whole_range_ids)))
 
     def mark_active_chat_consumed(
         self,
@@ -602,12 +989,19 @@ class AgentScheduler:
         """Return current active chat interest state for one session, if any."""
         return self._state_store.get_active_chat_state(session_id)
 
-    async def plan_idle_review_after_active_chat(self, session_id: str) -> ReviewPlan | None:
+    async def plan_idle_review_after_active_chat(
+        self,
+        session_id: str,
+        *,
+        request: IdleReviewPlanningRequest | None = None,
+    ) -> ReviewPlan | None:
         """Ask the workflow dispatcher to plan the next review before active chat exits."""
         planner = getattr(self._workflow_dispatcher, "plan_idle_review_after_active_chat", None)
         if planner is None:
             return None
-        return await planner(session_id)
+        if request is None:
+            return await planner(session_id)
+        return await planner(session_id, request=request)
 
     def adjust_active_chat_interest(
         self,
@@ -615,6 +1009,7 @@ class AgentScheduler:
         *,
         delta: float = 0.0,
         force_exit: bool = False,
+        active_epoch: int | None = None,
         reason: str = "",
         next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
@@ -640,6 +1035,16 @@ class AgentScheduler:
                 force_exit=force_exit,
                 reason=reason,
                 skipped_reason="missing_active_chat_state",
+            )
+        if active_epoch is not None and active_chat_state.active_epoch != active_epoch:
+            return ActiveChatInterestAdjustDecision(
+                session_id=session_id,
+                state=current_state,
+                active_chat_state=active_chat_state,
+                delta=delta,
+                force_exit=force_exit,
+                reason=reason,
+                skipped_reason="active_epoch_mismatch",
             )
 
         checked_at = self._now() if now is None else now
@@ -700,6 +1105,7 @@ class AgentScheduler:
         *,
         delta: float = 0.0,
         force_exit: bool = False,
+        active_epoch: int | None = None,
         now: float | None = None,
     ) -> ActiveChatInterestAdjustmentPreview:
         """Preview a workflow-driven active chat interest adjustment."""
@@ -721,6 +1127,15 @@ class AgentScheduler:
                 delta=delta,
                 force_exit=force_exit,
                 skipped_reason="missing_active_chat_state",
+            )
+        if active_epoch is not None and active_chat_state.active_epoch != active_epoch:
+            return ActiveChatInterestAdjustmentPreview(
+                session_id=session_id,
+                state=current_state,
+                active_chat_state=active_chat_state,
+                delta=delta,
+                force_exit=force_exit,
+                skipped_reason="active_epoch_mismatch",
             )
 
         checked_at = self._now() if now is None else now
@@ -900,6 +1315,7 @@ class AgentScheduler:
         self,
         session_id: str,
         *,
+        active_epoch: int | None = None,
         next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
     ) -> ActiveChatTickDecision:
@@ -918,6 +1334,13 @@ class AgentScheduler:
             active_chat_state = self._active_chat_policy.initial_state(
                 session_id=session_id,
                 now=checked_at,
+            )
+        if active_epoch is not None and active_chat_state.active_epoch != active_epoch:
+            return ActiveChatTickDecision(
+                session_id=session_id,
+                state=current_state,
+                active_chat_state=active_chat_state,
+                skipped_reason="active_epoch_mismatch",
             )
 
         decayed_state = self._active_chat_policy.decay(
@@ -982,33 +1405,51 @@ class AgentScheduler:
         for session_id in self._state_store.list_session_ids(prefix=prefix):
             if session_id in excluded:
                 continue
-            if self._state_store.get_state(session_id) != AgentState.ACTIVE_CHAT:
-                continue
-            decision = self.tick_active_chat(session_id, now=checked_at)
-            decisions.append(decision)
-            if decision.state == AgentState.ACTIVE_CHAT:
-                self._start_active_chat_timer(session_id)
-                logger.info(
-                    format_log_event(
-                        "agent.active_chat.reconciled",
-                        session_id=session_id,
-                        action="timer_started",
-                        interest=(
-                            f"{decision.active_chat_state.interest_value:.2f}"
-                            if decision.active_chat_state is not None
-                            else "-"
-                        ),
-                    )
-                )
-            elif decision.returned_to_idle:
-                logger.info(
-                    format_log_event(
-                        "agent.active_chat.reconciled",
-                        session_id=session_id,
-                        action="returned_idle",
-                    )
-                )
+            decision = self.reconcile_active_chat_session(session_id, now=checked_at)
+            if decision is not None:
+                decisions.append(decision)
         return decisions
+
+    def reconcile_active_chat_session(
+        self,
+        session_id: str,
+        *,
+        now: float | None = None,
+    ) -> ActiveChatTickDecision | None:
+        """Reconcile one persisted active-chat session with its local timer.
+
+        The narrow form lets the runtime acquire its per-session mutation lock
+        before recovery writes state. The bulk helper remains for scheduler-only
+        callers and focused tests.
+        """
+
+        if self._state_store.get_state(session_id) != AgentState.ACTIVE_CHAT:
+            return None
+        checked_at = self._now() if now is None else now
+        decision = self.tick_active_chat(session_id, now=checked_at)
+        if decision.state == AgentState.ACTIVE_CHAT:
+            self._start_active_chat_timer(session_id)
+            logger.info(
+                format_log_event(
+                    "agent.active_chat.reconciled",
+                    session_id=session_id,
+                    action="timer_started",
+                    interest=(
+                        f"{decision.active_chat_state.interest_value:.2f}"
+                        if decision.active_chat_state is not None
+                        else "-"
+                    ),
+                )
+            )
+        elif decision.returned_to_idle:
+            logger.info(
+                format_log_event(
+                    "agent.active_chat.reconciled",
+                    session_id=session_id,
+                    action="returned_idle",
+                )
+            )
+        return decision
 
     def reconcile_transient_sessions(
         self,
@@ -1021,46 +1462,63 @@ class AgentScheduler:
         checked_at = self._now() if now is None else now
         recovered: list[str] = []
         for session_id in self._state_store.list_session_ids(prefix=prefix):
-            state = self._state_store.get_state(session_id)
-            if state not in {AgentState.REVIEW, AgentState.ACTIVE_REPLY}:
-                continue
-            plan = self._state_store.get_review_plan(session_id)
-            resume = self._state_store.get_active_reply_resume(session_id)
-            if state == AgentState.ACTIVE_REPLY and resume is not None:
-                plan = resume.review_plan or plan
-            if plan is not None:
-                resumed_at = min(plan.next_review_at, checked_at)
-                self._state_store.set_review_plan(
-                    replace(
-                        plan,
-                        next_review_at=resumed_at,
-                        updated_at=checked_at,
-                    )
-                )
-            self._transition_state(
-                session_id,
-                AgentState.IDLE,
-                trigger=SchedulerTransitionTrigger.TRANSIENT_STATE_RECOVERED,
-            )
-            recovered.append(session_id)
-            logger.info(
-                format_log_event(
-                    "agent.transient_state.recovered",
-                    session_id=session_id,
-                    previous_state=state.value,
-                    next_review_at=(
-                        f"{self._state_store.get_review_plan(session_id).next_review_at:.2f}"
-                        if self._state_store.get_review_plan(session_id) is not None
-                        else ""
-                    ),
-                )
-            )
+            if self.reconcile_transient_session(session_id, now=checked_at):
+                recovered.append(session_id)
         return recovered
+
+    def reconcile_transient_session(
+        self,
+        session_id: str,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Return one interrupted REVIEW or ACTIVE_REPLY session to IDLE.
+
+        Startup recovery uses this single-session operation while holding the
+        runtime's session lock. It intentionally has no model or workflow I/O.
+        """
+
+        state = self._state_store.get_state(session_id)
+        if state not in {AgentState.REVIEW, AgentState.ACTIVE_REPLY}:
+            return False
+        checked_at = self._now() if now is None else now
+        plan = self._state_store.get_review_plan(session_id)
+        resume = self._state_store.get_active_reply_resume(session_id)
+        if state == AgentState.ACTIVE_REPLY and resume is not None:
+            plan = resume.review_plan or plan
+        if plan is not None:
+            resumed_at = min(plan.next_review_at, checked_at)
+            self._state_store.set_review_plan(
+                replace(
+                    plan,
+                    next_review_at=resumed_at,
+                    updated_at=checked_at,
+                )
+            )
+        self._transition_state(
+            session_id,
+            AgentState.IDLE,
+            trigger=SchedulerTransitionTrigger.TRANSIENT_STATE_RECOVERED,
+        )
+        logger.info(
+            format_log_event(
+                "agent.transient_state.recovered",
+                session_id=session_id,
+                previous_state=state.value,
+                next_review_at=(
+                    f"{self._state_store.get_review_plan(session_id).next_review_at:.2f}"
+                    if self._state_store.get_review_plan(session_id) is not None
+                    else ""
+                ),
+            )
+        )
+        return True
 
     def preview_active_chat_tick(
         self,
         session_id: str,
         *,
+        active_epoch: int | None = None,
         now: float | None = None,
     ) -> ActiveChatTickPreview:
         """Preview one active chat decay tick without mutating scheduler state."""
@@ -1078,6 +1536,13 @@ class AgentScheduler:
             active_chat_state = self._active_chat_policy.initial_state(
                 session_id=session_id,
                 now=checked_at,
+            )
+        if active_epoch is not None and active_chat_state.active_epoch != active_epoch:
+            return ActiveChatTickPreview(
+                session_id=session_id,
+                state=current_state,
+                active_chat_state=active_chat_state,
+                skipped_reason="active_epoch_mismatch",
             )
         decayed_state = self._active_chat_policy.decay(
             active_chat_state,
@@ -1097,12 +1562,70 @@ class AgentScheduler:
         *,
         disposition: ActiveChatDisposition,
         active_epoch: int | None = None,
+        next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
     ) -> ActiveChatBootstrapApplyDecision:
         """Apply delayed review stage-3 disposition to the current active chat state."""
+        checked_at = self._now() if now is None else now
+        preview = self.preview_active_chat_bootstrap(
+            session_id,
+            disposition=disposition,
+            active_epoch=active_epoch,
+            now=checked_at,
+        )
+        if preview.skipped_reason is not None:
+            return ActiveChatBootstrapApplyDecision(
+                session_id=session_id,
+                state=preview.state,
+                active_chat_state=preview.active_chat_state,
+                skipped_reason=preview.skipped_reason,
+            )
+        corrected_state = preview.active_chat_state
+        if corrected_state is None:
+            raise RuntimeError("active chat bootstrap preview returned no state")
+        self._state_store.set_active_chat_state(corrected_state)
+        if not preview.will_return_idle:
+            return ActiveChatBootstrapApplyDecision(
+                session_id=session_id,
+                state=AgentState.ACTIVE_CHAT,
+                active_chat_state=corrected_state,
+                bootstrap_applied=True,
+            )
+
+        exit_plan = self._prepare_active_chat_exit_plan(
+            session_id=session_id,
+            active_chat_state=corrected_state,
+            next_review_plan=next_review_plan,
+            checked_at=checked_at,
+            trigger=SchedulerTransitionTrigger.ACTIVE_CHAT_BOOTSTRAP_EXIT,
+        )
+        self._apply_active_chat_exit_plan(exit_plan)
+        return ActiveChatBootstrapApplyDecision(
+            session_id=session_id,
+            state=AgentState.IDLE,
+            active_chat_state=corrected_state,
+            next_review_plan=exit_plan.review_plan,
+            bootstrap_applied=True,
+            returned_to_idle=True,
+        )
+
+    def preview_active_chat_bootstrap(
+        self,
+        session_id: str,
+        *,
+        disposition: ActiveChatDisposition,
+        active_epoch: int | None = None,
+        now: float | None = None,
+    ) -> ActiveChatBootstrapPreview:
+        """Preview delayed bootstrap application before running idle review planning.
+
+        The preview performs the same state and epoch validation as the eventual
+        mutation, but keeps the scheduler unchanged while an asynchronous model
+        planner determines the next review plan.
+        """
         current_state = self._state_store.get_state(session_id)
         if current_state != AgentState.ACTIVE_CHAT:
-            return ActiveChatBootstrapApplyDecision(
+            return ActiveChatBootstrapPreview(
                 session_id=session_id,
                 state=current_state,
                 skipped_reason="not_active_chat",
@@ -1110,20 +1633,20 @@ class AgentScheduler:
 
         active_chat_state = self._state_store.get_active_chat_state(session_id)
         if active_chat_state is None:
-            return ActiveChatBootstrapApplyDecision(
+            return ActiveChatBootstrapPreview(
                 session_id=session_id,
                 state=current_state,
                 skipped_reason="missing_active_chat_state",
             )
         if active_epoch is not None and active_chat_state.active_epoch != active_epoch:
-            return ActiveChatBootstrapApplyDecision(
+            return ActiveChatBootstrapPreview(
                 session_id=session_id,
                 state=current_state,
                 active_chat_state=active_chat_state,
                 skipped_reason="active_epoch_mismatch",
             )
         if active_chat_state.bootstrap_applied:
-            return ActiveChatBootstrapApplyDecision(
+            return ActiveChatBootstrapPreview(
                 session_id=session_id,
                 state=current_state,
                 active_chat_state=active_chat_state,
@@ -1136,30 +1659,11 @@ class AgentScheduler:
             disposition=disposition,
             now=checked_at,
         )
-        self._state_store.set_active_chat_state(corrected_state)
-        if not self._active_chat_policy.should_return_idle(corrected_state):
-            return ActiveChatBootstrapApplyDecision(
-                session_id=session_id,
-                state=AgentState.ACTIVE_CHAT,
-                active_chat_state=corrected_state,
-                bootstrap_applied=True,
-            )
-
-        exit_plan = self._prepare_active_chat_exit_plan(
+        return ActiveChatBootstrapPreview(
             session_id=session_id,
+            state=AgentState.ACTIVE_CHAT,
             active_chat_state=corrected_state,
-            next_review_plan=None,
-            checked_at=checked_at,
-            trigger=SchedulerTransitionTrigger.ACTIVE_CHAT_BOOTSTRAP_EXIT,
-        )
-        self._apply_active_chat_exit_plan(exit_plan)
-        return ActiveChatBootstrapApplyDecision(
-            session_id=session_id,
-            state=AgentState.IDLE,
-            active_chat_state=corrected_state,
-            next_review_plan=exit_plan.review_plan,
-            bootstrap_applied=True,
-            returned_to_idle=True,
+            will_return_idle=self._active_chat_policy.should_return_idle(corrected_state),
         )
 
     def _observe_active_chat_message(
@@ -1211,6 +1715,11 @@ class AgentScheduler:
         cancel_review = getattr(self._workflow_dispatcher, "cancel_review", None)
         if cancel_review is not None:
             cancel_review(session_id)
+
+    def _cancel_active_reply_runtime(self, session_id: str) -> None:
+        cancel_active_reply = getattr(self._workflow_dispatcher, "cancel_active_reply", None)
+        if cancel_active_reply is not None:
+            cancel_active_reply(session_id)
 
     def _prepare_message_event(
         self,
@@ -1960,6 +2469,8 @@ class AgentScheduler:
     ) -> None:
         if effects.cancel_review_runtime:
             self._cancel_review_runtime(session_id)
+        if effects.cancel_active_reply_runtime:
+            self._cancel_active_reply_runtime(session_id)
         if effects.stop_active_chat_runtime:
             self._stop_active_chat_runtime(session_id)
         elif effects.cancel_active_chat_timer:

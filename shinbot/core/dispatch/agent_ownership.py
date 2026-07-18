@@ -46,6 +46,8 @@ class AgentRuntimeOwnership:
     requested_by: str = ""
     created_at: float = 0.0
     updated_at: float = 0.0
+    admission_fence_id: str = ""
+    admission_fence_generation: int = 0
 
     def __post_init__(self) -> None:
         """Validate generation and migration-state consistency."""
@@ -63,6 +65,29 @@ class AgentRuntimeOwnership:
             raise ValueError(
                 "migrating ownership requires a different pending mode"
             )
+        admission_fence_id = str(self.admission_fence_id or "").strip()
+        admission_fence_generation = self.admission_fence_generation
+        if isinstance(admission_fence_generation, bool) or not isinstance(
+            admission_fence_generation,
+            int,
+        ):
+            raise ValueError("admission fence generation must be an integer")
+        if bool(admission_fence_id) != bool(admission_fence_generation):
+            raise ValueError(
+                "admission fence id and positive generation must be provided together"
+            )
+        if admission_fence_generation < 0:
+            raise ValueError("admission fence generation must not be negative")
+        if admission_fence_id and admission_fence_generation < 1:
+            raise ValueError("admission fence generation must be positive")
+        if admission_fence_id and self.mode is not AgentRuntimeOwnershipMode.ACTOR_V2:
+            raise ValueError("only actor_v2 ownership may carry an admission fence")
+        object.__setattr__(self, "admission_fence_id", admission_fence_id)
+        object.__setattr__(
+            self,
+            "admission_fence_generation",
+            admission_fence_generation,
+        )
 
     @property
     def actor_v2_active(self) -> bool:
@@ -72,6 +97,12 @@ class AgentRuntimeOwnership:
             self.status is AgentRuntimeOwnershipStatus.ACTIVE
             and self.mode is AgentRuntimeOwnershipMode.ACTOR_V2
         )
+
+    @property
+    def has_admission_fence(self) -> bool:
+        """Return whether this owner is bound to a durable admission fence."""
+
+        return bool(self.admission_fence_id)
 
 
 @dataclass(slots=True, frozen=True)

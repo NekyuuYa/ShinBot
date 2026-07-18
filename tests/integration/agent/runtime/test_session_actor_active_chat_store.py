@@ -54,6 +54,7 @@ from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
+from tests.agent_runtime_helpers import wait_for_session_actor_idle
 
 
 def _message_event(
@@ -496,7 +497,7 @@ async def test_v2_round_due_completion_flows_from_executor_to_actor(
                 message_log_id=message_log_id,
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
         scheduled = await store.load(key)
         intent = scheduled.data["effect_control_intents"][
             AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE
@@ -507,7 +508,7 @@ async def test_v2_round_due_completion_flows_from_executor_to_actor(
         assert intent["contract_signature"] == round_due_contract.signature
 
         result = await executor.run_once(lane=EffectLane.CONTROL)
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
     finally:
         await registry.shutdown()
 
@@ -610,14 +611,14 @@ async def test_v2_exit_request_completion_flows_from_executor_to_settling_actor(
     )
     try:
         await registry.submit(tick)
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
         requested = await store.load(key)
         intent = requested.data["effect_control_intents"][
             AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
         ]
 
         result = await executor.run_once(lane=EffectLane.CONTROL)
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
     finally:
         await registry.shutdown()
 
@@ -733,7 +734,7 @@ async def test_v2_exit_failure_flows_from_executor_to_idle_planning_failover(
     )
     try:
         await registry.submit(tick)
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
         requested = await store.load(key)
         intent = requested.data["effect_control_intents"][
             AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
@@ -752,7 +753,7 @@ async def test_v2_exit_failure_flows_from_executor_to_idle_planning_failover(
         assert second.retry_at is not None
         now[0] = second.retry_at
         terminal = await executor.run_once(lane=EffectLane.CONTROL)
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
     finally:
         await registry.shutdown()
 
@@ -1101,7 +1102,7 @@ async def test_external_action_v2_authority_overrides_handler_identity_and_relea
                 is_mentioned=True,
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
         replying = await store.load(key)
         assert replying.state == AgentSessionState.ACTIVE_REPLY
         operation_id = replying.active_reply_operation_id
@@ -1154,7 +1155,7 @@ async def test_external_action_v2_authority_overrides_handler_identity_and_relea
             },
         )
         await registry.submit(workflow_completion)
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
         waiting = await store.load(key)
         pending = waiting.data["pending_outbound_actions"]
         assert len(pending) == 1
@@ -1195,7 +1196,7 @@ async def test_external_action_v2_authority_overrides_handler_identity_and_relea
             clock=lambda: now[0],
         )
         result = await executor.run_once(lane=EffectLane.DEFAULT)
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
     finally:
         await registry.shutdown()
 

@@ -11,6 +11,10 @@ from shinbot.agent.runtime.service_health import (
     RuntimeServiceHealthSnapshot,
     supervised_backoff_seconds,
 )
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskQuiescence,
+    cancel_and_wait_for_tasks,
+)
 from shinbot.agent.scheduler.models import AgentState
 from shinbot.agent.signals import (
     AgentSignal,
@@ -59,6 +63,7 @@ class ActiveChatTimerService:
         self._runtime: AgentRuntime | None = None
         self._bot_id = ""
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._retiring_tasks: dict[asyncio.Task[None], str] = {}
         self._task_scope: AgentTaskScope | None = None
         self._health: dict[str, RuntimeServiceHealth] = {}
 
@@ -114,6 +119,7 @@ class ActiveChatTimerService:
                 name=f"active-chat-timer:{session_id}",
             )
         self._tasks[session_id] = task
+        self._track_session_task(session_id, task)
         health = self._health.setdefault(
             session_id,
             RuntimeServiceHealth(f"active_chat_timer:{session_id}"),
@@ -144,9 +150,9 @@ class ActiveChatTimerService:
             health.stop()
         if task is None or task.done():
             return
-        if task is asyncio.current_task():
-            return
-        task.cancel()
+        self._retiring_tasks[task] = session_id
+        if task is not asyncio.current_task():
+            task.cancel()
         logger.debug(
             format_log_event(
                 "agent.active_chat_timer.cancelled",
@@ -162,15 +168,19 @@ class ActiveChatTimerService:
         task, then gathers them to ensure clean shutdown. After this
         call, no timer tasks will remain active.
         """
-        tasks = list(self._tasks.values())
+        tasks = list(dict.fromkeys([*self._tasks.values(), *self._retiring_tasks]))
         self._tasks.clear()
+        self._retiring_tasks.clear()
         for health in self._health.values():
             health.stop()
         for task in tasks:
-            if not task.done():
+            if task is not asyncio.current_task() and not task.done():
                 task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(
+                *(task for task in tasks if task is not asyncio.current_task()),
+                return_exceptions=True,
+            )
         logger.debug(
             format_log_event(
                 "agent.active_chat_timer.stopped_all",
@@ -187,6 +197,45 @@ class ActiveChatTimerService:
             for session_id, task in self._tasks.items()
             if not task.done()
         ]
+
+    def pending_session_tasks(self, session_id: str) -> list[asyncio.Task[None]]:
+        """Return known timer tasks and cancellation tails for one session.
+
+        This is a process-local observation only. A timer task can be observed
+        and cancelled here, but another process or future scheduler signal can
+        still create new work.
+        """
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id must not be empty")
+        tasks = [
+            task
+            for task, task_session_id in self._retiring_tasks.items()
+            if task_session_id == normalized_session_id and not task.done()
+        ]
+        task = self._tasks.get(normalized_session_id)
+        if task is not None and not task.done():
+            tasks.append(task)
+        return list(dict.fromkeys(tasks))
+
+    async def quiesce_session_tasks(
+        self,
+        session_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> AgentTaskQuiescence:
+        """Cancel and observe the known timer task for one session locally.
+
+        The result is not an adapter pause, durable lease, or authorization to
+        transfer session ownership. It describes only task objects this timer
+        service tracked in the current process.
+        """
+
+        return await cancel_and_wait_for_tasks(
+            self.pending_session_tasks(session_id),
+            timeout_seconds=timeout_seconds,
+        )
 
     def health_snapshot(self, session_id: str) -> RuntimeServiceHealthSnapshot | None:
         """Return supervision health for one active-chat timer."""
@@ -221,6 +270,21 @@ class ActiveChatTimerService:
                     bot_id=self._bot_id,
                     session_id=session_id,
                     reason="platform_unavailable",
+                )
+            )
+            return
+        signal_admission_frozen = getattr(
+            runtime,
+            "is_legacy_session_signal_admission_frozen",
+            None,
+        )
+        if callable(signal_admission_frozen) and signal_admission_frozen(session_id):
+            logger.debug(
+                format_log_event(
+                    "agent.active_chat_timer.tick_skipped",
+                    bot_id=self._bot_id,
+                    session_id=session_id,
+                    reason="legacy_signal_admission_frozen",
                 )
             )
             return
@@ -307,6 +371,27 @@ class ActiveChatTimerService:
             task = self._tasks.get(session_id)
             if task is asyncio.current_task():
                 self._tasks.pop(session_id, None)
+
+    def _track_session_task(self, session_id: str, task: asyncio.Task[None]) -> None:
+        """Arrange cleanup after a timer exits or finishes a cancellation tail."""
+
+        task.add_done_callback(
+            lambda completed, task_session_id=session_id: self._finish_session_task(
+                task_session_id,
+                completed,
+            )
+        )
+
+    def _finish_session_task(
+        self,
+        session_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        """Forget a timer only once the exact task has ended."""
+
+        self._retiring_tasks.pop(task, None)
+        if self._tasks.get(session_id) is task:
+            self._tasks.pop(session_id, None)
 
 
 __all__ = ["ActiveChatTimer", "ActiveChatTimerService"]

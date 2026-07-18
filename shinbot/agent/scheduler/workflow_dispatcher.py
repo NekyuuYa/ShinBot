@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from shinbot.agent.scheduler.models import (
     ActiveChatState,
     HighPriorityEvent,
+    IdleReviewPlanningRequest,
     ReviewPlan,
     UnreadMessage,
 )
@@ -79,8 +80,14 @@ class AgentWorkflowDispatcher(Protocol):
     async def plan_idle_review_after_active_chat(
         self,
         session_id: str,
+        *,
+        request: IdleReviewPlanningRequest | None = None,
     ) -> ReviewPlan | None:
-        """Plan the next review before active chat returns to idle."""
+        """Plan the next review before active chat returns to idle.
+
+        A supplied request is a frozen scheduler exit intent and must be used
+        instead of reading mutable active-chat state again.
+        """
 
 
 __all__ = ["AgentWorkflowDispatcher"]

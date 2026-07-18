@@ -431,4 +431,116 @@ async def test_active_chat_workflow_plans_review_before_exit_to_idle() -> None:
             "next_review_plan": plan,
         }
     ]
+    assert scheduler.adjustment_active_epochs == [0]
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_uses_fenced_planning_for_round_exit() -> None:
+    """Round exits do not bypass the scheduler's frozen planner request boundary."""
+
+    class FencedScheduler(RecordingScheduler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prepared: list[dict[str, object]] = []
+            self.applied: list[tuple[object, ReviewPlan | None]] = []
+
+        def prepare_idle_review_planning_for_interest_adjustment(
+            self,
+            session_id: str,
+            *,
+            delta: float,
+            force_exit: bool,
+            active_epoch: int,
+            reason: str,
+        ) -> object:
+            request = object()
+            self.prepared.append(
+                {
+                    "request": request,
+                    "session_id": session_id,
+                    "delta": delta,
+                    "force_exit": force_exit,
+                    "active_epoch": active_epoch,
+                    "reason": reason,
+                }
+            )
+            return request
+
+        async def plan_idle_review_after_active_chat(
+            self,
+            session_id: str,
+            *,
+            request: object | None = None,
+        ) -> ReviewPlan | None:
+            assert request is self.prepared[0]["request"]
+            return await super().plan_idle_review_after_active_chat(
+                session_id,
+                request=request,
+            )
+
+        def apply_idle_review_planning_request(
+            self,
+            request: object,
+            *,
+            next_review_plan: ReviewPlan | None,
+        ) -> object:
+            self.applied.append((request, next_review_plan))
+            return object()
+
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        del batch
+        return ActiveChatRoundResult(
+            action=ActiveChatActionKind.EXIT_ACTIVE,
+            reason="conversation_done",
+        )
+
+    plan = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=180.0,
+        reason="fenced_round_plan",
+        updated_at=80.0,
+    )
+    scheduler = FencedScheduler()
+    scheduler.planned_review = plan
+    workflow = ActiveChatCoordinator(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+    await start_workflow(workflow)
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.sleep(0.05)
+
+    assert len(scheduler.prepared) == 1
+    assert scheduler.prepared[0] == {
+        "request": scheduler.prepared[0]["request"],
+        "session_id": "bot:group:room",
+        "delta": 0.0,
+        "force_exit": True,
+        "active_epoch": 0,
+        "reason": "conversation_done",
+    }
+    assert scheduler.applied == [(scheduler.prepared[0]["request"], plan)]
+    assert scheduler.adjustments == []
     await workflow.shutdown()

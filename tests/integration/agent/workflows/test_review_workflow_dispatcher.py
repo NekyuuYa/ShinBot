@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from review_workflow_support import (
     ActiveChatCoordinator,
     ActiveChatDisposition,
@@ -22,6 +24,27 @@ from review_workflow_support import (
     make_agent_signal,
     pytest,
 )
+
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskManager,
+    AgentTaskQuiescenceStatus,
+)
+
+
+class _BlockingReviewCoordinator:
+    """Expose cancellation of the dispatcher-owned primary review task."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def run(self, **_kwargs: object) -> object:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
 
 
 @pytest.mark.asyncio
@@ -60,6 +83,43 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
 
     assert isinstance(active_attention_state.review_result_summary, ReviewHandoffContext)
     assert active_attention_state.review_result_summary.explanation == dispatcher.last_review_explanation
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_quiesces_the_primary_review_task_for_one_session() -> None:
+    """The review task owner reports local completion only after it exits."""
+
+    session_id = "bot:group:room"
+    coordinator = _BlockingReviewCoordinator()
+    dispatcher = ActiveReplyDispatcher(review_coordinator=coordinator)  # type: ignore[arg-type]
+    task_manager = AgentTaskManager()
+    dispatcher.bind_review_task_scope(task_manager.scope("agent:test:review"))
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+
+    await dispatcher.run_review(
+        session_id=session_id,
+        review_plan=review_plan,
+        unread_messages=[],
+    )
+    await asyncio.wait_for(coordinator.started.wait(), timeout=0.5)
+
+    report = await dispatcher.quiesce_session_tasks(
+        session_id,
+        timeout_seconds=0.5,
+    )
+
+    assert scheduler.state_for(session_id) == AgentState.IDLE
+    assert coordinator.cancelled.is_set()
+    assert report.status is AgentTaskQuiescenceStatus.QUIESCENT
+    assert report.locally_confirmed_quiescent is True
+    assert dispatcher.pending_session_tasks(session_id) == []
+    await task_manager.shutdown()
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,8 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatBatch,
     ActiveChatMessageSignal,
     ActiveChatNotifyResult,
+    ActiveChatRoundCommitDecision,
+    ActiveChatRoundCommitIntent,
     ActiveChatRoundResult,
     ActiveChatStartResult,
     ActiveChatSummarySnapshot,
@@ -30,6 +32,10 @@ from shinbot.agent.coordinators.active_chat.models import (
 from shinbot.agent.coordinators.active_chat.trace import (
     ActiveChatTraceCompactor,
     ActiveChatTraceConfig,
+)
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskQuiescence,
+    cancel_and_wait_for_tasks,
 )
 from shinbot.agent.scheduler.models import ActiveChatState
 from shinbot.utils.logger import format_log_event, get_logger
@@ -42,6 +48,10 @@ if TYPE_CHECKING:
 ActiveChatRoundHandler = Callable[
     [ActiveChatBatch],
     ActiveChatRoundResult | Awaitable[ActiveChatRoundResult],
+]
+ActiveChatRoundCommitHandler = Callable[
+    [ActiveChatRoundCommitIntent],
+    ActiveChatRoundCommitDecision | Awaitable[ActiveChatRoundCommitDecision],
 ]
 
 
@@ -58,6 +68,7 @@ class ActiveChatCoordinator:
         *,
         attention: ActiveChatAttention | None = None,
         round_handler: ActiveChatRoundHandler | None = None,
+        round_commit_handler: ActiveChatRoundCommitHandler | None = None,
         now: Callable[[], float] | None = None,
         conversation_message_limit: int = 80,
         trace_compactor: ActiveChatTraceCompactor | None = None,
@@ -65,6 +76,7 @@ class ActiveChatCoordinator:
     ) -> None:
         self._attention = attention or ActiveChatAttention()
         self._round_handler = round_handler
+        self._round_commit_handler = round_commit_handler
         self._now = now or time.time
         self._interest_effect_config = interest_effect_config or ActiveChatInterestEffectConfig()
         self._trace_compactor = trace_compactor or ActiveChatTraceCompactor(
@@ -72,8 +84,9 @@ class ActiveChatCoordinator:
         )
         self._states: dict[str, ActiveChatAttentionState] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        self._semantic_wait_tasks: dict[str, asyncio.Task[None]] = {}
-        self._running_rounds: dict[str, asyncio.Task[None]] = {}
+        self._semantic_wait_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._running_rounds: dict[str, asyncio.Task[Any]] = {}
+        self._retiring_tasks: dict[asyncio.Task[Any], str] = {}
         self.last_batches: dict[str, ActiveChatBatch] = {}
         self._task_scope: AgentTaskScope | None = None
 
@@ -84,6 +97,14 @@ class ActiveChatCoordinator:
     def set_round_handler(self, round_handler: ActiveChatRoundHandler | None) -> None:
         """Replace the active chat round handler."""
         self._round_handler = round_handler
+
+    def set_round_commit_handler(
+        self,
+        round_commit_handler: ActiveChatRoundCommitHandler | None,
+    ) -> None:
+        """Replace the owner that commits validated round outcomes."""
+
+        self._round_commit_handler = round_commit_handler
 
     async def start_active_chat(
         self,
@@ -288,14 +309,67 @@ class ActiveChatCoordinator:
 
     async def shutdown(self) -> None:
         """Cancel all active chat timers and running round tasks."""
-        tasks = list(self._semantic_wait_tasks.values()) + list(self._running_rounds.values())
+        tasks = list(
+            dict.fromkeys(
+                [
+                    *self._semantic_wait_tasks.values(),
+                    *self._running_rounds.values(),
+                    *self._retiring_tasks,
+                ]
+            )
+        )
         for task in tasks:
-            task.cancel()
+            if task is not asyncio.current_task() and not task.done():
+                task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(
+                *(task for task in tasks if task is not asyncio.current_task()),
+                return_exceptions=True,
+            )
         self._semantic_wait_tasks.clear()
         self._running_rounds.clear()
+        self._retiring_tasks.clear()
         self._states.clear()
+
+    def pending_session_tasks(self, session_id: str) -> list[asyncio.Task[Any]]:
+        """Return known semantic-wait, round, and retiring tasks for one session.
+
+        The result is limited to task objects owned or observed by this
+        coordinator in the current process. It does not freeze future message
+        admission or make any statement about external model/tool effects.
+        """
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id must not be empty")
+        tasks = [
+            task
+            for task, task_session_id in self._retiring_tasks.items()
+            if task_session_id == normalized_session_id and not task.done()
+        ]
+        for task_map in (self._semantic_wait_tasks, self._running_rounds):
+            task = task_map.get(normalized_session_id)
+            if task is not None and not task.done():
+                tasks.append(task)
+        return list(dict.fromkeys(tasks))
+
+    async def quiesce_session_tasks(
+        self,
+        session_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> AgentTaskQuiescence:
+        """Cancel and observe known active-chat work for one session locally.
+
+        A positive result only confirms that this coordinator observed no
+        surviving task in its fixed local snapshot. It is not an ingress fence,
+        cross-process drain, or durable cutover receipt.
+        """
+
+        return await cancel_and_wait_for_tasks(
+            self.pending_session_tasks(session_id),
+            timeout_seconds=timeout_seconds,
+        )
 
     async def flush_now(self, *, scheduler: Any, session_id: str) -> None:
         """Immediately flush pending active-chat messages for a session."""
@@ -313,6 +387,7 @@ class ActiveChatCoordinator:
             self._cancel_semantic_wait_locked(session_id)
             if current_task is not None:
                 self._running_rounds[session_id] = current_task
+                self._track_session_task(current_task)
 
         logger.debug(
             format_log_event(
@@ -433,6 +508,7 @@ class ActiveChatCoordinator:
                 name=f"active-chat-wait-{session_id}",
             )
         self._semantic_wait_tasks[session_id] = task
+        self._track_session_task(task)
         logger.debug(
             format_log_event(
                 "agent.active_chat.semantic_wait.started",
@@ -445,7 +521,9 @@ class ActiveChatCoordinator:
     def _cancel_semantic_wait_locked(self, session_id: str) -> None:
         task = self._semantic_wait_tasks.pop(session_id, None)
         if task is not None and not task.done():
-            task.cancel()
+            self._retire_session_task(session_id, task)
+            if task is not asyncio.current_task():
+                task.cancel()
             logger.debug(
                 format_log_event(
                     "agent.active_chat.semantic_wait.cancelled",
@@ -455,8 +533,10 @@ class ActiveChatCoordinator:
 
     def _cancel_running_round_locked(self, session_id: str) -> None:
         task = self._running_rounds.pop(session_id, None)
-        if task is not None and not task.done() and task is not asyncio.current_task():
-            task.cancel()
+        if task is not None and not task.done():
+            self._retire_session_task(session_id, task)
+            if task is not asyncio.current_task():
+                task.cancel()
             logger.debug(
                 format_log_event(
                     "agent.active_chat.round.cancelled",
@@ -471,44 +551,44 @@ class ActiveChatCoordinator:
         session_id: str,
         wait_seconds: float,
     ) -> None:
+        current = asyncio.current_task()
         try:
             await asyncio.sleep(wait_seconds)
+            async with self._get_lock(session_id):
+                if self._is_round_running(session_id):
+                    logger.debug(
+                        format_log_event(
+                            "agent.active_chat.flush.skip",
+                            session_id=session_id,
+                            reason="round_running",
+                        )
+                    )
+                    return
+                coro = self._flush(session_id=session_id, scheduler=scheduler)
+                if self._task_scope is not None:
+                    task = self._task_scope.create_task(
+                        f"{session_id}:round",
+                        coro,
+                        name=f"active-chat-round-{session_id}",
+                    )
+                else:
+                    task = asyncio.create_task(
+                        coro,
+                        name=f"active-chat-round-{session_id}",
+                    )
+                self._running_rounds[session_id] = task
+                self._track_session_task(task)
+                logger.debug(
+                    format_log_event(
+                        "agent.active_chat.semantic_wait.flushed",
+                        session_id=session_id,
+                    )
+                )
         except asyncio.CancelledError:
             return
         finally:
-            current = asyncio.current_task()
             if self._semantic_wait_tasks.get(session_id) is current:
                 self._semantic_wait_tasks.pop(session_id, None)
-
-        async with self._get_lock(session_id):
-            if self._is_round_running(session_id):
-                logger.debug(
-                    format_log_event(
-                        "agent.active_chat.flush.skip",
-                        session_id=session_id,
-                        reason="round_running",
-                    )
-                )
-                return
-            coro = self._flush(session_id=session_id, scheduler=scheduler)
-            if self._task_scope is not None:
-                task = self._task_scope.create_task(
-                    f"{session_id}:round",
-                    coro,
-                    name=f"active-chat-round-{session_id}",
-                )
-            else:
-                task = asyncio.create_task(
-                    coro,
-                    name=f"active-chat-round-{session_id}",
-                )
-            self._running_rounds[session_id] = task
-            logger.debug(
-                format_log_event(
-                    "agent.active_chat.semantic_wait.flushed",
-                    session_id=session_id,
-                )
-            )
 
     async def _flush(self, *, session_id: str, scheduler: Any) -> None:
         try:
@@ -643,7 +723,6 @@ class ActiveChatCoordinator:
                 )
 
             consumed_message_log_ids = result.consumed_message_log_ids or batch.message_log_ids
-            scheduler.mark_active_chat_consumed(session_id, consumed_message_log_ids)
             effect = interest_effect_for_round(result, self._interest_effect_config)
             self.last_batches[session_id] = batch
             logger.info(
@@ -658,29 +737,30 @@ class ActiveChatCoordinator:
                     trace_id=_trace_id_from_messages(batch.messages),
                 )
             )
-            next_review_plan = None
-            preview_adjustment = getattr(
-                scheduler,
-                "preview_active_chat_interest_adjustment",
-                None,
-            )
-            if preview_adjustment is not None:
-                preview = preview_adjustment(
-                    session_id,
-                    delta=effect.delta,
-                    force_exit=effect.force_exit,
-                )
-                if getattr(preview, "will_return_idle", False):
-                    planner = getattr(scheduler, "plan_idle_review_after_active_chat", None)
-                    if planner is not None:
-                        next_review_plan = await planner(session_id)
-            scheduler.adjust_active_chat_interest(
-                session_id,
-                delta=effect.delta,
+            commit_intent = ActiveChatRoundCommitIntent(
+                session_id=session_id,
+                active_epoch=batch.active_chat_state.active_epoch,
+                consumed_message_log_ids=tuple(consumed_message_log_ids),
+                interest_delta=effect.delta,
                 force_exit=effect.force_exit,
                 reason=effect.reason,
-                next_review_plan=next_review_plan,
             )
+            commit_decision = await self._commit_round_result(
+                scheduler=scheduler,
+                intent=commit_intent,
+            )
+            if not commit_decision.accepted:
+                logger.info(
+                    format_log_event(
+                        "agent.active_chat.round.commit_discarded",
+                        session_id=session_id,
+                        active_epoch=commit_intent.active_epoch,
+                        message_log_ids=consumed_message_log_ids,
+                        reason=commit_decision.skipped_reason or "unknown",
+                        trace_id=_trace_id_from_messages(batch.messages),
+                    )
+                )
+                return
             async with self._get_lock(session_id):
                 state = self._states.get(session_id)
                 if state is not None:
@@ -709,7 +789,118 @@ class ActiveChatCoordinator:
                 accumulated=handled_accumulated if "handled_accumulated" in locals() else 0.0,
             )
         finally:
-            self._running_rounds.pop(session_id, None)
+            current = asyncio.current_task()
+            if self._running_rounds.get(session_id) is current:
+                self._running_rounds.pop(session_id, None)
+
+    async def _commit_round_result(
+        self,
+        *,
+        scheduler: Any,
+        intent: ActiveChatRoundCommitIntent,
+    ) -> ActiveChatRoundCommitDecision:
+        """Submit one validated round result to its scheduler-state owner.
+
+        Standalone coordinators keep the legacy fallback for focused workflow
+        tests. Production profiles bind a runtime handler, which serializes all
+        scheduler mutation through the runtime's per-session mutex.
+        """
+
+        handler = self._round_commit_handler
+        if handler is not None:
+            decision = handler(intent)
+            if isawaitable(decision):
+                decision = await decision
+            if not isinstance(decision, ActiveChatRoundCommitDecision):
+                raise TypeError("round commit handler returned an invalid decision")
+            return decision
+        return await self._commit_round_with_scheduler_fallback(
+            scheduler=scheduler,
+            intent=intent,
+        )
+
+    async def _commit_round_with_scheduler_fallback(
+        self,
+        *,
+        scheduler: Any,
+        intent: ActiveChatRoundCommitIntent,
+    ) -> ActiveChatRoundCommitDecision:
+        """Apply a round outcome directly for standalone coordinator callers."""
+
+        scheduler.mark_active_chat_consumed(
+            intent.session_id,
+            list(intent.consumed_message_log_ids),
+        )
+        next_review_plan = None
+        planning_request = None
+        preview_adjustment = getattr(
+            scheduler,
+            "preview_active_chat_interest_adjustment",
+            None,
+        )
+        if preview_adjustment is not None:
+            preview = preview_adjustment(
+                intent.session_id,
+                delta=intent.interest_delta,
+                force_exit=intent.force_exit,
+                active_epoch=intent.active_epoch,
+            )
+            if getattr(preview, "will_return_idle", False):
+                prepare_planning = getattr(
+                    scheduler,
+                    "prepare_idle_review_planning_for_interest_adjustment",
+                    None,
+                )
+                if prepare_planning is not None:
+                    planning_request = prepare_planning(
+                        intent.session_id,
+                        delta=intent.interest_delta,
+                        force_exit=intent.force_exit,
+                        active_epoch=intent.active_epoch,
+                        reason=intent.reason,
+                    )
+                planner = getattr(scheduler, "plan_idle_review_after_active_chat", None)
+                if planner is not None:
+                    if planning_request is None:
+                        next_review_plan = await planner(intent.session_id)
+                    else:
+                        next_review_plan = await planner(
+                            intent.session_id,
+                            request=planning_request,
+                        )
+                if planning_request is not None:
+                    apply_planning = getattr(
+                        scheduler,
+                        "apply_idle_review_planning_request",
+                        None,
+                    )
+                    if apply_planning is not None:
+                        applied = apply_planning(
+                            planning_request,
+                            next_review_plan=next_review_plan,
+                        )
+                        return ActiveChatRoundCommitDecision(
+                            session_id=intent.session_id,
+                            accepted=True,
+                            returned_to_idle=bool(
+                                getattr(applied, "returned_to_idle", False)
+                            ),
+                            skipped_reason=getattr(applied, "skipped_reason", None),
+                        )
+        decision = scheduler.adjust_active_chat_interest(
+            intent.session_id,
+            delta=intent.interest_delta,
+            force_exit=intent.force_exit,
+            active_epoch=intent.active_epoch,
+            reason=intent.reason,
+            next_review_plan=next_review_plan,
+        )
+        return ActiveChatRoundCommitDecision(
+            session_id=intent.session_id,
+            accepted=True,
+            returned_to_idle=bool(getattr(decision, "returned_to_idle", False)),
+            skipped_reason=getattr(decision, "skipped_reason", None),
+        )
 
     def _restore_pending(
         self,
@@ -779,6 +970,25 @@ class ActiveChatCoordinator:
         running = self._running_rounds.get(session_id)
         return running is not None and not running.done()
 
+    def _retire_session_task(self, session_id: str, task: asyncio.Task[Any]) -> None:
+        """Keep a cancelled task observable until its cancellation tail exits."""
+
+        self._retiring_tasks[task] = session_id
+
+    def _track_session_task(self, task: asyncio.Task[Any]) -> None:
+        """Arrange cleanup for normal completion and cancellation tails."""
+
+        task.add_done_callback(self._finish_session_task)
+
+    def _finish_session_task(self, task: asyncio.Task[Any]) -> None:
+        """Forget a task only after its coroutine has actually terminated."""
+
+        self._retiring_tasks.pop(task, None)
+        for task_map in (self._semantic_wait_tasks, self._running_rounds):
+            for session_id, tracked_task in tuple(task_map.items()):
+                if tracked_task is task:
+                    task_map.pop(session_id, None)
+
 
 def _message_ids(messages: list[ActiveChatMessageSignal]) -> list[int]:
     return [message.message_log_id for message in messages]
@@ -792,4 +1002,8 @@ def _trace_id_from_messages(messages: list[ActiveChatMessageSignal]) -> str:
     return ""
 
 
-__all__ = ["ActiveChatCoordinator", "ActiveChatRoundHandler"]
+__all__ = [
+    "ActiveChatCoordinator",
+    "ActiveChatRoundCommitHandler",
+    "ActiveChatRoundHandler",
+]

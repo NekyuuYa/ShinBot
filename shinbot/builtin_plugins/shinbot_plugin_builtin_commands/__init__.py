@@ -130,7 +130,7 @@ async def _clear_agent_pause(ctx: Any, plugin: Plugin) -> bool:
         await ctx.send("当前 agent runtime 暂不支持提前恢复暂停")
         return False
 
-    pause_clearer(ctx.session_id)
+    await pause_clearer(ctx.session_id)
     await ctx.send("已恢复当前 session 的 agent 活动")
     return True
 
@@ -231,7 +231,7 @@ def setup(plg: Plugin) -> None:
             return
 
         pause_until = time.time() + duration_seconds
-        pause_setter(ctx.session_id, pause_until=pause_until)
+        await pause_setter(ctx.session_id, pause_until=pause_until)
         await ctx.send(
             "\n".join(
                 [

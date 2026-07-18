@@ -18,10 +18,22 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionEventEnvelope,
     SessionTransition,
 )
-from shinbot.agent.runtime.session_actor.registry import AgentSessionActorRegistry
+from shinbot.agent.runtime.session_actor.legacy_recovery_lifecycle import (
+    LegacyRecoveryActorLifecycleController,
+    LegacyRecoveryActorLifecycleState,
+)
+from shinbot.agent.runtime.session_actor.registry import (
+    AgentSessionActorRegistry,
+    LegacyRecoveryLifecycleRequiredError,
+)
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
+from shinbot.core.dispatch.legacy_recovery_gate import (
+    LegacyRecoveryGateBlocked,
+    LegacyRecoveryGateMode,
+)
 from shinbot.persistence import DatabaseManager
+from tests.agent_runtime_helpers import wait_for_session_actor_idle
 
 
 def _make_database(tmp_path: Path) -> DatabaseManager:
@@ -129,11 +141,27 @@ async def test_restart_enqueues_and_drains_fenced_non_idle_recovery(
         )
 
     registry = AgentSessionActorRegistry(store=restarted_store, handler=handler)
+    gate = database.actor_v2_legacy_recovery_gate
+    controller = LegacyRecoveryActorLifecycleController(
+        registry=registry,
+        legacy_recovery_gate=gate,
+        holder_id="recovery-integration",
+    )
     try:
-        assert await registry.recover() == 1
-        await registry.wait_idle(key)
+        activated = await controller.activate()
+        assert activated.state is LegacyRecoveryActorLifecycleState.ACTIVE
+        assert gate.snapshot().mode is LegacyRecoveryGateMode.LEGACY_RECOVERY_ACTIVE
+        with pytest.raises(LegacyRecoveryGateBlocked, match="active legacy recovery"):
+            database.actor_v2_admission_fences.reserve(
+                SessionKey("fenced-profile", "fenced-session"),
+                holder_id="blocked-admission",
+                ttl_seconds=30.0,
+            )
+        await wait_for_session_actor_idle(database, registry, key)
     finally:
-        await registry.shutdown()
+        await controller.shutdown()
+
+    assert gate.snapshot().mode is LegacyRecoveryGateMode.LEGACY_OPEN
 
     recovered = await restarted_store.load(key)
     assert recovered.state == "idle"
@@ -171,10 +199,33 @@ async def test_restart_enqueues_and_drains_fenced_non_idle_recovery(
 
     second_registry = AgentSessionActorRegistry(store=restarted_store, handler=handler)
     try:
-        assert await second_registry.recover() == 0
         assert second_registry.actor_for(key) is None
     finally:
         await second_registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_durable_registry_rejects_bare_broad_recovery(tmp_path: Path) -> None:
+    """SQLite recovery cannot lend actor lifetime to a short caller scope."""
+
+    database = _make_database(tmp_path)
+    key = SessionKey("profile-a", "bot:group:room")
+    registry = AgentSessionActorRegistry(
+        store=SQLiteSessionActorStore(database, clock=lambda: 200.0),
+        handler=lambda aggregate, _event: SessionTransition(
+            aggregate=aggregate.advance(),
+            disposition="unexpected",
+        ),
+    )
+    try:
+        with pytest.raises(
+            LegacyRecoveryLifecycleRequiredError,
+            match="LegacyRecoveryActorLifecycleController",
+        ):
+            await registry.recover()
+        assert registry.actor_for(key) is None
+    finally:
+        await registry.shutdown()
 
 
 @pytest.mark.parametrize("status", ["pending", "processing"])

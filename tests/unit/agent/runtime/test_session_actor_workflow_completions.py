@@ -26,9 +26,18 @@ from shinbot.agent.runtime.session_actor.external_actions import (
     ExternalActionReceiptStatus,
     builtin_external_action_effect_contract,
 )
+from shinbot.agent.runtime.session_actor.manual_review import (
+    MANUAL_REVIEW_EVENT_SOURCE,
+    ManualReviewRequest,
+)
 from shinbot.agent.runtime.session_actor.message_ledger import (
     ConsumeMessageLedgerEntries,
     MessageLedgerConsumptionKind,
+)
+from shinbot.agent.runtime.session_actor.model_execution_witness import (
+    MODEL_EXECUTION_UNKNOWN_EVENT_SOURCE,
+    ModelExecutionClaim,
+    ModelExecutionUnknownNotice,
 )
 from shinbot.agent.runtime.session_actor.reducer import (
     AgentSessionEventKind,
@@ -38,6 +47,11 @@ from shinbot.agent.runtime.session_actor.reducer import (
 from shinbot.agent.runtime.session_actor.review_due_identity import (
     REVIEW_DUE_EVENT_SOURCE,
     review_due_event_id,
+)
+from shinbot.agent.runtime.session_actor.review_execution_gate import (
+    REVIEW_EXECUTION_UNKNOWN_EVENT_SOURCE,
+    ReviewExecutionClaim,
+    ReviewExecutionUnknownNotice,
 )
 
 _KEY = SessionKey("profile-a", "profile-a:group:room-a")
@@ -50,11 +64,7 @@ def _persisted_effect_contract(
     version = snapshot.get("contract_version")
     return builtin_effect_contract(
         effect_kind,
-        version=(
-            int(version)
-            if isinstance(version, int) and not isinstance(version, bool)
-            else 1
-        ),
+        version=(int(version) if isinstance(version, int) and not isinstance(version, bool) else 1),
     )
 
 
@@ -222,6 +232,7 @@ def _started_review() -> tuple[AgentSessionReducer, AgentSessionAggregate]:
     reducer = AgentSessionReducer()
     operation_id = "review-operation-a"
     effect_id = "review-effect-a"
+    review_contract = builtin_effect_contract("run_review_workflow")
     aggregate = AgentSessionAggregate(
         key=_KEY,
         ownership_generation=1,
@@ -252,6 +263,8 @@ def _started_review() -> tuple[AgentSessionReducer, AgentSessionAggregate]:
                     "source_event_id": "review-due-a",
                     "effect_id": effect_id,
                     "effect_kind": "run_review_workflow",
+                    "contract_version": review_contract.version,
+                    "contract_signature": review_contract.signature,
                     "idempotency_key": effect_id,
                     "completion_event_id": "review-completion-a",
                     "failure_event_id": "review-failure-a",
@@ -301,9 +314,7 @@ def _review_completion(
                 "applied_delay_seconds",
                 next_review_outcome.get("requested_delay_seconds", 900.0),
             ),
-            "requested_delay_seconds": next_review_outcome.get(
-                "requested_delay_seconds"
-            ),
+            "requested_delay_seconds": next_review_outcome.get("requested_delay_seconds"),
             "reason": next_review_outcome["reason"],
             "fallback_reason": next_review_outcome.get("fallback_reason", ""),
         }
@@ -382,6 +393,38 @@ def _review_due_event(
         source=REVIEW_DUE_EVENT_SOURCE,
         occurred_at=100.0,
         payload=payload,
+    )
+
+
+def _manual_review_event(
+    *,
+    key: SessionKey = _KEY,
+    plan_id: str = "review-plan-a",
+    plan_revision: int = 1,
+    request_id: str = "operator-request-a",
+    delivery_cycle: int = 0,
+) -> SessionEventEnvelope:
+    request = ManualReviewRequest(
+        key=key,
+        request_id=request_id,
+        ownership_generation=1,
+        plan_id=plan_id,
+        plan_revision=plan_revision,
+        delivery_cycle=delivery_cycle,
+        requested_by="operator-a",
+        reason="test_manual_review",
+    )
+    return SessionEventEnvelope(
+        event_id=request.event_id,
+        key=key,
+        kind=AgentSessionEventKind.MANUAL_REVIEW_REQUESTED,
+        ownership_generation=1,
+        source=MANUAL_REVIEW_EVENT_SOURCE,
+        occurred_at=100.0,
+        causation_id=request.request_id,
+        correlation_id=request.request_id,
+        trace_id=request.event_id,
+        payload=request.to_payload(),
     )
 
 
@@ -576,8 +619,9 @@ def _review_cancellation_failure(
     )
 
 
-def _interrupted_review_waiting_for_cancellation(
-) -> tuple[AgentSessionReducer, AgentSessionAggregate]:
+def _interrupted_review_waiting_for_cancellation() -> tuple[
+    AgentSessionReducer, AgentSessionAggregate
+]:
     reducer, reviewing = _started_review()
     interrupted = reducer.reduce(
         reviewing,
@@ -628,13 +672,15 @@ def test_legacy_workflow_fence_without_snapshot_accepts_only_v1(
             sequence=1,
         )
         stale_disposition = (
-            "active_reply_effect_failure_stale"
-            if failed
-            else "active_reply_completion_stale"
+            "active_reply_effect_failure_stale" if failed else "active_reply_completion_stale"
         )
     else:
         reducer, aggregate = _started_review()
         operation_id = aggregate.review_operation_id
+        aggregate = _without_operation_contract_snapshot(
+            aggregate,
+            operation_id,
+        )
         completion = _review_completion(
             aggregate,
             enter_active_chat=False,
@@ -645,15 +691,9 @@ def test_legacy_workflow_fence_without_snapshot_accepts_only_v1(
                 "reason": "legacy review complete",
             },
         )
-        stale_disposition = (
-            "review_effect_failure_stale"
-            if failed
-            else "review_completion_stale"
-        )
+        stale_disposition = "review_effect_failure_stale" if failed else "review_completion_stale"
     legacy_event = (
-        _workflow_effect_failure(aggregate, operation_id=operation_id)
-        if failed
-        else completion
+        _workflow_effect_failure(aggregate, operation_id=operation_id) if failed else completion
     )
     legacy_contract = builtin_effect_contract(effect_kind, version=1)
     assert legacy_event.payload["contract_version"] == legacy_contract.version
@@ -726,9 +766,10 @@ def test_active_reply_completion_consumes_snapshot_and_materializes_intent() -> 
         "quote_message_log_id": 10,
     }
     assert "ownership_generation" not in action.payload
-    assert transition.aggregate.data["pending_outbound_actions"][action.effect_id][
-        "status"
-    ] == "pending"
+    assert (
+        transition.aggregate.data["pending_outbound_actions"][action.effect_id]["status"]
+        == "pending"
+    )
 
 
 def test_active_reply_completion_rejects_consumption_outside_its_selection() -> None:
@@ -846,9 +887,7 @@ def test_pending_outbound_message_waits_then_starts_queued_active_reply() -> Non
     assert deferred_message.disposition == "message_recorded_waiting_outbound"
     assert deferred_message.aggregate.state == AgentSessionState.IDLE
     assert deferred_message.effects == ()
-    assert deferred_message.aggregate.data["pending_high_priority_message_log_ids"] == [
-        11
-    ]
+    assert deferred_message.aggregate.data["pending_high_priority_message_log_ids"] == [11]
 
     released = reducer.reduce(
         deferred_message.aggregate,
@@ -862,9 +901,7 @@ def test_pending_outbound_message_waits_then_starts_queued_active_reply() -> Non
     assert released.disposition == "external_actions_completed_active_reply_started"
     assert released.aggregate.state == AgentSessionState.ACTIVE_REPLY
     assert released.aggregate.active_reply_operation_id
-    assert [effect.kind for effect in released.effects] == [
-        "run_active_reply_workflow"
-    ]
+    assert [effect.kind for effect in released.effects] == ["run_active_reply_workflow"]
     queued_operation_id = released.aggregate.active_reply_operation_id
     queued_fence = released.aggregate.data["operation_fences"][queued_operation_id]
     assert queued_fence["message_log_ids"] == [11]
@@ -1031,9 +1068,7 @@ def test_workflow_completion_text_fences_reject_whitespace_aliases(
 
     assert transition.disposition == "active_reply_completion_stale"
     assert f"{field_name}_changed" in transition.reason
-    assert transition.aggregate.active_reply_operation_id == (
-        started.active_reply_operation_id
-    )
+    assert transition.aggregate.active_reply_operation_id == (started.active_reply_operation_id)
     assert transition.effects == ()
     assert transition.operations == ()
 
@@ -1138,16 +1173,13 @@ def test_active_reply_effect_failure_terminalizes_without_consuming_input() -> N
     operation = transition.operations[0]
     assert operation.status is SessionOperationStatus.FAILED
     assert operation.failure_code == "SyntheticWorkflowFailure"
-    assert operation.metadata["failure_event_id"] == started.data[
-        "operation_fences"
-    ][operation_id]["failure_event_id"]
+    assert (
+        operation.metadata["failure_event_id"]
+        == started.data["operation_fences"][operation_id]["failure_event_id"]
+    )
     failure = operation.metadata["effect_failure"]
-    assert failure["event_id"] == started.data["operation_fences"][operation_id][
-        "failure_event_id"
-    ]
-    assert failure["effect_id"] == started.data["operation_fences"][operation_id][
-        "effect_id"
-    ]
+    assert failure["event_id"] == started.data["operation_fences"][operation_id]["failure_event_id"]
+    assert failure["effect_id"] == started.data["operation_fences"][operation_id]["effect_id"]
 
 
 def test_active_reply_effect_failure_defers_interrupted_review_without_launching_it() -> None:
@@ -1182,9 +1214,7 @@ def test_active_reply_effect_failure_defers_interrupted_review_without_launching
     assert transition.review_schedules[0].status.value == "scheduled"
     assert transition.review_schedules[0].available_at == 250.0
     assert transition.review_schedule_events[0].event_type == "deferred"
-    assert transition.review_schedule_events[0].operation_id == (
-        started.active_reply_operation_id
-    )
+    assert transition.review_schedule_events[0].operation_id == (started.active_reply_operation_id)
 
 
 def test_active_reply_effect_failure_requires_its_failure_event_id() -> None:
@@ -1215,22 +1245,16 @@ def test_review_interruption_releases_active_reply_only_after_cancellation() -> 
         _message_event(event_id="message:21", message_log_id=21),
     )
 
-    assert interrupted.disposition == (
-        "review_interrupted_active_reply_waiting_cancellation"
-    )
+    assert interrupted.disposition == ("review_interrupted_active_reply_waiting_cancellation")
     assert interrupted.aggregate.state == AgentSessionState.ACTIVE_REPLY
     assert interrupted.aggregate.review_operation_id == ""
     assert interrupted.aggregate.active_reply_operation_id
-    assert [effect.kind for effect in interrupted.effects] == [
-        "cancel_review_workflow"
-    ]
+    assert [effect.kind for effect in interrupted.effects] == ["cancel_review_workflow"]
     assert [operation.status for operation in interrupted.operations] == [
         SessionOperationStatus.SUPERSEDED,
         SessionOperationStatus.PENDING,
     ]
-    intent = interrupted.aggregate.data["effect_control_intents"][
-        "cancel_review_workflow"
-    ]
+    intent = interrupted.aggregate.data["effect_control_intents"]["cancel_review_workflow"]
     pending = intent["pending_active_reply"]
     assert intent["status"] == "requested"
     assert pending["operation_id"] == interrupted.aggregate.active_reply_operation_id
@@ -1250,20 +1274,17 @@ def test_review_interruption_releases_active_reply_only_after_cancellation() -> 
         _review_cancellation_completion(waiting),
     )
 
-    assert released.disposition == (
-        "review_cancellation_completed_active_reply_released"
-    )
+    assert released.disposition == ("review_cancellation_completed_active_reply_released")
     assert released.aggregate.state == AgentSessionState.ACTIVE_REPLY
     assert released.aggregate.active_reply_operation_id == pending["operation_id"]
-    assert released.aggregate.data["effect_control_intents"][
-        "cancel_review_workflow"
-    ]["status"] == "completed"
+    assert (
+        released.aggregate.data["effect_control_intents"]["cancel_review_workflow"]["status"]
+        == "completed"
+    )
     assert [operation.status for operation in released.operations] == [
         SessionOperationStatus.PENDING
     ]
-    assert [effect.kind for effect in released.effects] == [
-        "run_active_reply_workflow"
-    ]
+    assert [effect.kind for effect in released.effects] == ["run_active_reply_workflow"]
     effect = released.effects[0]
     assert effect.operation_id == pending["operation_id"]
     assert effect.payload["message_log_ids"] == [21]
@@ -1283,9 +1304,7 @@ def test_review_interruption_releases_active_reply_only_after_cancellation() -> 
     assert completed.aggregate.state == AgentSessionState.REVIEW
     assert completed.aggregate.active_reply_operation_id == ""
     assert completed.aggregate.review_operation_id
-    assert [effect.kind for effect in completed.effects] == [
-        "run_review_workflow"
-    ]
+    assert [effect.kind for effect in completed.effects] == ["run_review_workflow"]
 
 
 def test_legacy_held_active_reply_is_atomically_upgraded_when_released() -> None:
@@ -1350,9 +1369,7 @@ def test_explicit_v1_held_active_reply_keeps_its_contract_when_released() -> Non
         _review_cancellation_completion(waiting),
     )
 
-    assert released.disposition == (
-        "review_cancellation_completed_active_reply_released"
-    )
+    assert released.disposition == ("review_cancellation_completed_active_reply_released")
     assert released.effects[0].contract_version == legacy_contract.version
     assert released.effects[0].contract_signature == legacy_contract.signature
     released_fence = released.aggregate.data["operation_fences"][operation_id]
@@ -1403,9 +1420,7 @@ def test_held_active_reply_rejects_invalid_persisted_contract_snapshot(
         _review_cancellation_completion(waiting),
     )
 
-    assert blocked.disposition == (
-        "review_cancellation_completed_active_reply_blocked"
-    )
+    assert blocked.disposition == ("review_cancellation_completed_active_reply_blocked")
     assert blocked.effects == ()
     assert expected_mismatch in blocked.result["failure"]["failure_message"]
 
@@ -1429,9 +1444,10 @@ def test_review_cancellation_completion_requires_exact_provenance() -> None:
     assert stale.disposition == "review_cancellation_completion_stale"
     assert "input_watermark_changed" in stale.reason
     assert stale.aggregate.active_reply_operation_id == waiting.active_reply_operation_id
-    assert stale.aggregate.data["effect_control_intents"][
-        "cancel_review_workflow"
-    ]["status"] == "requested"
+    assert (
+        stale.aggregate.data["effect_control_intents"]["cancel_review_workflow"]["status"]
+        == "requested"
+    )
     assert stale.effects == ()
 
 
@@ -1443,9 +1459,7 @@ def test_review_cancellation_effect_failure_blocks_reply_and_reschedules_review(
         3,
     )
     active_reply_operation_id = waiting.active_reply_operation_id
-    cancellation_intent = waiting.data["effect_control_intents"][
-        "cancel_review_workflow"
-    ]
+    cancellation_intent = waiting.data["effect_control_intents"]["cancel_review_workflow"]
 
     blocked = reducer.reduce(
         waiting,
@@ -1455,20 +1469,14 @@ def test_review_cancellation_effect_failure_blocks_reply_and_reschedules_review(
     assert blocked.disposition == "review_cancellation_effect_failed_blocked"
     assert blocked.aggregate.state == AgentSessionState.IDLE
     assert blocked.aggregate.active_reply_operation_id == ""
-    assert active_reply_operation_id not in blocked.aggregate.data.get(
-        "operation_fences", {}
-    )
+    assert active_reply_operation_id not in blocked.aggregate.data.get("operation_fences", {})
     assert blocked.aggregate.data["pending_high_priority_message_log_ids"] == [21]
     assert blocked.operations[0].operation_id == active_reply_operation_id
     assert blocked.operations[0].status is SessionOperationStatus.FAILED
     assert blocked.operations[0].failure_code == "ReviewCancellationExhausted"
-    intent = blocked.aggregate.data["effect_control_intents"][
-        "cancel_review_workflow"
-    ]
+    intent = blocked.aggregate.data["effect_control_intents"]["cancel_review_workflow"]
     assert intent["status"] == "failed"
-    assert intent["last_failure"]["event_id"] == cancellation_intent[
-        "failure_event_id"
-    ]
+    assert intent["last_failure"]["event_id"] == cancellation_intent["failure_event_id"]
     assert blocked.aggregate.data["outbound_blocked"] == {
         "effect_id": cancellation_intent["effect_id"],
         "failure_code": "ReviewCancellationExhausted",
@@ -1499,9 +1507,212 @@ def test_review_cancellation_effect_failure_blocks_reply_and_reschedules_review(
     assert resumed_review.disposition == "review_started"
     assert resumed_review.aggregate.state == AgentSessionState.REVIEW
     assert resumed_review.aggregate.active_reply_operation_id == ""
-    assert [effect.kind for effect in resumed_review.effects] == [
-        "run_review_workflow"
-    ]
+    assert [effect.kind for effect in resumed_review.effects] == ["run_review_workflow"]
+
+
+def test_unknown_review_execution_blocks_all_new_model_work_without_reschedule() -> None:
+    reducer, waiting = _interrupted_review_waiting_for_cancellation()
+    waiting = _stamp_operation_sequence(
+        waiting,
+        waiting.active_reply_operation_id,
+        3,
+    )
+
+    blocked = reducer.reduce(
+        waiting,
+        _review_cancellation_completion(
+            waiting,
+            payload_update={
+                "review_cancellation": {
+                    "status": "blocked",
+                    "cancellation_effect_id": waiting.data["effect_control_intents"][
+                        "cancel_review_workflow"
+                    ]["effect_id"],
+                    "review_effect_id": waiting.data["effect_control_intents"][
+                        "cancel_review_workflow"
+                    ]["cancelled_operation_fence"]["effect_id"],
+                    "local_task_count": 0,
+                    "durable_running_count": 0,
+                    "durable_unknown_count": 1,
+                    "blocker_code": "review_execution_witness_unknown",
+                }
+            },
+        ),
+    )
+
+    assert blocked.disposition == "review_cancellation_execution_unknown_blocked"
+    assert blocked.aggregate.state == AgentSessionState.IDLE
+    assert blocked.effects == ()
+    assert blocked.review_schedules == ()
+    assert blocked.review_schedule_events == ()
+    assert blocked.aggregate.data["review_cancellation_blocked"]["kind"] == ("execution_unknown")
+    assert (
+        blocked.aggregate.data["effect_control_intents"]["cancel_review_workflow"]["status"]
+        == "execution_unknown"
+    )
+
+    due = reducer.reduce(blocked.aggregate, _review_due_event(delivery_cycle=1))
+
+    assert due.disposition == "review_due_execution_unknown_blocked"
+    assert due.effects == ()
+    assert due.review_schedules == ()
+
+    manual = reducer.reduce(
+        blocked.aggregate,
+        _manual_review_event(request_id="unknown-review-execution"),
+    )
+
+    assert manual.disposition == "manual_review_execution_unknown_blocked"
+    assert manual.effects == ()
+    assert manual.operations == ()
+    assert manual.review_schedules == ()
+
+
+def test_expired_review_notice_blocks_the_original_review_state_machine() -> None:
+    """Lease expiry fences the active review before any cancellation gate exists."""
+
+    reducer, reviewing = _started_review()
+    operation_id = reviewing.review_operation_id
+    fence = reviewing.data["operation_fences"][operation_id]
+    notice = ReviewExecutionUnknownNotice(
+        claim=ReviewExecutionClaim(
+            key=_KEY,
+            ownership_generation=1,
+            review_effect_id=str(fence["effect_id"]),
+            review_operation_id=operation_id,
+            review_effect_kind=str(fence["effect_kind"]),
+            review_contract_version=int(fence["contract_version"]),
+            review_contract_signature=str(fence["contract_signature"]),
+            claim_id="expired-review-claim",
+            worker_id="expired-review-worker",
+        ),
+        attempt_count=1,
+        unknown_at=150.0,
+        unknown_reason="review_execution_lease_expired_before_handler_terminal",
+    )
+    event = SessionEventEnvelope(
+        event_id=notice.event_id,
+        key=_KEY,
+        kind=AgentSessionEventKind.REVIEW_EXECUTION_UNKNOWN,
+        ownership_generation=1,
+        source=REVIEW_EXECUTION_UNKNOWN_EVENT_SOURCE,
+        occurred_at=150.0,
+        causation_id=str(fence["source_event_id"]),
+        correlation_id=operation_id,
+        payload=notice.to_payload(),
+    )
+
+    blocked = reducer.reduce(reviewing, event)
+
+    assert blocked.disposition == "review_execution_unknown_blocked"
+    assert blocked.aggregate.state == AgentSessionState.REVIEW
+    assert blocked.aggregate.data["review_cancellation_blocked"] == {
+        "kind": "execution_unknown",
+        "event_id": notice.event_id,
+        "effect_id": fence["effect_id"],
+        "operation_id": operation_id,
+        "claim_id": "expired-review-claim",
+        "worker_id": "expired-review-worker",
+        "attempt_count": 1,
+        "unknown_at": 150.0,
+        "unknown_reason": "review_execution_lease_expired_before_handler_terminal",
+    }
+
+    due = reducer.reduce(blocked.aggregate, _review_due_event(delivery_cycle=1))
+    manual = reducer.reduce(
+        blocked.aggregate,
+        _manual_review_event(request_id="expired-review-manual"),
+    )
+    priority = reducer.reduce(
+        blocked.aggregate,
+        _message_event(event_id="message:expired-review", message_log_id=21),
+    )
+    late_completion = reducer.reduce(
+        blocked.aggregate,
+        _review_completion(
+            blocked.aggregate,
+            enter_active_chat=False,
+            consumed_ids=[10, 20],
+            next_review_outcome={
+                "kind": "planned",
+                "requested_delay_seconds": 60.0,
+                "reason": "late review result",
+            },
+        ),
+    )
+
+    assert due.disposition == "review_due_execution_unknown_blocked"
+    assert manual.disposition == "manual_review_execution_unknown_blocked"
+    assert priority.disposition == "message_recorded_active_reply_blocked"
+    assert late_completion.disposition == "review_completion_execution_unknown_blocked"
+    assert due.effects == manual.effects == priority.effects == late_completion.effects == ()
+
+
+def test_expired_generic_model_notice_blocks_late_completion_and_new_reply_work() -> None:
+    """A non-review unknown witness fences the affected operation globally."""
+
+    reducer, active_reply = _started_active_reply()
+    operation_id = active_reply.active_reply_operation_id
+    fence = active_reply.data["operation_fences"][operation_id]
+    notice = ModelExecutionUnknownNotice(
+        claim=ModelExecutionClaim(
+            key=_KEY,
+            ownership_generation=1,
+            effect_id=str(fence["effect_id"]),
+            operation_id=operation_id,
+            effect_kind=str(fence["effect_kind"]),
+            contract_version=int(fence["contract_version"]),
+            contract_signature=str(fence["contract_signature"]),
+            claim_id="expired-active-reply-claim",
+            worker_id="expired-active-reply-worker",
+        ),
+        attempt_count=1,
+        unknown_at=150.0,
+        unknown_reason="model_execution_lease_expired_before_handler_terminal",
+    )
+    event = SessionEventEnvelope(
+        event_id=notice.event_id,
+        key=_KEY,
+        kind=AgentSessionEventKind.MODEL_EXECUTION_UNKNOWN,
+        ownership_generation=1,
+        source=MODEL_EXECUTION_UNKNOWN_EVENT_SOURCE,
+        occurred_at=150.0,
+        causation_id=str(fence["source_event_id"]),
+        correlation_id=operation_id,
+        payload=notice.to_payload(),
+    )
+
+    blocked = reducer.reduce(active_reply, event)
+    late_completion = reducer.reduce(
+        blocked.aggregate,
+        _active_reply_completion(
+            blocked.aggregate,
+            consumed_ids=[10],
+            sequence=1,
+        ),
+    )
+    next_message = reducer.reduce(
+        blocked.aggregate,
+        _message_event(event_id="message:expired-active-reply", message_log_id=21),
+    )
+
+    assert blocked.disposition == "model_execution_unknown_blocked"
+    assert blocked.aggregate.data["model_execution_blocked"] == {
+        "kind": "execution_unknown",
+        "event_id": notice.event_id,
+        "effect_id": fence["effect_id"],
+        "effect_kind": "run_active_reply_workflow",
+        "operation_id": operation_id,
+        "claim_id": "expired-active-reply-claim",
+        "worker_id": "expired-active-reply-worker",
+        "attempt_count": 1,
+        "unknown_at": 150.0,
+        "unknown_reason": "model_execution_lease_expired_before_handler_terminal",
+    }
+    assert late_completion.disposition == "model_completion_execution_unknown_blocked"
+    assert late_completion.effects == ()
+    assert next_message.disposition == "message_recorded_model_execution_blocked"
+    assert next_message.effects == ()
 
 
 def test_review_completion_enters_active_chat_and_uses_trusted_action_target() -> None:
@@ -1539,9 +1750,7 @@ def test_review_completion_enters_active_chat_and_uses_trusted_action_target() -
     assert consumption.explicit_message_log_ids == (10, 20)
     assert consumption.input_ledger_sequence == 2
     assert transition.review_schedules[0].status.value == "completed"
-    action_effects = [
-        effect for effect in transition.effects if effect.kind == "send_reply"
-    ]
+    action_effects = [effect for effect in transition.effects if effect.kind == "send_reply"]
     assert len(action_effects) == 1
     assert action_effects[0].payload["instance_id"] == "instance-a"
     assert action_effects[0].payload["target_session_id"] == "instance-a:group:room-a"
@@ -1584,9 +1793,7 @@ def test_external_action_success_starts_bootstrap_after_exact_receipt() -> None:
     assert released.aggregate.active_chat_state["outbound_gate_completed_effect_id"] == (
         action.effect_id
     )
-    assert [effect.kind for effect in released.effects] == [
-        "run_active_chat_bootstrap"
-    ]
+    assert [effect.kind for effect in released.effects] == ["run_active_chat_bootstrap"]
 
 
 @pytest.mark.parametrize("legacy_marker", [None, 99])
@@ -1630,21 +1837,19 @@ def test_legacy_waiting_outbound_state_pins_bootstrap_to_v2(
     )
 
     bootstrap = next(
-        effect
-        for effect in released.effects
-        if effect.kind == "run_active_chat_bootstrap"
+        effect for effect in released.effects if effect.kind == "run_active_chat_bootstrap"
     )
     assert bootstrap.contract_version == 2
-    assert bootstrap.contract_signature == builtin_effect_contract(
-        "run_active_chat_bootstrap",
-        version=2,
-    ).signature
+    assert (
+        bootstrap.contract_signature
+        == builtin_effect_contract(
+            "run_active_chat_bootstrap",
+            version=2,
+        ).signature
+    )
     assert "handoff_operation_id" not in bootstrap.payload
     assert "handoff_message_log_ids" not in bootstrap.payload
-    assert (
-        released.aggregate.active_chat_state["actor_workflow_contract_version"]
-        == 2
-    )
+    assert released.aggregate.active_chat_state["actor_workflow_contract_version"] == 2
 
 
 def test_v3_waiting_outbound_without_a_provable_handoff_downgrades_to_v2() -> None:
@@ -1682,9 +1887,7 @@ def test_v3_waiting_outbound_without_a_provable_handoff_downgrades_to_v2() -> No
     )
 
     bootstrap = next(
-        effect
-        for effect in released.effects
-        if effect.kind == "run_active_chat_bootstrap"
+        effect for effect in released.effects if effect.kind == "run_active_chat_bootstrap"
     )
     assert bootstrap.contract_version == 2
     assert "handoff_operation_id" not in bootstrap.payload
@@ -1705,9 +1908,7 @@ def test_bootstrap_handoff_is_equivalent_with_or_without_review_reply_receipt() 
         ),
     )
     direct_effect = next(
-        effect
-        for effect in direct.effects
-        if effect.kind == "run_active_chat_bootstrap"
+        effect for effect in direct.effects if effect.kind == "run_active_chat_bootstrap"
     )
 
     receipt_reducer, receipt_started = _started_review()
@@ -1737,9 +1938,7 @@ def test_bootstrap_handoff_is_equivalent_with_or_without_review_reply_receipt() 
         ),
     )
     receipt_effect = next(
-        effect
-        for effect in receipt.effects
-        if effect.kind == "run_active_chat_bootstrap"
+        effect for effect in receipt.effects if effect.kind == "run_active_chat_bootstrap"
     )
 
     fields = {
@@ -1927,9 +2126,10 @@ def test_external_action_completion_rejects_malformed_persisted_text_authority(
     assert transition.disposition == "external_action_completion_stale"
     assert "pending_external_actions_invalid" in transition.reason
     assert transition.effects == ()
-    assert transition.aggregate.data["pending_outbound_actions"][action.effect_id][
-        "status"
-    ] == "pending"
+    assert (
+        transition.aggregate.data["pending_outbound_actions"][action.effect_id]["status"]
+        == "pending"
+    )
 
 
 def test_external_action_unknown_blocks_bootstrap_without_automatic_release() -> None:
@@ -2003,9 +2203,9 @@ def test_terminal_external_action_effect_failure_blocks_bootstrap_and_late_recei
     assert pending[action.effect_id]["effect_failure"] == {
         "action_ordinal": 0,
         "attempt_count": 5,
-        "causation_id": waiting.aggregate.data["pending_outbound_actions"][
-            action.effect_id
-        ]["source_event_id"],
+        "causation_id": waiting.aggregate.data["pending_outbound_actions"][action.effect_id][
+            "source_event_id"
+        ],
         "contract_signature": action.contract_signature,
         "contract_version": action.contract_version,
         "effect_id": action.effect_id,
@@ -2021,9 +2221,9 @@ def test_terminal_external_action_effect_failure_blocks_bootstrap_and_late_recei
         "occurred_at": 210.0,
         "operation_id": action.operation_id,
         "ownership_generation": 1,
-        "request_digest": waiting.aggregate.data["pending_outbound_actions"][
-            action.effect_id
-        ]["request_digest"],
+        "request_digest": waiting.aggregate.data["pending_outbound_actions"][action.effect_id][
+            "request_digest"
+        ],
         "source": "effect_executor",
     }
     assert blocked.aggregate.data["outbound_blocked"] == {
@@ -2051,9 +2251,10 @@ def test_terminal_external_action_effect_failure_blocks_bootstrap_and_late_recei
     assert "effect_failure_recorded" in late.reason
     assert late.effects == ()
     assert late.aggregate.active_chat_state["bootstrap_status"] == "waiting_outbound"
-    assert late.aggregate.data["pending_outbound_actions"][action.effect_id][
-        "status"
-    ] == "effect_failed"
+    assert (
+        late.aggregate.data["pending_outbound_actions"][action.effect_id]["status"]
+        == "effect_failed"
+    )
 
 
 def test_external_action_effect_failure_with_changed_request_digest_is_stale() -> None:
@@ -2167,9 +2368,7 @@ def test_v2_external_action_completion_requires_receipt_idempotency_key() -> Non
     assert stale.disposition == "external_action_completion_stale"
     assert "receipt_idempotency_key_missing" in stale.reason
     assert stale.effects == ()
-    assert stale.aggregate.data["pending_outbound_actions"][action.effect_id][
-        "status"
-    ] == "pending"
+    assert stale.aggregate.data["pending_outbound_actions"][action.effect_id]["status"] == "pending"
 
 
 def test_review_completion_returns_idle_with_typed_next_schedule() -> None:
@@ -2196,12 +2395,8 @@ def test_review_completion_returns_idle_with_typed_next_schedule() -> None:
     assert transition.aggregate.current_plan_id != "review-plan-a"
     assert transition.aggregate.review_plan_revision == 2
     assert transition.review_schedules[0].applied_delay_seconds == 42.0
-    assert transition.review_schedules[0].model_execution_id == (
-        "model-execution-review-a"
-    )
-    assert transition.review_schedules[0].prompt_signature == (
-        "prompt-signature-review-a"
-    )
+    assert transition.review_schedules[0].model_execution_id == ("model-execution-review-a")
+    assert transition.review_schedules[0].prompt_signature == ("prompt-signature-review-a")
     assert transition.review_schedules[0].status.value == "scheduled"
     assert transition.review_schedule_events[0].previous_plan_id == "review-plan-a"
 
@@ -2293,10 +2488,9 @@ def test_review_due_defers_while_prior_visible_action_is_unsettled() -> None:
     assert deferred.disposition == "review_due_deferred"
     assert deferred.effects == ()
     assert deferred.reason == "outbound_actions_pending"
-    assert deferred.review_schedule_events[0].operation_id == (
-        next(iter(waiting.aggregate.data["pending_outbound_actions"].values()))[
-            "operation_id"
-        ]
+    assert (
+        deferred.review_schedule_events[0].operation_id
+        == (next(iter(waiting.aggregate.data["pending_outbound_actions"].values()))["operation_id"])
     )
 
 
@@ -2365,6 +2559,61 @@ def test_review_due_without_priority_starts_single_review() -> None:
     assert len(transition.operations) == 1
     assert transition.operations[0].kind == "review"
     assert len(transition.effects) == 1
+
+
+def test_manual_review_without_priority_starts_single_review() -> None:
+    """A schedule-admitted manual request uses the normal review transition."""
+
+    aggregate = _idle_with_plan(pending_priority=False)
+    event = _manual_review_event()
+
+    transition = AgentSessionReducer().reduce(aggregate, event)
+
+    assert transition.disposition == "review_started"
+    assert transition.aggregate.state == AgentSessionState.REVIEW
+    assert len(transition.operations) == 1
+    assert transition.operations[0].kind == "review"
+    assert len(transition.effects) == 1
+
+    duplicate = AgentSessionReducer().reduce(transition.aggregate, event)
+
+    assert duplicate.disposition == "review_already_running"
+    assert duplicate.effects == ()
+    assert duplicate.operations == ()
+
+
+def test_manual_review_stale_plan_is_journaled_without_starting_work() -> None:
+    """A stale operator request cannot start a review for a replacement plan."""
+
+    aggregate = _idle_with_plan(pending_priority=False)
+    stale = _manual_review_event(plan_id="retired-review-plan")
+
+    transition = AgentSessionReducer().reduce(aggregate, stale)
+
+    assert transition.disposition == "manual_review_superseded"
+    assert "plan_id_changed" in transition.reason
+    assert transition.aggregate.state == AgentSessionState.IDLE
+    assert transition.effects == ()
+    assert transition.operations == ()
+    assert transition.review_schedule_events[0].event_type == "manual_review_superseded"
+
+
+def test_manual_review_identity_rejects_delivery_cycle_drift() -> None:
+    """The mailbox identity seals the schedule claim cycle used at admission."""
+
+    aggregate = _idle_with_plan(pending_priority=False)
+    event = _manual_review_event()
+    drifted = replace(
+        event,
+        payload={**event.payload, "delivery_cycle": 1},
+    )
+
+    transition = AgentSessionReducer().reduce(aggregate, drifted)
+
+    assert transition.disposition == "manual_review_superseded"
+    assert "manual review event_id changed" in transition.reason
+    assert transition.effects == ()
+    assert transition.operations == ()
 
 
 @pytest.mark.parametrize(

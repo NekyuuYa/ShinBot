@@ -6,11 +6,15 @@ from enum import IntEnum, StrEnum
 import pytest
 
 from shinbot.agent.runtime.session_actor.effect_contracts import (
+    ACTOR_V2_CLEAN_SESSION_EFFECT_REFS,
+    ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS,
     EffectContractAuthority,
     EffectContractAuthorityError,
     EffectDeclarationValidationError,
     EffectExecutionContract,
     EffectLane,
+    builtin_clean_session_actor_v2_effect_contracts,
+    builtin_effect_contract_authority,
     validate_effect_declaration,
 )
 from shinbot.agent.runtime.session_actor.events import SessionEffect
@@ -34,6 +38,19 @@ _CURRENT_CONTRACT = EffectExecutionContract(
     outcome_fence_fields=("input_watermark", "plan_id"),
 )
 _AUTHORITY = EffectContractAuthority((_LEGACY_CONTRACT, _CURRENT_CONTRACT))
+
+
+def test_clean_session_contract_classification_is_explicit_and_exhaustive() -> None:
+    """New authority contracts cannot silently become canary-executable."""
+
+    authority_refs = {contract.ref for contract in builtin_effect_contract_authority().contracts()}
+    clean_refs = {contract.ref for contract in builtin_clean_session_actor_v2_effect_contracts()}
+
+    assert clean_refs == ACTOR_V2_CLEAN_SESSION_EFFECT_REFS
+    assert not (ACTOR_V2_CLEAN_SESSION_EFFECT_REFS & ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS)
+    assert authority_refs == (
+        ACTOR_V2_CLEAN_SESSION_EFFECT_REFS | ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS
+    )
 
 
 class _ContractText(StrEnum):
@@ -332,10 +349,7 @@ def test_exact_v1_declaration_remains_valid_without_retroactive_fences() -> None
 
 
 def test_exact_v2_declaration_requires_and_validates_declared_fences() -> None:
-    assert (
-        validate_effect_declaration(_effect(), authority=_AUTHORITY)
-        is _CURRENT_CONTRACT
-    )
+    assert validate_effect_declaration(_effect(), authority=_AUTHORITY) is _CURRENT_CONTRACT
 
 
 @pytest.mark.parametrize(

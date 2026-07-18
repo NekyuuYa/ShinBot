@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
@@ -21,8 +20,13 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionReviewScheduleEvent,
     SessionTransition,
 )
+from shinbot.agent.runtime.session_actor.manual_review import (
+    MANUAL_REVIEW_EVENT_KIND,
+    MANUAL_REVIEW_EVENT_SOURCE,
+    ManualReviewAdmissionRequiredError,
+    ManualReviewRequest,
+)
 from shinbot.agent.runtime.session_actor.reducer import (
-    AgentSessionEventKind,
     AgentSessionReducer,
     AgentSessionState,
     IdleExitReducerConfig,
@@ -33,32 +37,46 @@ from shinbot.agent.runtime.session_actor.review_due_scanner import (
     REVIEW_DUE_EVENT_SOURCE,
     DurableReviewDueRepository,
     DurableReviewDueScannerService,
+    ManualReviewAdmissionDisposition,
+    ManualReviewAdmissionError,
+    ManualReviewAdmissionService,
     ReviewDueConflict,
     ReviewDueDisposition,
-    ReviewDueWakeError,
     review_due_event_id,
 )
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
-from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
+from shinbot.core.dispatch.actor_v2_admission import ActorV2AdmissionGrant
+from shinbot.core.dispatch.agent_ownership import (
+    AgentRuntimeOwnershipMigrationConflict,
+    AgentRuntimeOwnershipMode,
+)
+from shinbot.core.dispatch.mailbox_handoff import (
+    MailboxHandoffEvidenceState,
+    MailboxHandoffState,
+)
 from shinbot.persistence import DatabaseManager
-from shinbot.persistence.records import MessageLogRecord
 
 _MAILBOX_RAW_LOGICAL_KEY_INDEX = "idx_agent_session_mailbox_raw_logical_key"
 _SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX = (
     "idx_agent_review_schedule_events_raw_logical_key"
 )
+_MANUAL_REVIEW_REQUEST_INDEX = "idx_agent_session_mailbox_manual_review_request"
+_MANUAL_REVIEW_REQUEST_UNIQUE_INDEX = (
+    "idx_agent_session_mailbox_manual_review_request_unique"
+)
 
 
-@dataclass(slots=True)
-class _WakeTarget:
-    failures_remaining: int = 0
-    calls: list[SessionKey] = field(default_factory=list)
+class _MailboxHandoffNotifier:
+    """Capture advisory mailbox ids without implementing a wake target."""
 
-    async def wake(self, key: SessionKey) -> None:
-        self.calls.append(key)
-        if self.failures_remaining > 0:
-            self.failures_remaining -= 1
-            raise RuntimeError("synthetic wake failure")
+    def __init__(self, *, fail: bool = False) -> None:
+        self.mailbox_ids: list[int] = []
+        self._fail = fail
+
+    async def notify(self, mailbox_id: int) -> None:
+        self.mailbox_ids.append(mailbox_id)
+        if self._fail:
+            raise RuntimeError("synthetic mailbox handoff notifier failure")
 
 
 def _make_runtime(
@@ -76,12 +94,14 @@ async def _seed_due_schedule(
     *,
     key: SessionKey,
     plan_id: str,
+    admission_grant: ActorV2AdmissionGrant | None = None,
 ) -> int:
     ownership = database.agent_runtime_ownership.claim(
         key,
         AgentRuntimeOwnershipMode.ACTOR_V2,
         reason="review due scanner test",
         legacy_session_id=f"legacy:{key.profile_id}:{key.session_id}",
+        admission_grant=admission_grant,
     ).ownership
     generation = ownership.generation
     await store.ensure(key, ownership_generation=generation)
@@ -265,6 +285,48 @@ def _assert_raw_logical_key_indexes(database: DatabaseManager) -> None:
     )
 
 
+def test_manual_review_request_lookup_is_indexed(tmp_path: Path) -> None:
+    """Manual request-id replays stay targeted for long-lived sessions."""
+
+    now = [100.0]
+    database, _store = _make_runtime(tmp_path, now)
+    with database.connect() as conn:
+        index_row = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'index' AND name = ?
+            """,
+            (_MANUAL_REVIEW_REQUEST_INDEX,),
+        ).fetchone()
+        query_plan = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT event_id
+            FROM agent_session_mailbox
+            WHERE CAST(profile_id AS BLOB) = ?
+              AND CAST(session_id AS BLOB) = ?
+              AND CAST(kind AS BLOB) = ?
+              AND CAST(source AS BLOB) = ?
+              AND CAST(causation_id AS BLOB) = ?
+            """,
+            (
+                b"profile-a",
+                b"session-a",
+                b"ManualReviewRequested",
+                b"manual_review_admission",
+                b"operator-request-a",
+            ),
+        ).fetchall()
+    assert index_row is not None
+    assert index_row["sql"] is not None
+    _assert_plan_uses_index(
+        query_plan,
+        table_name="agent_session_mailbox",
+        index_name=_MANUAL_REVIEW_REQUEST_INDEX,
+    )
+
+
 def _assert_plan_uses_index(
     plan: list[sqlite3.Row],
     *,
@@ -293,6 +355,230 @@ def _mailbox_rows(database: DatabaseManager) -> list[object]:
                 """
             ).fetchall()
         )
+
+
+def _mailbox_handoff_row(
+    database: DatabaseManager,
+    *,
+    event_id: str,
+) -> sqlite3.Row | None:
+    """Return immutable handoff evidence for one exact mailbox event."""
+
+    with database.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT handoff.mailbox_id, handoff.event_id,
+                   handoff.ownership_generation,
+                   handoff.evidence_state, handoff.admission_fence_id,
+                   handoff.admission_fence_generation, handoff.state
+            FROM agent_session_mailbox AS mailbox
+            LEFT JOIN agent_session_mailbox_handoffs AS handoff
+              ON handoff.mailbox_id = mailbox.mailbox_id
+            WHERE mailbox.event_id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+    return row
+
+
+@pytest.mark.asyncio
+async def test_manual_review_admission_notifies_exact_fenced_mailbox_id(
+    tmp_path: Path,
+) -> None:
+    """Manual admission publishes only the committed mailbox identity."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "manual-notifier")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="manual-notifier",
+        ttl_seconds=3600.0,
+    )
+    generation = await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-notifier-plan",
+        admission_grant=grant,
+    )
+    notifier = _MailboxHandoffNotifier()
+    admission = ManualReviewAdmissionService(
+        _repository(database, now),
+        mailbox_handoff_notifier=notifier,
+    )
+
+    result = await admission.request(
+        key,
+        request_id="manual-notifier-request",
+        requested_by="operator-a",
+    )
+
+    assert result.disposition is ManualReviewAdmissionDisposition.ADMITTED
+    assert result.mailbox_id is not None
+    assert notifier.mailbox_ids == [result.mailbox_id]
+    handoff = database.actor_v2_mailbox_handoffs.read(result.mailbox_id)
+    assert handoff is not None
+    assert handoff.state is MailboxHandoffState.PENDING
+    assert handoff.evidence.state is MailboxHandoffEvidenceState.FENCED
+    assert handoff.evidence.identity.key == key
+    assert handoff.evidence.identity.ownership_generation == generation
+    assert handoff.evidence.admission_fence_id == grant.fence.fence_id
+    assert handoff.evidence.admission_fence_generation == grant.fence.generation
+
+
+@pytest.mark.asyncio
+async def test_manual_review_notifier_failure_keeps_durable_handoff(
+    tmp_path: Path,
+) -> None:
+    """A failed manual hint does not fail admission or fall back to key wake."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "manual-notifier-failure")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="manual-notifier-failure",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-notifier-failure-plan",
+        admission_grant=grant,
+    )
+    notifier = _MailboxHandoffNotifier(fail=True)
+    admission = ManualReviewAdmissionService(
+        _repository(database, now),
+        mailbox_handoff_notifier=notifier,
+    )
+
+    result = await admission.request(
+        key,
+        request_id="manual-notifier-failure-request",
+        requested_by="operator-a",
+    )
+
+    assert result.disposition is ManualReviewAdmissionDisposition.ADMITTED
+    assert result.mailbox_id is not None
+    assert notifier.mailbox_ids == [result.mailbox_id]
+    handoff = database.actor_v2_mailbox_handoffs.read(result.mailbox_id)
+    assert handoff is not None
+    assert handoff.state is MailboxHandoffState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_review_due_scanner_notifies_exact_fenced_mailbox_id(
+    tmp_path: Path,
+) -> None:
+    """The due scanner publishes sidecar identity, never an Actor wake request."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "review-notifier")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="review-notifier",
+        ttl_seconds=3600.0,
+    )
+    generation = await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="review-notifier-plan",
+        admission_grant=grant,
+    )
+    notifier = _MailboxHandoffNotifier()
+    scanner = DurableReviewDueScannerService(
+        _repository(database, now),
+        mailbox_handoff_notifier=notifier,
+    )
+
+    try:
+        summary = await scanner.run_once()
+        assert summary.dispatched_count == 1
+        assert len(summary.dispatched_mailbox_ids) == 1
+        mailbox_id = summary.dispatched_mailbox_ids[0]
+        assert notifier.mailbox_ids == [mailbox_id]
+        handoff = database.actor_v2_mailbox_handoffs.read(mailbox_id)
+        assert handoff is not None
+        assert handoff.state is MailboxHandoffState.PENDING
+        assert handoff.evidence.state is MailboxHandoffEvidenceState.FENCED
+        assert handoff.evidence.identity.key == key
+        assert handoff.evidence.identity.ownership_generation == generation
+    finally:
+        await scanner.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_review_due_notifier_failure_keeps_scanner_healthy_and_handoff_pending(
+    tmp_path: Path,
+) -> None:
+    """An advisory failure cannot turn committed review work into a scan failure."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "review-notifier-failure")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="review-notifier-failure",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="review-notifier-failure-plan",
+        admission_grant=grant,
+    )
+    notifier = _MailboxHandoffNotifier(fail=True)
+    scanner = DurableReviewDueScannerService(
+        _repository(database, now),
+        mailbox_handoff_notifier=notifier,
+    )
+
+    try:
+        summary = await scanner.run_once()
+        assert summary.dispatched_count == 1
+        mailbox_id = summary.dispatched_mailbox_ids[0]
+        assert notifier.mailbox_ids == [mailbox_id]
+        assert scanner.health_snapshot().consecutive_failures == 0
+        handoff = database.actor_v2_mailbox_handoffs.read(mailbox_id)
+        assert handoff is not None
+        assert handoff.state is MailboxHandoffState.PENDING
+    finally:
+        await scanner.shutdown()
+
+
+def _remove_handoff_for_historical_replay(
+    database: DatabaseManager,
+    *,
+    event_id: str,
+    evidence_state: str,
+) -> None:
+    """Make one durable mailbox historical without deriving new fence proof."""
+
+    with database.connect() as conn:
+        mailbox = conn.execute(
+            "SELECT mailbox_id FROM agent_session_mailbox WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        assert mailbox is not None
+        conn.execute(
+            "DROP TRIGGER IF EXISTS trg_agent_session_mailbox_handoff_delete_forbidden"
+        )
+        deleted = conn.execute(
+            "DELETE FROM agent_session_mailbox_handoffs WHERE mailbox_id = ?",
+            (int(mailbox["mailbox_id"]),),
+        )
+        assert deleted.rowcount == 1
+    if evidence_state == "unknown":
+        # Startup migration records old mailbox rows as unknown, not as evidence
+        # reconstructed from the currently live Actor ownership.
+        database.initialize()
+    elif evidence_state != "missing":
+        raise AssertionError(f"unsupported historical evidence state: {evidence_state}")
 
 
 def _mailbox_snapshot(database: DatabaseManager, event_id: str) -> tuple[object, ...]:
@@ -508,7 +794,10 @@ async def _prepare_exact_delivery_replay(
     *,
     keep_journal: bool,
     key: SessionKey | None = None,
+    historical_mailbox: bool = False,
 ) -> tuple[SessionKey, int, str]:
+    """Prepare an exact replay, optionally from a pre-handoff mailbox row."""
+
     key = key or SessionKey("profile-a", "session-a")
     generation = await _seed_due_schedule(
         database,
@@ -516,6 +805,14 @@ async def _prepare_exact_delivery_replay(
         key=key,
         plan_id="plan-a",
     )
+    if historical_mailbox:
+        event_id = _insert_historical_review_due_mailbox(
+            database,
+            key=key,
+            plan_id="plan-a",
+            now=now[0],
+        )
+        return key, generation, event_id
     first = _repository(database, now).dispatch_due(limit=1)
     assert first.dispatched_count == 1
     event_id = first.results[0].event_id
@@ -541,6 +838,94 @@ async def _prepare_exact_delivery_replay(
     return key, generation, event_id
 
 
+def _insert_historical_review_due_mailbox(
+    database: DatabaseManager,
+    *,
+    key: SessionKey,
+    plan_id: str,
+    now: float,
+) -> str:
+    """Insert a pre-sidecar ReviewDue row with the current exact wire shape."""
+
+    with database.connect() as conn:
+        schedule = conn.execute(
+            """
+            SELECT *
+            FROM agent_review_schedules
+            WHERE profile_id = ? AND session_id = ? AND plan_id = ?
+            """,
+            (key.profile_id, key.session_id, plan_id),
+        ).fetchone()
+        assert schedule is not None
+        delivery_cycle = int(schedule["delivery_cycle"])
+        event_id = review_due_event_id(
+            key=key,
+            plan_id=str(schedule["plan_id"]),
+            plan_revision=int(schedule["plan_revision"]),
+            ownership_generation=int(schedule["ownership_generation"]),
+            delivery_cycle=delivery_cycle,
+        )
+        payload: dict[str, object] = {
+            "version": 1 if delivery_cycle == 0 else 2,
+            "event_id": event_id,
+            "session_key": {
+                "profile_id": key.profile_id,
+                "session_id": key.session_id,
+            },
+            "plan_id": str(schedule["plan_id"]),
+            "plan_revision": int(schedule["plan_revision"]),
+            "ownership_generation": int(schedule["ownership_generation"]),
+            "trigger": str(schedule["trigger"]),
+            "outcome": str(schedule["outcome"]),
+            "reason": str(schedule["reason"]),
+            "scheduled_from": float(schedule["scheduled_from"]),
+            "next_review_at": float(schedule["next_review_at"]),
+            "attempt_count": int(schedule["attempt_count"]),
+            "committed_state_revision": int(schedule["committed_state_revision"]),
+            "expected_active_epoch": schedule["expected_active_epoch"],
+            "expected_activity_generation": schedule[
+                "expected_activity_generation"
+            ],
+        }
+        if delivery_cycle > 0:
+            payload["delivery_cycle"] = delivery_cycle
+        inserted = conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation,
+                kind, source, occurred_at, payload_json, causation_id,
+                correlation_id, trace_id, status, attempt_count,
+                available_at, claim_id, lease_owner, lease_until,
+                created_at, handled_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '',
+                      NULL, ?, NULL, '')
+            """,
+            (
+                event_id,
+                key.profile_id,
+                key.session_id,
+                int(schedule["ownership_generation"]),
+                REVIEW_DUE_EVENT_KIND,
+                REVIEW_DUE_EVENT_SOURCE,
+                float(schedule["next_review_at"]),
+                json.dumps(
+                    payload,
+                    ensure_ascii=True,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                str(schedule["plan_id"]),
+                str(schedule["plan_id"]),
+                event_id,
+                float(schedule["next_review_at"]),
+                now,
+            ),
+        )
+        assert inserted.rowcount == 1
+    return event_id
+
+
 def _freeze_due_schedule(
     database: DatabaseManager,
     *,
@@ -559,12 +944,30 @@ def _freeze_due_schedule(
             )
         return "ownership_missing"
     if failure == "ownership_migrating":
-        database.agent_runtime_ownership.begin_migration(
-            key,
-            AgentRuntimeOwnershipMode.LEGACY,
-            expected_generation=generation,
-            reason="freeze schedule for review due ordering test",
-        )
+        # The migration API correctly rejects live handoffs. This fixture
+        # models an already-persisted migration state so the scanner reader's
+        # fail-closed behavior remains covered independently of that writer.
+        with database.connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE agent_session_runtime_ownership
+                SET status = 'migrating', pending_mode = ?, generation = ?,
+                    migration_reason = ?, updated_at = ?
+                WHERE profile_id = ? AND session_id = ?
+                  AND mode = 'actor_v2' AND status = 'active'
+                  AND generation = ?
+                """,
+                (
+                    AgentRuntimeOwnershipMode.LEGACY.value,
+                    generation + 1,
+                    "historical migration snapshot for scanner fence test",
+                    100.0,
+                    key.profile_id,
+                    key.session_id,
+                    generation,
+                ),
+            )
+        assert updated.rowcount == 1
         return "ownership_migrating"
     if failure == "aggregate_missing":
         # This simulates legacy/corrupt storage which predates the current FK.
@@ -602,6 +1005,56 @@ def _freeze_due_schedule(
     raise AssertionError(f"unsupported fence failure: {failure}")
 
 
+def _invalidate_admission_fence(
+    database: DatabaseManager,
+    grant: ActorV2AdmissionGrant,
+    *,
+    state: str,
+) -> str:
+    """Invalidate one committed fence without changing its Actor ownership row."""
+
+    if state == "revoked":
+        database.actor_v2_admission_fences.revoke(
+            grant,
+            reason="integration test revokes actor admission",
+        )
+        return "admission_fence_revoked"
+    if state == "expired":
+        with database.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_session_actor_v2_admission_fences
+                SET expires_at = 0
+                WHERE profile_id = ? AND session_id = ?
+                  AND fence_id = ? AND generation = ?
+                """,
+                (
+                    grant.fence.key.profile_id,
+                    grant.fence.key.session_id,
+                    grant.fence.fence_id,
+                    grant.fence.generation,
+                ),
+            )
+        return "admission_fence_expired"
+    if state == "missing":
+        with database.connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = ? AND session_id = ?
+                  AND fence_id = ? AND generation = ?
+                """,
+                (
+                    grant.fence.key.profile_id,
+                    grant.fence.key.session_id,
+                    grant.fence.fence_id,
+                    grant.fence.generation,
+                ),
+            )
+        return "admission_fence_missing"
+    raise AssertionError(f"unsupported admission fence state: {state}")
+
+
 def _service_health_row(database: DatabaseManager) -> sqlite3.Row:
     with database.connect() as conn:
         row = conn.execute(
@@ -616,121 +1069,458 @@ def _service_health_row(database: DatabaseManager) -> sqlite3.Row:
     return row
 
 
+
 @pytest.mark.asyncio
-async def test_first_actionable_message_reaches_review_through_durable_scanner(
+async def test_manual_review_admission_does_not_compete_with_due_scanner(
     tmp_path: Path,
 ) -> None:
+    """A due delivery that claimed the plan wins over a later manual request."""
+
     now = [100.0]
     database, store = _make_runtime(tmp_path, now)
-    key = SessionKey("profile-a", "profile-a:group:room-a")
-    ownership = database.agent_runtime_ownership.claim(
-        key,
-        AgentRuntimeOwnershipMode.ACTOR_V2,
-        reason="initial review scanner integration test",
-        legacy_session_id="legacy:profile-a:group:room-a",
-    ).ownership
-    await store.ensure(key, ownership_generation=ownership.generation)
-    message_log_id = database.message_logs.insert(
-        MessageLogRecord(
-            session_id="instance-a:group:room-a",
-            platform_msg_id="platform:initial-review",
-            sender_id="user-a",
-            sender_name="User A",
-            raw_text="hello",
-            content_json="[]",
-            role="user",
-            created_at=10.0,
-        )
-    )
-    event_id = "message-received:initial-review"
-    message = SessionEventEnvelope(
-        event_id=event_id,
+    key = SessionKey("profile-a", "profile-a:manual-room-b")
+    await _seed_due_schedule(
+        database,
+        store,
         key=key,
-        kind=AgentSessionEventKind.MESSAGE_RECEIVED,
-        ownership_generation=ownership.generation,
-        source="agent_route_outbox",
-        occurred_at=10.0,
-        created_at=10.0,
-        available_at=10.0,
-        trace_id="trace:initial-review",
-        payload={
-            "version": 1,
-            "event_id": event_id,
-            "session_key": {
-                "profile_id": key.profile_id,
-                "session_id": key.session_id,
-            },
-            "bot_id": key.profile_id,
-            "bot_binding_id": "binding-a",
-            "base_session_id": "instance-a:group:room-a",
-            "bot_session_id": key.session_id,
-            "message_log_id": message_log_id,
-            "sender_id": "user-a",
-            "instance_id": "instance-a",
-            "platform": "test",
-            "self_id": "bot-a",
-            "is_private": False,
-            "is_mentioned": False,
-            "is_mention_to_other": False,
-            "is_reply_to_bot": False,
-            "is_poke_to_bot": False,
-            "is_poke_to_other": False,
-            "already_handled": False,
-            "is_stopped": False,
-            "trace_id": "trace:initial-review",
-            "observed_at": 10.0,
-            "event_type": "message-created",
-            "response_profile": "balanced",
-        },
+        plan_id="manual-plan-b",
     )
-    reducer = AgentSessionReducer(
-        config=IdleExitReducerConfig(default_review_delay_seconds=0.0)
-    )
-    await store.enqueue(message)
-    message_claim = await store.claim_next(key, worker_id="message-worker")
-    assert message_claim is not None
-    initial = await store.load(key)
-    scheduled = await store.commit(
-        message_claim,
-        reducer.reduce(initial, message_claim.envelope),
-        expected_revision=initial.state_revision,
-    )
+    repository = _repository(database, now)
 
-    summary = _repository(database, now).dispatch_due(limit=1)
+    summary = repository.dispatch_due(limit=1)
+    result = repository.admit_manual_review(
+        key,
+        request_id="operator-request-b",
+        requested_by="operator-a",
+    )
 
     assert summary.dispatched_count == 1
-    due_claim = await store.claim_next(key, worker_id="review-worker")
-    assert due_claim is not None
-    assert due_claim.envelope.kind == AgentSessionEventKind.REVIEW_DUE
-    due_transition = reducer.reduce(scheduled, due_claim.envelope)
-    assert due_transition.disposition == "review_started"
-    assert due_transition.caused_plan_id == scheduled.current_plan_id
-    reviewing = await store.commit(
-        due_claim,
-        due_transition,
-        expected_revision=scheduled.state_revision,
-    )
-    assert reviewing.state == AgentSessionState.REVIEW
-    assert reviewing.review_operation_id
+    assert result.disposition is ManualReviewAdmissionDisposition.ALREADY_CLAIMED
     with database.connect() as conn:
+        manual_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ?
+              AND kind = 'ManualReviewRequested'
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()[0]
+    assert manual_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source",
+    (
+        MANUAL_REVIEW_EVENT_SOURCE,
+        "untrusted_manual_review_source",
+    ),
+)
+async def test_manual_review_generic_enqueue_requires_schedule_admission(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    """No generic mailbox path may bypass the schedule-claim transaction."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "profile-a:manual-store-boundary")
+    generation = await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-store-boundary-plan",
+    )
+    request = ManualReviewRequest(
+        key=key,
+        request_id="operator-request-store-boundary",
+        ownership_generation=generation,
+        plan_id="manual-store-boundary-plan",
+        plan_revision=1,
+        delivery_cycle=0,
+        requested_by="operator-a",
+        reason="generic_enqueue_must_not_admit",
+    )
+    envelope = SessionEventEnvelope(
+        event_id=request.event_id,
+        key=key,
+        kind=MANUAL_REVIEW_EVENT_KIND,
+        ownership_generation=generation,
+        payload=request.to_payload(),
+        source=source,
+        occurred_at=now[0],
+        causation_id=request.request_id,
+        correlation_id=request.request_id,
+        trace_id=request.event_id,
+        available_at=now[0],
+        created_at=now[0],
+    )
+
+    with pytest.raises(ManualReviewAdmissionRequiredError, match="must be written"):
+        await store.enqueue(envelope)
+
+    with database.connect() as conn:
+        manual_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox
+            WHERE CAST(profile_id AS BLOB) = ?
+              AND CAST(session_id AS BLOB) = ?
+              AND CAST(kind AS BLOB) = ?
+            """,
+            (
+                key.profile_id.encode(),
+                key.session_id.encode(),
+                MANUAL_REVIEW_EVENT_KIND.encode(),
+            ),
+        ).fetchone()[0]
         schedule = conn.execute(
             """
-            SELECT status, delivery_cycle FROM agent_review_schedules
-            WHERE plan_id = ?
+            SELECT status, delivery_cycle
+            FROM agent_review_schedules
+            WHERE profile_id = ? AND session_id = ? AND plan_id = ?
             """,
-            (reviewing.current_plan_id,),
+            (key.profile_id, key.session_id, "manual-store-boundary-plan"),
         ).fetchone()
-        effect = conn.execute(
-            """
-            SELECT kind, status FROM agent_effect_outbox
-            WHERE operation_id = ?
-            """,
-            (reviewing.review_operation_id,),
-        ).fetchone()
+    assert manual_count == 0
     assert schedule is not None
-    assert tuple(schedule) == ("claimed", 1)
-    assert effect is not None
-    assert tuple(effect) == ("run_review_workflow", "pending")
+    assert tuple(schedule) == ("scheduled", 0)
+
+
+@pytest.mark.asyncio
+async def test_manual_review_request_raw_duplicate_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """The raw-key partial index rejects a duplicate admission request id."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "profile-a:manual-raw-duplicate")
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-raw-duplicate-plan",
+    )
+    accepted = _repository(database, now).admit_manual_review(
+        key,
+        request_id="operator-request-raw-duplicate",
+        requested_by="operator-a",
+    )
+    assert accepted.disposition is ManualReviewAdmissionDisposition.ADMITTED
+
+    with sqlite3.connect(database.config.sqlite_path) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            conn.execute(
+                """
+                INSERT INTO agent_session_mailbox (
+                    event_id, profile_id, session_id, ownership_generation,
+                    kind, source, occurred_at, payload_json, causation_id,
+                    correlation_id, trace_id, status, attempt_count,
+                    available_at, claim_id, lease_owner, lease_until,
+                    created_at, handled_at, last_error
+                )
+                SELECT 'manual-review-raw-duplicate',
+                       CAST(profile_id AS BLOB), CAST(session_id AS BLOB),
+                       ownership_generation,
+                       CAST(kind AS BLOB), CAST(source AS BLOB),
+                       occurred_at, payload_json, CAST(causation_id AS BLOB),
+                       correlation_id, 'manual-review-raw-duplicate',
+                       status, attempt_count, available_at,
+                       claim_id, lease_owner, lease_until,
+                       created_at, handled_at, last_error
+                FROM agent_session_mailbox
+                WHERE event_id = ?
+                """,
+                (accepted.event_id,),
+            )
+        unique_index = conn.execute(
+            "PRAGMA index_list('agent_session_mailbox')"
+        ).fetchall()
+        manual_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox
+            WHERE CAST(profile_id AS BLOB) = ?
+              AND CAST(session_id AS BLOB) = ?
+              AND CAST(kind AS BLOB) = ?
+              AND CAST(source AS BLOB) = ?
+              AND CAST(causation_id AS BLOB) = ?
+            """,
+            (
+                key.profile_id.encode(),
+                key.session_id.encode(),
+                MANUAL_REVIEW_EVENT_KIND.encode(),
+                MANUAL_REVIEW_EVENT_SOURCE.encode(),
+                b"operator-request-raw-duplicate",
+            ),
+        ).fetchone()[0]
+    assert any(
+        row[1] == _MANUAL_REVIEW_REQUEST_UNIQUE_INDEX and row[2] == 1
+        for row in unique_index
+    )
+    assert manual_count == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_review_unique_index_migration_reports_raw_duplicates(
+    tmp_path: Path,
+) -> None:
+    """A pre-index legacy duplicate fails with an actionable raw-key finding."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "profile-a:manual-migration-duplicate")
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-migration-duplicate-plan",
+    )
+    accepted = _repository(database, now).admit_manual_review(
+        key,
+        request_id="operator-request-migration-duplicate",
+        requested_by="operator-a",
+    )
+    assert accepted.disposition is ManualReviewAdmissionDisposition.ADMITTED
+    with database.connect() as conn:
+        conn.execute(f"DROP INDEX {_MANUAL_REVIEW_REQUEST_UNIQUE_INDEX}")
+    _insert_mailbox_clone(
+        database,
+        accepted.event_id,
+        overrides={
+            "event_id": "'manual-review-legacy-duplicate'",
+            "profile_id": "CAST(profile_id AS BLOB)",
+            "session_id": "CAST(session_id AS BLOB)",
+            "kind": "CAST(kind AS BLOB)",
+            "source": "CAST(source AS BLOB)",
+            "causation_id": "CAST(causation_id AS BLOB)",
+            "trace_id": "'manual-review-legacy-duplicate'",
+        },
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="duplicate raw request identity"):
+        database.initialize()
+
+
+@pytest.mark.asyncio
+async def test_manual_review_request_id_rejects_immutable_field_drift(
+    tmp_path: Path,
+) -> None:
+    """One request id cannot be reused with another audit identity."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "profile-a:manual-room-identity")
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-plan-identity",
+    )
+    repository = _repository(database, now)
+
+    admitted = repository.admit_manual_review(
+        key,
+        request_id="operator-request-identity",
+        requested_by="operator-a",
+        reason="operator_requested_review",
+    )
+    assert admitted.disposition is ManualReviewAdmissionDisposition.ADMITTED
+
+    with pytest.raises(
+        ManualReviewAdmissionError,
+        match="immutable request fields",
+    ):
+        repository.admit_manual_review(
+            key,
+            request_id="operator-request-identity",
+            requested_by="operator-b",
+            reason="operator_requested_review",
+        )
+
+    with database.connect() as conn:
+        mailbox_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ?
+              AND kind = 'ManualReviewRequested'
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()[0]
+    assert mailbox_count == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_review_schedule_handoff_blocks_ownership_migration(
+    tmp_path: Path,
+) -> None:
+    """A seed schedule handoff prevents a partial ownership migration."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "profile-a:manual-room-migrating")
+    generation = await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-plan-migrating",
+    )
+    with pytest.raises(
+        AgentRuntimeOwnershipMigrationConflict,
+        match="mailbox handoff blocks actor refence",
+    ):
+        database.agent_runtime_ownership.begin_migration(
+            key,
+            AgentRuntimeOwnershipMode.LEGACY,
+            expected_generation=generation,
+            reason="manual admission migration fence test",
+        )
+
+    owner = database.agent_runtime_ownership.get(key)
+    assert owner is not None
+    assert owner.mode is AgentRuntimeOwnershipMode.ACTOR_V2
+    assert owner.status.value == "active"
+    assert owner.generation == generation
+    with database.connect() as conn:
+        manual_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ?
+              AND kind = 'ManualReviewRequested'
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()[0]
+    assert manual_count == 0
+
+
+@pytest.mark.asyncio
+async def test_manual_review_admission_is_profile_scoped_for_shared_session(
+    tmp_path: Path,
+) -> None:
+    """The same operator request id is independent across profile-owned sessions."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    first_key = SessionKey("profile-a", "bot-a:instance-a:shared-room")
+    second_key = SessionKey("profile-b", "bot-b:instance-a:shared-room")
+    await _seed_due_schedule(
+        database,
+        store,
+        key=first_key,
+        plan_id="manual-plan-profile-a",
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=second_key,
+        plan_id="manual-plan-profile-b",
+    )
+    repository = _repository(database, now)
+
+    first = repository.admit_manual_review(
+        first_key,
+        request_id="operator-request-shared",
+        requested_by="operator-a",
+    )
+    second = repository.admit_manual_review(
+        second_key,
+        request_id="operator-request-shared",
+        requested_by="operator-a",
+    )
+
+    assert first.disposition is ManualReviewAdmissionDisposition.ADMITTED
+    assert second.disposition is ManualReviewAdmissionDisposition.ADMITTED
+    assert first.event_id != second.event_id
+    with database.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT profile_id, session_id, causation_id
+            FROM agent_session_mailbox
+            WHERE kind = 'ManualReviewRequested'
+            ORDER BY profile_id
+            """
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (first_key.profile_id, first_key.session_id, "operator-request-shared"),
+        (second_key.profile_id, second_key.session_id, "operator-request-shared"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_manual_review_admission_honors_profile_filter(tmp_path: Path) -> None:
+    """A profile-scoped diagnostic admission cannot target another profile."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-b", "profile-b:manual-room")
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-plan-profile-b",
+    )
+
+    result = _repository(database, now, profile_id="profile-a").admit_manual_review(
+        key,
+        request_id="operator-request-profile-b",
+        requested_by="operator-a",
+    )
+
+    assert result.disposition is ManualReviewAdmissionDisposition.REJECTED
+    assert result.reason == "profile_filter_mismatch"
+    with database.connect() as conn:
+        mailbox_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox"
+        ).fetchone()[0]
+    assert mailbox_count == 1  # The seeding envelope only.
+
+
+@pytest.mark.asyncio
+async def test_review_wake_keyset_honors_repository_profile_scope(
+    tmp_path: Path,
+) -> None:
+    """A profile-owned scanner cannot discover another profile's wake debt."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    first_key = SessionKey("profile-a", "shared-review-room")
+    second_key = SessionKey("profile-b", "shared-review-room")
+    await _seed_due_schedule(
+        database,
+        store,
+        key=first_key,
+        plan_id="review-wake-profile-a",
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=second_key,
+        plan_id="review-wake-profile-b",
+    )
+    assert _repository(database, now).dispatch_due(limit=2).dispatched_count == 2
+
+    repository = _repository(database, now, profile_id=first_key.profile_id)
+    debts = repository.pending_review_wake_debts(limit=10)
+
+    assert len(debts) == 1
+    assert debts[0].request.key == first_key
+    assert debts[0].cursor is not None
+    assert repository.pending_review_wake_requests(
+        limit=10,
+        after=debts[0].cursor,
+    ) == ()
+    with pytest.raises(ValueError, match="offset cannot be combined"):
+        repository.pending_review_wake_debts(
+            limit=1,
+            offset=1,
+            after=debts[0].cursor,
+        )
+
 
 
 @pytest.mark.asyncio
@@ -1449,9 +2239,11 @@ async def test_stale_plan_is_superseded_without_review_due_mailbox(
 
 
 @pytest.mark.asyncio
-async def test_migration_freezes_schedule_then_abort_dispatches_new_generation(
+async def test_review_due_schedule_handoff_blocks_ownership_migration(
     tmp_path: Path,
 ) -> None:
+    """A schedule producer cannot be refenced while its handoff is live."""
+
     now = [100.0]
     database, store = _make_runtime(tmp_path, now)
     key = SessionKey("profile-a", "session-a")
@@ -1461,12 +2253,16 @@ async def test_migration_freezes_schedule_then_abort_dispatches_new_generation(
         key=key,
         plan_id="plan-a",
     )
-    migrating = database.agent_runtime_ownership.begin_migration(
-        key,
-        AgentRuntimeOwnershipMode.LEGACY,
-        expected_generation=generation,
-        reason="test migration race",
-    )
+    with pytest.raises(
+        AgentRuntimeOwnershipMigrationConflict,
+        match="mailbox handoff blocks actor refence",
+    ):
+        database.agent_runtime_ownership.begin_migration(
+            key,
+            AgentRuntimeOwnershipMode.LEGACY,
+            expected_generation=generation,
+            reason="test migration race",
+        )
     with database.connect() as conn:
         frozen_before = conn.execute(
             """
@@ -1478,12 +2274,6 @@ async def test_migration_freezes_schedule_then_abort_dispatches_new_generation(
         ).fetchone()
     assert frozen_before is not None
 
-    skipped = _repository(database, now).dispatch_due(limit=1)
-
-    assert skipped.fence_skipped_count == 1
-    assert skipped.results[0].disposition is ReviewDueDisposition.FENCE_SKIPPED
-    assert skipped.results[0].reason == "ownership_migrating"
-    assert skipped.results[0].retry_at is None
     with database.connect() as conn:
         frozen_after = conn.execute(
             """
@@ -1495,22 +2285,562 @@ async def test_migration_freezes_schedule_then_abort_dispatches_new_generation(
         ).fetchone()
     assert frozen_after is not None
     assert tuple(frozen_after) == tuple(frozen_before)
-    aborted = database.agent_runtime_ownership.abort_migration(
-        key,
-        expected_generation=migrating.generation,
-        reason="resume actor after test",
-    )
-
-    dispatched = _repository(database, now).dispatch_due(limit=1)
-
-    assert dispatched.dispatched_count == 1
-    assert dispatched.results[0].ownership_generation == aborted.generation
-    payload = json.loads(str(_mailbox_rows(database)[0]["payload_json"]))
-    assert payload["ownership_generation"] == aborted.generation
+    owner = database.agent_runtime_ownership.get(key)
+    assert owner is not None
+    assert owner.status.value == "active"
+    assert owner.generation == generation
 
 
 @pytest.mark.asyncio
-async def test_refenced_old_due_event_is_failed_before_new_generation_dispatch(
+@pytest.mark.parametrize("fence_state", ["revoked", "expired", "missing"])
+async def test_invalid_admission_fence_skips_due_without_mutating_schedule(
+    tmp_path: Path,
+    fence_state: str,
+) -> None:
+    """A fenced owner cannot emit ReviewDue after its admission becomes invalid."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", f"fenced-due-{fence_state}")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="review-due-fence-test",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="fenced-due-plan",
+        admission_grant=grant,
+    )
+    schedule_before = _schedule_snapshot(database, "fenced-due-plan")
+    journal_before = _review_due_journal_snapshot(database)
+    expected_reason = _invalidate_admission_fence(
+        database,
+        grant,
+        state=fence_state,
+    )
+
+    summary = _repository(database, now).dispatch_due(limit=1)
+
+    assert summary.fence_skipped_count == 1
+    assert summary.results[0].disposition is ReviewDueDisposition.FENCE_SKIPPED
+    assert summary.results[0].reason == expected_reason
+    assert _mailbox_rows(database) == []
+    assert _schedule_snapshot(database, "fenced-due-plan") == schedule_before
+    assert _review_due_journal_snapshot(database) == journal_before
+
+
+@pytest.mark.asyncio
+async def test_review_due_final_admission_gate_rolls_back_candidate_writes(
+    tmp_path: Path,
+) -> None:
+    """A fence deleted after mailbox staging leaves no due side effect visible."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "review-due-final-gate")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="review-due-final-gate-test",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="review-due-final-gate-plan",
+        admission_grant=grant,
+    )
+    schedule_before = _schedule_snapshot(database, "review-due-final-gate-plan")
+    journal_before = _review_due_journal_snapshot(database)
+    with database.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER remove_review_due_fence_before_final_gate
+            AFTER INSERT ON agent_review_schedule_events
+            WHEN NEW.event_type = 'due_dispatched'
+                 AND NEW.source = 'durable_review_due_scanner'
+            BEGIN
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = NEW.profile_id AND session_id = NEW.session_id;
+            END
+            """
+        )
+
+    summary = _repository(database, now).dispatch_due(limit=1)
+
+    assert summary.fence_skipped_count == 1
+    assert summary.results[0].reason == "admission_fence_missing"
+    assert _mailbox_rows(database) == []
+    assert _schedule_snapshot(database, "review-due-final-gate-plan") == schedule_before
+    assert _review_due_journal_snapshot(database) == journal_before
+    with database.connect() as conn:
+        handoff_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox_handoffs AS handoff
+            JOIN agent_session_mailbox AS mailbox
+              ON mailbox.mailbox_id = handoff.mailbox_id
+            WHERE mailbox.kind = 'ReviewDue'
+              AND mailbox.source = 'durable_review_due_scanner'
+            """
+        ).fetchone()[0]
+    assert handoff_count == 0
+    with database.connect() as conn:
+        fence = conn.execute(
+            """
+            SELECT status
+            FROM agent_session_actor_v2_admission_fences
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+    assert fence is not None
+    assert str(fence["status"]) == "committed"
+
+
+@pytest.mark.asyncio
+async def test_manual_review_final_admission_gate_rolls_back_candidate_writes(
+    tmp_path: Path,
+) -> None:
+    """A fence deleted after manual staging rejects without a durable mailbox."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", "manual-review-final-gate")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="manual-review-final-gate-test",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-review-final-gate-plan",
+        admission_grant=grant,
+    )
+    schedule_before = _schedule_snapshot(database, "manual-review-final-gate-plan")
+    with database.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER remove_manual_review_fence_before_final_gate
+            AFTER INSERT ON agent_review_schedule_events
+            WHEN NEW.event_type = 'manual_dispatched'
+                 AND NEW.source = 'manual_review_admission'
+            BEGIN
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = NEW.profile_id AND session_id = NEW.session_id;
+            END
+            """
+        )
+
+    result = _repository(database, now).admit_manual_review(
+        key,
+        request_id="manual-review-final-gate-request",
+        requested_by="operator-a",
+    )
+
+    assert result.disposition is ManualReviewAdmissionDisposition.REJECTED
+    assert result.reason == "admission_fence_missing"
+    assert result.wake_request is None
+    assert _schedule_snapshot(database, "manual-review-final-gate-plan") == schedule_before
+    with database.connect() as conn:
+        manual_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox
+            WHERE kind = 'ManualReviewRequested'
+              AND source = 'manual_review_admission'
+            """
+        ).fetchone()[0]
+        handoff_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_session_mailbox_handoffs AS handoff
+            JOIN agent_session_mailbox AS mailbox
+              ON mailbox.mailbox_id = handoff.mailbox_id
+            WHERE mailbox.kind = 'ManualReviewRequested'
+              AND mailbox.source = 'manual_review_admission'
+            """
+        ).fetchone()[0]
+        fence = conn.execute(
+            """
+            SELECT status
+            FROM agent_session_actor_v2_admission_fences
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+    assert manual_count == 0
+    assert handoff_count == 0
+    assert fence is not None
+    assert str(fence["status"]) == "committed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fenced",
+    [pytest.param(False, id="unfenced-legacy"), pytest.param(True, id="fenced")],
+)
+async def test_review_due_new_mailbox_records_captured_handoff_evidence(
+    tmp_path: Path,
+    fenced: bool,
+) -> None:
+    """A fresh ReviewDue row gets exactly the owner evidence captured by dispatch."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", f"review-due-handoff-{fenced}")
+    grant = (
+        database.actor_v2_admission_fences.reserve(
+            key,
+            holder_id="review-due-handoff-test",
+            ttl_seconds=3600.0,
+        )
+        if fenced
+        else None
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="review-due-handoff-plan",
+        admission_grant=grant,
+    )
+
+    summary = _repository(database, now).dispatch_due(limit=1)
+
+    assert summary.dispatched_count == 1
+    result = summary.results[0]
+    assert result.event_id
+    handoff = _mailbox_handoff_row(database, event_id=result.event_id)
+    assert handoff is not None
+    assert str(handoff["event_id"]) == result.event_id
+    assert int(handoff["ownership_generation"]) == result.ownership_generation
+    assert str(handoff["evidence_state"]) == (
+        "fenced" if fenced else "unfenced_legacy"
+    )
+    assert str(handoff["state"]) == ("pending" if fenced else "blocked")
+    if grant is None:
+        assert str(handoff["admission_fence_id"]) == ""
+        assert int(handoff["admission_fence_generation"]) == 0
+    else:
+        assert str(handoff["admission_fence_id"]) == grant.fence.fence_id
+        assert int(handoff["admission_fence_generation"]) == grant.fence.generation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fenced",
+    [pytest.param(False, id="unfenced-legacy"), pytest.param(True, id="fenced")],
+)
+async def test_manual_review_new_mailbox_records_captured_handoff_evidence(
+    tmp_path: Path,
+    fenced: bool,
+) -> None:
+    """A fresh ManualReview request uses the same schedule mailbox handoff writer."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", f"manual-review-handoff-{fenced}")
+    grant = (
+        database.actor_v2_admission_fences.reserve(
+            key,
+            holder_id="manual-review-handoff-test",
+            ttl_seconds=3600.0,
+        )
+        if fenced
+        else None
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-review-handoff-plan",
+        admission_grant=grant,
+    )
+
+    result = _repository(database, now).admit_manual_review(
+        key,
+        request_id="manual-review-handoff-request",
+        requested_by="operator-a",
+    )
+
+    assert result.disposition is ManualReviewAdmissionDisposition.ADMITTED
+    assert result.event_id
+    handoff = _mailbox_handoff_row(database, event_id=result.event_id)
+    assert handoff is not None
+    assert str(handoff["event_id"]) == result.event_id
+    assert int(handoff["ownership_generation"]) == result.ownership_generation
+    assert str(handoff["evidence_state"]) == (
+        "fenced" if fenced else "unfenced_legacy"
+    )
+    assert str(handoff["state"]) == ("pending" if fenced else "blocked")
+    if grant is None:
+        assert str(handoff["admission_fence_id"]) == ""
+        assert int(handoff["admission_fence_generation"]) == 0
+    else:
+        assert str(handoff["admission_fence_id"]) == grant.fence.fence_id
+        assert int(handoff["admission_fence_generation"]) == grant.fence.generation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "historical_state",
+    [pytest.param("missing"), pytest.param("unknown")],
+)
+async def test_review_due_replay_never_upgrades_historical_handoff_evidence(
+    tmp_path: Path,
+    historical_state: str,
+) -> None:
+    """A later fenced owner cannot retrofit evidence onto an old ReviewDue row."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", f"review-due-replay-{historical_state}")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="review-due-replay-test",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="review-due-replay-plan",
+        admission_grant=grant,
+    )
+    first = _repository(database, now).dispatch_due(limit=1)
+    assert first.dispatched_count == 1
+    event_id = first.results[0].event_id
+    _remove_handoff_for_historical_replay(
+        database,
+        event_id=event_id,
+        evidence_state=historical_state,
+    )
+    with database.connect() as conn:
+        updated = conn.execute(
+            """
+            UPDATE agent_review_schedules
+            SET status = 'scheduled', delivery_cycle = 0,
+                available_at = ?, last_error = '', updated_at = ?
+            WHERE plan_id = 'review-due-replay-plan'
+            """,
+            (now[0], now[0]),
+        )
+        assert updated.rowcount == 1
+
+    replay = _repository(database, now).dispatch_due(limit=1)
+
+    assert replay.dispatched_count == 1
+    assert replay.results[0].mailbox_inserted is False
+    handoff = _mailbox_handoff_row(database, event_id=event_id)
+    if historical_state == "missing":
+        assert handoff is not None
+        assert handoff["evidence_state"] is None
+    else:
+        assert handoff is not None
+        assert str(handoff["evidence_state"]) == "unknown"
+        assert str(handoff["state"]) == "blocked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "historical_state",
+    [pytest.param("missing"), pytest.param("unknown")],
+)
+async def test_manual_review_duplicate_never_upgrades_historical_handoff_evidence(
+    tmp_path: Path,
+    historical_state: str,
+) -> None:
+    """A duplicate manual request does not derive sidecar evidence from its owner."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", f"manual-review-replay-{historical_state}")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="manual-review-replay-test",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="manual-review-replay-plan",
+        admission_grant=grant,
+    )
+    repository = _repository(database, now)
+    first = repository.admit_manual_review(
+        key,
+        request_id="manual-review-replay-request",
+        requested_by="operator-a",
+    )
+    assert first.disposition is ManualReviewAdmissionDisposition.ADMITTED
+    _remove_handoff_for_historical_replay(
+        database,
+        event_id=first.event_id,
+        evidence_state=historical_state,
+    )
+
+    duplicate = repository.admit_manual_review(
+        key,
+        request_id="manual-review-replay-request",
+        requested_by="operator-a",
+    )
+
+    assert duplicate.disposition is ManualReviewAdmissionDisposition.DUPLICATE
+    assert duplicate.mailbox_inserted is False
+    handoff = _mailbox_handoff_row(database, event_id=first.event_id)
+    if historical_state == "missing":
+        assert handoff is not None
+        assert handoff["evidence_state"] is None
+    else:
+        assert handoff is not None
+        assert str(handoff["evidence_state"]) == "unknown"
+        assert str(handoff["state"]) == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_invalid_fenced_schedules_do_not_starve_live_due_work(
+    tmp_path: Path,
+) -> None:
+    """A bounded scan prioritizes live admission over frozen stale schedules."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    invalid_keys: list[SessionKey] = []
+    for index in range(2):
+        key = SessionKey("profile-a", f"fenced-starvation-{index}")
+        grant = database.actor_v2_admission_fences.reserve(
+            key,
+            holder_id=f"review-starvation-{index}",
+            ttl_seconds=3600.0,
+        )
+        await _seed_due_schedule(
+            database,
+            store,
+            key=key,
+            plan_id=f"fenced-starvation-plan-{index}",
+            admission_grant=grant,
+        )
+        database.actor_v2_admission_fences.revoke(
+            grant,
+            reason="test freezes stale due schedule",
+        )
+        invalid_keys.append(key)
+    live_key = SessionKey("profile-a", "live-after-fenced-starvation")
+    await _seed_due_schedule(
+        database,
+        store,
+        key=live_key,
+        plan_id="live-after-fenced-starvation-plan",
+    )
+
+    summary = _repository(database, now).dispatch_due(limit=1)
+
+    assert summary.dispatched_count == 1
+    assert summary.results[0].key == live_key
+    assert {row["session_id"] for row in _mailbox_rows(database)} == {
+        live_key.session_id
+    }
+    with database.connect() as conn:
+        frozen = conn.execute(
+            """
+            SELECT status
+            FROM agent_review_schedules
+            WHERE profile_id = ?
+              AND session_id IN (?, ?)
+            ORDER BY session_id
+            """,
+            ("profile-a", *(key.session_id for key in invalid_keys)),
+        ).fetchall()
+    assert [str(row["status"]) for row in frozen] == ["scheduled", "scheduled"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fence_state", ["revoked", "expired", "missing"])
+async def test_invalid_admission_fence_rejects_manual_review_without_wake(
+    tmp_path: Path,
+    fence_state: str,
+) -> None:
+    """Manual admission cannot bypass the same fence checked by due scanning."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", f"fenced-manual-{fence_state}")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="manual-review-fence-test",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="fenced-manual-plan",
+        admission_grant=grant,
+    )
+    schedule_before = _schedule_snapshot(database, "fenced-manual-plan")
+    expected_reason = _invalidate_admission_fence(
+        database,
+        grant,
+        state=fence_state,
+    )
+    admission = ManualReviewAdmissionService(_repository(database, now))
+
+    result = await admission.request(
+        key,
+        request_id="fenced-manual-request",
+        requested_by="operator-a",
+    )
+
+    assert result.disposition is ManualReviewAdmissionDisposition.REJECTED
+    assert result.reason == expected_reason
+    assert _mailbox_rows(database) == []
+    assert _schedule_snapshot(database, "fenced-manual-plan") == schedule_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fence_state", ["revoked", "expired", "missing"])
+async def test_invalid_admission_fence_is_excluded_from_review_wake_debt(
+    tmp_path: Path,
+    fence_state: str,
+) -> None:
+    """Revoked or expired ownership cannot keep driving bare SessionKey wakes."""
+
+    now = [100.0]
+    database, store = _make_runtime(tmp_path, now)
+    key = SessionKey("profile-a", f"fenced-debt-{fence_state}")
+    grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="review-wake-debt-fence-test",
+        ttl_seconds=3600.0,
+    )
+    await _seed_due_schedule(
+        database,
+        store,
+        key=key,
+        plan_id="fenced-debt-plan",
+        admission_grant=grant,
+    )
+    repository = _repository(database, now)
+    assert repository.dispatch_due(limit=1).dispatched_count == 1
+    assert repository.pending_review_due_keys() == (key,)
+    assert repository.pending_review_wake_keys() == (key,)
+
+    _invalidate_admission_fence(database, grant, state=fence_state)
+
+    assert repository.pending_review_due_keys() == ()
+    assert repository.pending_review_wake_keys() == ()
+
+
+
+@pytest.mark.asyncio
+async def test_active_review_due_handoff_blocks_refence_before_new_generation_dispatch(
     tmp_path: Path,
 ) -> None:
     now = [100.0]
@@ -1525,23 +2855,17 @@ async def test_refenced_old_due_event_is_failed_before_new_generation_dispatch(
     first = _repository(database, now).dispatch_due(limit=1)
     assert first.dispatched_count == 1
     old_event_id = first.results[0].event_id
-    migrating = database.agent_runtime_ownership.begin_migration(
-        key,
-        AgentRuntimeOwnershipMode.LEGACY,
-        expected_generation=generation,
-        reason="fence claimed due event",
-    )
-    aborted = database.agent_runtime_ownership.abort_migration(
-        key,
-        expected_generation=migrating.generation,
-        reason="return to actor runtime",
-    )
+    with pytest.raises(
+        AgentRuntimeOwnershipMigrationConflict,
+        match="mailbox handoff blocks actor refence",
+    ):
+        database.agent_runtime_ownership.begin_migration(
+            key,
+            AgentRuntimeOwnershipMode.LEGACY,
+            expected_generation=generation,
+            reason="fence claimed due event",
+        )
 
-    second = _repository(database, now).dispatch_due(limit=1)
-
-    assert second.dispatched_count == 1
-    assert second.results[0].ownership_generation == aborted.generation
-    assert second.results[0].event_id != old_event_id
     with database.connect() as conn:
         rows = conn.execute(
             """
@@ -1552,17 +2876,10 @@ async def test_refenced_old_due_event_is_failed_before_new_generation_dispatch(
             ORDER BY mailbox_id
             """
         ).fetchall()
-    assert len(rows) == 2
+    assert len(rows) == 1
     assert str(rows[0]["event_id"]) == old_event_id
-    assert str(rows[0]["status"]) == "failed"
-    assert str(rows[0]["last_error"]) == (
-        "review_due_exact_plan_fence_superseded"
-    )
-    assert str(rows[1]["status"]) == "pending"
-    assert int(rows[1]["ownership_generation"]) == aborted.generation
-    assert json.loads(str(rows[1]["payload_json"]))["ownership_generation"] == (
-        aborted.generation
-    )
+    assert str(rows[0]["status"]) == "pending"
+    assert int(rows[0]["ownership_generation"]) == generation
 
 
 @pytest.mark.parametrize(
@@ -1658,60 +2975,6 @@ async def test_all_frozen_rows_keep_stable_order_and_remain_unchanged(
     } == snapshots
 
 
-@pytest.mark.asyncio
-async def test_unavailable_registry_and_wake_failure_leave_recoverable_debt(
-    tmp_path: Path,
-) -> None:
-    now = [100.0]
-    database, store = _make_runtime(tmp_path, now)
-    key = SessionKey("profile-a", "session-a")
-    await _seed_due_schedule(database, store, key=key, plan_id="plan-a")
-    repository = _repository(database, now)
-    no_registry = DurableReviewDueScannerService(repository, wake_target=None)
-
-    summary = await no_registry.run_once()
-
-    assert summary.dispatched_count == 1
-    assert no_registry.health_snapshot().success_count == 1
-    assert repository.pending_review_due_keys() == (key,)
-    durable_health = _service_health_row(database)
-    assert str(durable_health["status"]) == "running"
-    assert int(durable_health["scan_count"]) == 1
-    assert int(durable_health["due_seen_count"]) == 1
-    assert int(durable_health["dispatch_count"]) == 1
-    assert int(durable_health["skip_count"]) == 0
-
-    wake_target = _WakeTarget(failures_remaining=1)
-    restarted = DurableReviewDueScannerService(
-        _repository(database, now),
-        wake_target=wake_target,
-    )
-    with pytest.raises(ReviewDueWakeError) as exc_info:
-        await restarted.run_once()
-    assert exc_info.value.keys == (key,)
-    assert restarted.health_snapshot().consecutive_failures == 1
-    assert len(_mailbox_rows(database)) == 1
-    durable_health = _service_health_row(database)
-    assert str(durable_health["status"]) == "degraded"
-    assert int(durable_health["scan_count"]) == 2
-    assert int(durable_health["due_seen_count"]) == 1
-    assert int(durable_health["dispatch_count"]) == 1
-    assert int(durable_health["consecutive_failures"]) == 1
-    assert str(durable_health["last_error_code"]) == "ReviewDueWakeError"
-
-    recovered = await restarted.run_once()
-
-    assert recovered.dispatched_count == 0
-    assert wake_target.calls == [key, key]
-    assert restarted.health_snapshot().consecutive_failures == 0
-    assert len(_mailbox_rows(database)) == 1
-    durable_health = _service_health_row(database)
-    assert str(durable_health["status"]) == "running"
-    assert int(durable_health["scan_count"]) == 3
-    assert int(durable_health["due_seen_count"]) == 1
-    assert int(durable_health["dispatch_count"]) == 1
-    assert int(durable_health["consecutive_failures"]) == 0
-
 
 @pytest.mark.asyncio
 async def test_same_external_session_profiles_dispatch_independently(
@@ -1766,6 +3029,7 @@ async def test_existing_mailbox_immutable_envelope_drift_defers_atomically(
         store,
         now,
         keep_journal=False,
+        historical_mailbox=True,
     )
     with database.connect() as conn:
         conn.execute(
@@ -1849,6 +3113,7 @@ async def test_existing_mailbox_noncanonical_sqlite_representation_is_rejected(
         store,
         now,
         keep_journal=False,
+        historical_mailbox=True,
     )
     with database.connect() as conn:
         conn.execute(
@@ -1899,6 +3164,7 @@ async def test_existing_mailbox_invalid_utf8_text_defers_without_partial_commit(
         store,
         now,
         keep_journal=False,
+        historical_mailbox=True,
     )
     with database.connect() as conn:
         conn.execute(
@@ -2078,6 +3344,7 @@ async def test_mailbox_single_logical_key_alias_defers_without_duplicate(
         now,
         keep_journal=False,
         key=key,
+        historical_mailbox=True,
     )
     if weaken_key_affinity:
         _weaken_mailbox_key_affinity(database, key_field)

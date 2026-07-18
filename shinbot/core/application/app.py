@@ -6,6 +6,7 @@ for starting the bot framework.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -234,16 +235,9 @@ class ShinBot:
         handler = getattr(runtime, "handle_agent_signal", None)
         if handler is not None:
             self.set_agent_signal_handler(handler)
-        actor_wake_target = getattr(runtime, "actor_wake_target", None)
-        if actor_wake_target is None:
-            actor_wake_target = getattr(runtime, "session_actor_registry", None)
-        if (
-            self.durable_routing_service is not None
-            and actor_wake_target is not None
-            and callable(getattr(actor_wake_target, "wake", None))
-            and callable(getattr(actor_wake_target, "recover", None))
-        ):
-            self.durable_routing_service.set_actor_wake_target(actor_wake_target)
+        # Actor v2 must never become a live durable-routing consumer merely
+        # because a runtime happens to expose a compatible object. A future
+        # lifecycle controller owns the explicit post-gate binding sequence.
 
     # ── Adapter management shortcuts ─────────────────────────────────
 
@@ -309,11 +303,13 @@ class ShinBot:
         logger.info("ShinBot starting...")
         if self.durable_routing_service is not None:
             await self.durable_routing_service.prepare()
-        await self.adapter_manager.start_all()
         if self.agent_runtime is not None:
             start_background_tasks = getattr(self.agent_runtime, "start_background_tasks", None)
             if start_background_tasks is not None:
-                start_background_tasks()
+                startup_result = start_background_tasks()
+                if inspect.isawaitable(startup_result):
+                    await startup_result
+        await self.adapter_manager.start_all()
         if self.durable_routing_service is not None:
             await self.durable_routing_service.start()
         logger.info("ShinBot started with %d adapters", len(self.adapter_manager.all_instances))

@@ -18,6 +18,7 @@ from shinbot.agent.runtime.session_actor.aggregate import (
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     EffectContractAuthority,
     EffectDeclarationValidationError,
+    builtin_effect_contract,
     builtin_effect_contract_authority,
     validate_effect_declaration,
 )
@@ -25,6 +26,8 @@ from shinbot.agent.runtime.session_actor.events import (
     ClaimedSessionEvent,
     EventEnqueueResult,
     MailboxEventStatus,
+    ModelExecutionCancellationGateState,
+    ReviewCancellationGateState,
     ReviewScheduleStatus,
     SessionEffect,
     SessionEventEnvelope,
@@ -32,7 +35,14 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionOperationStatus,
     SessionTransition,
 )
+from shinbot.agent.runtime.session_actor.execution_control import (
+    ReviewCancellationGateRequest,
+)
 from shinbot.agent.runtime.session_actor.external_actions import ExternalActionKind
+from shinbot.agent.runtime.session_actor.manual_review import (
+    MANUAL_REVIEW_EVENT_KIND,
+    ManualReviewAdmissionRequiredError,
+)
 from shinbot.agent.runtime.session_actor.message_ledger import (
     AppendMessageLedgerEntry,
     ConsumeMessageLedgerEntries,
@@ -52,6 +62,11 @@ from shinbot.agent.runtime.session_actor.message_ledger_persistence import (
     load_message_ledger_entries,
     load_message_ledger_ranges,
 )
+from shinbot.agent.runtime.session_actor.model_execution_cancellation_gate import (
+    MODEL_EXECUTION_CANCELLATION_CONTRACT_VERSION,
+    MODEL_EXECUTION_CANCELLATION_EFFECT_KIND,
+    ModelExecutionCancellationGateRequest,
+)
 from shinbot.agent.runtime.session_actor.recovery import (
     RECOVERY_DELIVERY_EVENT_KIND,
     RECOVERY_DELIVERY_EVENT_SOURCE,
@@ -66,6 +81,13 @@ from shinbot.agent.runtime.session_actor.transition_validation import (
     validate_review_plan_transition,
     validate_session_transition,
 )
+from shinbot.core.dispatch.agent_ownership import (
+    AgentRuntimeOwnership,
+    AgentRuntimeOwnershipGenerationConflict,
+)
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
+from shinbot.core.dispatch.fenced_wake_target_lease import FencedActorExecutionBinding
+from shinbot.core.dispatch.legacy_recovery_gate import LegacyRecoveryPermit
 
 if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
@@ -87,6 +109,9 @@ _ACTOR_NATIVE_ACTIVE_CHAT_ROUND_EFFECT_KIND = "run_active_chat_round"
 _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION = 3
 _LEGACY_RECOVERY_EVENT_KIND = "RecoveryRequested"
 _LEGACY_RECOVERY_EVENT_SOURCE = "session_actor_recovery"
+_REVIEW_CANCELLATION_EFFECT_KIND = "cancel_review_workflow"
+_REVIEW_CANCELLATION_EFFECT_CONTRACT_VERSION = 2
+_REVIEW_WORKFLOW_EFFECT_KIND = "run_review_workflow"
 
 
 class SessionStoreError(RuntimeError):
@@ -212,17 +237,19 @@ class SQLiteSessionActorStore:
         key: SessionKey,
         *,
         ownership_generation: int | None = None,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> AgentSessionAggregate:
         """Create the aggregate if needed and return its current snapshot."""
 
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            ownership = (
-                self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
-                    conn,
-                    key,
-                    expected_generation=ownership_generation,
-                )
+            ownership = self._require_active_actor_ownership(
+                conn,
+                key,
+                expected_generation=ownership_generation,
+                ownership_binding=ownership_binding,
+                execution_binding=execution_binding,
             )
             now = self._now()
             self._ensure_with_connection(
@@ -235,16 +262,64 @@ class SQLiteSessionActorStore:
         assert row is not None
         return _aggregate_from_row(row)
 
-    async def load(self, key: SessionKey) -> AgentSessionAggregate:
-        """Load one aggregate or raise when the actor has not been created."""
+    async def ensure_for_legacy_recovery(
+        self,
+        key: SessionKey,
+        *,
+        permit: LegacyRecoveryPermit,
+    ) -> AgentSessionAggregate:
+        """Ensure one aggregate while an exact broad-recovery permit is live."""
 
         with self._database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_legacy_recovery_permit(conn, permit)
+            ownership = self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+                conn,
+                key,
+            )
+            now = self._now()
+            self._ensure_with_connection(
+                conn,
+                key,
+                ownership_generation=ownership.generation,
+                now=now,
+            )
+            self._require_legacy_recovery_permit(conn, permit)
+            row = self._load_row(conn, key)
+        assert row is not None
+        return _aggregate_from_row(row)
+
+    async def load(
+        self,
+        key: SessionKey,
+        *,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> AgentSessionAggregate:
+        """Load one aggregate or raise when the actor has not been created."""
+
+        ownership: AgentRuntimeOwnership | None = None
+        with self._database.connect() as conn:
+            if ownership_binding is not None or execution_binding is not None:
+                conn.execute("BEGIN IMMEDIATE")
+                ownership = self._require_active_actor_ownership(
+                    conn,
+                    key,
+                    ownership_binding=ownership_binding,
+                    execution_binding=execution_binding,
+                )
             row = self._load_row(conn, key)
         if row is None:
             raise SessionAggregateNotFound(
                 f"Agent session aggregate does not exist: {key.profile_id}:{key.session_id}"
             )
-        return _aggregate_from_row(row)
+        aggregate = _aggregate_from_row(row)
+        if ownership is not None:
+            if aggregate.ownership_generation != ownership.generation:
+                raise AgentRuntimeOwnershipGenerationConflict(
+                    "aggregate ownership generation does not match ownership binding"
+                )
+        return aggregate
 
     async def list_message_ledger(
         self,
@@ -350,6 +425,8 @@ class SQLiteSessionActorStore:
         key: SessionKey,
         *,
         worker_id: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ClaimedSessionEvent | None:
         """Claim the oldest available event for one actor using a lease."""
 
@@ -359,13 +436,24 @@ class SQLiteSessionActorStore:
         claim_id = uuid.uuid4().hex
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            binding_filter_sql = ""
+            binding_params: tuple[object, ...] = ()
+            if ownership_binding is not None or execution_binding is not None:
+                bound_ownership = self._require_active_actor_ownership(
+                    conn,
+                    key,
+                    ownership_binding=ownership_binding,
+                    execution_binding=execution_binding,
+                )
+                binding_filter_sql = "AND mailbox.ownership_generation = ?"
+                binding_params = (bound_ownership.generation,)
             now = self._now()
             lease_until = _nonnegative_finite(
                 now + self._lease_seconds,
                 field_name="lease_until",
             )
             row = conn.execute(
-                """
+                f"""
                 SELECT mailbox.*
                 FROM agent_session_mailbox AS mailbox
                 JOIN agent_session_runtime_ownership AS ownership
@@ -377,19 +465,22 @@ class SQLiteSessionActorStore:
                 WHERE mailbox.profile_id = ?
                   AND mailbox.session_id = ?
                   AND mailbox.ownership_generation >= 1
+                  {binding_filter_sql}
                   AND mailbox.status IN ('pending', 'processing')
                 ORDER BY mailbox.mailbox_id ASC
                 LIMIT 1
                 """,
-                (key.profile_id, key.session_id),
+                (key.profile_id, key.session_id, *binding_params),
             ).fetchone()
             if row is None:
                 return None
             ownership_generation = int(row["ownership_generation"])
-            self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            self._require_active_actor_ownership(
                 conn,
                 key,
                 expected_generation=ownership_generation,
+                ownership_binding=ownership_binding,
+                execution_binding=execution_binding,
             )
             if float(row["available_at"] or 0.0) > now:
                 return None
@@ -446,6 +537,8 @@ class SQLiteSessionActorStore:
         transition: SessionTransition,
         *,
         expected_revision: int,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> AgentSessionAggregate:
         """Atomically commit an event transition, journals, and durable effects.
 
@@ -487,10 +580,12 @@ class SQLiteSessionActorStore:
             ownership_generation = _persistable_ownership_generation(
                 claim.envelope.ownership_generation
             )
-            self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            self._require_active_actor_ownership(
                 conn,
                 claim.key,
                 expected_generation=ownership_generation,
+                ownership_binding=ownership_binding,
+                execution_binding=execution_binding,
             )
             mailbox_row = conn.execute(
                 """
@@ -740,6 +835,26 @@ class SQLiteSessionActorStore:
                 transition=transition,
                 now=now,
             )
+            self._commit_review_cancellation_gates(
+                conn,
+                claim=claim,
+                current=current,
+                target=target,
+                transition=transition,
+                effects=effects,
+                ownership_generation=ownership_generation,
+                now=now,
+            )
+            self._commit_model_execution_cancellation_gates(
+                conn,
+                claim=claim,
+                current=current,
+                target=target,
+                transition=transition,
+                effects=effects,
+                ownership_generation=ownership_generation,
+                now=now,
+            )
             for effect in effects:
                 self._append_effect(
                     conn,
@@ -823,6 +938,1131 @@ class SQLiteSessionActorStore:
             except EffectDeclarationValidationError as exc:
                 raise DurableRecordConflict(str(exc)) from exc
 
+    @staticmethod
+    def _commit_review_cancellation_gates(
+        conn: sqlite3.Connection,
+        *,
+        claim: ClaimedSessionEvent,
+        current: AgentSessionAggregate,
+        target: AgentSessionAggregate,
+        transition: SessionTransition,
+        effects: tuple[SessionEffect, ...],
+        ownership_generation: int,
+        now: float,
+    ) -> None:
+        """Persist and enforce review-cancellation gates in the actor commit.
+
+        A high-priority message must make its old review unclaimable before the
+        message transition is observable. Processing work cannot be cancelled
+        safely here, so its gate records the exact target identity for the
+        executor-owned quiescence proof instead.
+        """
+
+        for request in transition.review_cancellation_gate_requests:
+            SQLiteSessionActorStore._validate_review_cancellation_gate_request(
+                claim=claim,
+                current=current,
+                target=target,
+                transition=transition,
+                effects=effects,
+                ownership_generation=ownership_generation,
+                request=request,
+            )
+            existing = conn.execute(
+                """
+                SELECT request_event_id, review_operation_id, review_effect_id,
+                       review_effect_kind, review_contract_version,
+                       review_contract_signature, gate_status,
+                       target_effect_status
+                FROM agent_review_cancellation_gates
+                WHERE profile_id = ?
+                  AND session_id = ?
+                  AND ownership_generation = ?
+                  AND cancellation_effect_id = ?
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    ownership_generation,
+                    request.cancellation_effect_id,
+                ),
+            ).fetchone()
+            if existing is not None:
+                SQLiteSessionActorStore._validate_existing_review_cancellation_gate(
+                    existing,
+                    request=request,
+                )
+                continue
+
+            existing_target = conn.execute(
+                """
+                SELECT cancellation_effect_id
+                FROM agent_review_cancellation_gates
+                WHERE profile_id = ?
+                  AND session_id = ?
+                  AND ownership_generation = ?
+                  AND review_effect_id = ?
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    ownership_generation,
+                    request.review_effect_id,
+                ),
+            ).fetchone()
+            if existing_target is not None:
+                raise DurableRecordConflict(
+                    "review cancellation target already has a different gate"
+                )
+
+            effect_row = conn.execute(
+                """
+                SELECT ownership_generation, operation_id, kind,
+                       contract_version, contract_signature, status,
+                       attempt_count, claim_id, lease_owner, lease_until,
+                       completed_at
+                FROM agent_effect_outbox
+                WHERE profile_id = ?
+                  AND session_id = ?
+                  AND effect_id = ?
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    request.review_effect_id,
+                ),
+            ).fetchone()
+            if effect_row is None:
+                raise DurableRecordConflict(
+                    "review cancellation target effect does not exist"
+                )
+            SQLiteSessionActorStore._validate_review_cancellation_target_effect(
+                effect_row,
+                request=request,
+                ownership_generation=ownership_generation,
+            )
+
+            target_status = _required_exact_text(
+                effect_row["status"],
+                field_name="review cancellation target status",
+            )
+            target_attempt_count = _required_nonnegative_int(
+                effect_row["attempt_count"],
+                field_name="review cancellation target attempt_count",
+            )
+            target_claim_id = _optional_gate_audit_text(
+                effect_row["claim_id"],
+                field_name="review cancellation target claim_id",
+            )
+            target_terminal_at = _optional_nonnegative_finite(
+                effect_row["completed_at"],
+                field_name="review cancellation target completed_at",
+            )
+            if target_status == "pending":
+                if (
+                    target_claim_id
+                    or _optional_gate_audit_text(
+                        effect_row["lease_owner"],
+                        field_name="review cancellation target lease_owner",
+                    )
+                    or effect_row["lease_until"] is not None
+                ):
+                    raise DurableRecordConflict(
+                        "pending review cancellation target retains a live lease"
+                    )
+                cancelled = conn.execute(
+                    """
+                    UPDATE agent_effect_outbox
+                    SET status = 'cancelled',
+                        claim_id = '',
+                        lease_owner = '',
+                        lease_until = NULL,
+                        completed_at = ?,
+                        updated_at = ?,
+                        last_error = ?
+                    WHERE profile_id = ?
+                      AND session_id = ?
+                      AND effect_id = ?
+                      AND ownership_generation = ?
+                      AND operation_id = ?
+                      AND kind = ?
+                      AND contract_version = ?
+                      AND contract_signature = ?
+                      AND status = 'pending'
+                      AND claim_id = ''
+                      AND lease_owner = ''
+                      AND lease_until IS NULL
+                    """,
+                    (
+                        now,
+                        now,
+                        "review_cancellation_gate:"
+                        f"{request.cancellation_effect_id}",
+                        claim.key.profile_id,
+                        claim.key.session_id,
+                        request.review_effect_id,
+                        ownership_generation,
+                        request.review_operation_id,
+                        request.review_effect_kind,
+                        request.review_contract_version,
+                        request.review_contract_signature,
+                    ),
+                )
+                if cancelled.rowcount != 1:
+                    raise DurableRecordConflict(
+                        "review cancellation target changed before gate commit"
+                    )
+                # The target was still pending and retained no lease while this
+                # transaction held the actor write lock.  No executor can have
+                # created a review task from it, so cancellation is already a
+                # durable quiescence proof rather than an intermediate state.
+                gate_status = ReviewCancellationGateState.TERMINAL
+                target_status = "cancelled"
+                target_claim_id = ""
+                target_terminal_at = now
+            elif target_status == "processing":
+                gate_status = ReviewCancellationGateState.REQUESTED
+            elif target_status in {"completed", "failed", "cancelled"}:
+                lease_owner = _optional_gate_audit_text(
+                    effect_row["lease_owner"],
+                    field_name="review cancellation target lease_owner",
+                )
+                if (
+                    lease_owner
+                    or effect_row["lease_until"] is not None
+                    or target_terminal_at is None
+                    or (target_status == "cancelled" and target_claim_id)
+                ):
+                    raise DurableRecordConflict(
+                        "terminal review cancellation target retains a live lease"
+                    )
+                gate_status = ReviewCancellationGateState.TERMINAL
+            else:
+                raise DurableRecordConflict(
+                    "review cancellation target has an unsupported status"
+                )
+
+            conn.execute(
+                """
+                INSERT INTO agent_review_cancellation_gates (
+                    profile_id, session_id, ownership_generation,
+                    cancellation_effect_id, request_event_id,
+                    review_operation_id, review_effect_id, review_effect_kind,
+                    review_contract_version, review_contract_signature,
+                    gate_status, target_effect_status, target_effect_claim_id,
+                    target_effect_attempt_count, target_effect_terminal_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    ownership_generation,
+                    request.cancellation_effect_id,
+                    request.request_event_id,
+                    request.review_operation_id,
+                    request.review_effect_id,
+                    request.review_effect_kind,
+                    request.review_contract_version,
+                    request.review_contract_signature,
+                    gate_status.value,
+                    target_status,
+                    target_claim_id,
+                    target_attempt_count,
+                    target_terminal_at,
+                    now,
+                    now,
+                ),
+            )
+
+    @staticmethod
+    def _validate_review_cancellation_gate_request(
+        *,
+        claim: ClaimedSessionEvent,
+        current: AgentSessionAggregate,
+        target: AgentSessionAggregate,
+        transition: SessionTransition,
+        effects: tuple[SessionEffect, ...],
+        ownership_generation: int,
+        request: ReviewCancellationGateRequest,
+    ) -> None:
+        """Require a gate to be the exact review-interruption declaration."""
+
+        if request.key != claim.key:
+            raise DurableRecordConflict(
+                "review cancellation gate key does not match mailbox claim"
+            )
+        if (
+            request.ownership_generation != ownership_generation
+            or current.ownership_generation != ownership_generation
+            or target.ownership_generation != ownership_generation
+        ):
+            raise AggregateVersionConflict(
+                "review cancellation gate ownership generation changed"
+            )
+        if request.request_event_id != claim.envelope.event_id:
+            raise DurableRecordConflict(
+                "review cancellation gate request event changed identity"
+            )
+        if claim.envelope.kind != "MessageReceived":
+            raise DurableRecordConflict(
+                "review cancellation gate requires a MessageReceived transition"
+            )
+        if current.state != "review" or target.state != "active_reply":
+            raise DurableRecordConflict(
+                "review cancellation gate requires review-to-active-reply state"
+            )
+        if current.review_operation_id != request.review_operation_id:
+            raise DurableRecordConflict(
+                "review cancellation gate operation does not own current review"
+            )
+        if target.review_operation_id:
+            raise DurableRecordConflict(
+                "review cancellation gate did not clear the review operation"
+            )
+
+        operation_fences = current.data.get("operation_fences")
+        if not isinstance(operation_fences, Mapping):
+            raise DurableRecordConflict(
+                "review cancellation gate requires operation fences"
+            )
+        review_fence = operation_fences.get(request.review_operation_id)
+        if not isinstance(review_fence, Mapping):
+            raise DurableRecordConflict(
+                "review cancellation gate target fence is missing"
+            )
+        if (
+            _required_exact_text(
+                review_fence.get("operation_id"),
+                field_name="review cancellation fence operation_id",
+            )
+            != request.review_operation_id
+            or _required_exact_text(
+                review_fence.get("effect_id"),
+                field_name="review cancellation fence effect_id",
+            )
+            != request.review_effect_id
+            or _required_exact_text(
+                review_fence.get("effect_kind"),
+                field_name="review cancellation fence effect_kind",
+            )
+            != request.review_effect_kind
+            or _required_nonnegative_int(
+                review_fence.get("contract_version"),
+                field_name="review cancellation fence contract_version",
+            )
+            != request.review_contract_version
+            or _required_exact_text(
+                review_fence.get("contract_signature"),
+                field_name="review cancellation fence contract_signature",
+            )
+            != request.review_contract_signature
+            or _required_nonnegative_int(
+                review_fence.get("ownership_generation"),
+                field_name="review cancellation fence ownership_generation",
+            )
+            != ownership_generation
+        ):
+            raise DurableRecordConflict(
+                "review cancellation gate changed its review operation fence"
+            )
+
+        superseded_operations = [
+            operation
+            for operation in transition.operations
+            if operation.operation_id == request.review_operation_id
+        ]
+        if (
+            len(superseded_operations) != 1
+            or superseded_operations[0].kind != "review"
+            or superseded_operations[0].status is not SessionOperationStatus.SUPERSEDED
+        ):
+            raise DurableRecordConflict(
+                "review cancellation gate requires a superseded review operation"
+            )
+
+        cancellation_effects = [
+            effect
+            for effect in effects
+            if effect.effect_id == request.cancellation_effect_id
+        ]
+        if len(cancellation_effects) != 1:
+            raise DurableRecordConflict(
+                "review cancellation gate requires one control effect declaration"
+            )
+        cancellation_effect = cancellation_effects[0]
+        if (
+            cancellation_effect.kind != _REVIEW_CANCELLATION_EFFECT_KIND
+            or cancellation_effect.contract_version
+            != _REVIEW_CANCELLATION_EFFECT_CONTRACT_VERSION
+            or cancellation_effect.operation_id != request.review_operation_id
+            or cancellation_effect.idempotency_key != request.cancellation_effect_id
+        ):
+            raise DurableRecordConflict(
+                "review cancellation control effect changed gate identity"
+            )
+        control_fence = cancellation_effect.payload.get(
+            "cancelled_operation_fence"
+        )
+        if not isinstance(control_fence, Mapping):
+            raise DurableRecordConflict(
+                "review cancellation control effect omits the review fence"
+            )
+        if (
+            _required_exact_text(
+                control_fence.get("operation_id"),
+                field_name="control review fence operation_id",
+            )
+            != request.review_operation_id
+            or _required_exact_text(
+                control_fence.get("effect_id"),
+                field_name="control review fence effect_id",
+            )
+            != request.review_effect_id
+            or _required_exact_text(
+                control_fence.get("effect_kind"),
+                field_name="control review fence effect_kind",
+            )
+            != request.review_effect_kind
+            or _required_nonnegative_int(
+                control_fence.get("contract_version"),
+                field_name="control review fence contract_version",
+            )
+            != request.review_contract_version
+            or _required_exact_text(
+                control_fence.get("contract_signature"),
+                field_name="control review fence contract_signature",
+            )
+            != request.review_contract_signature
+            or _required_nonnegative_int(
+                control_fence.get("ownership_generation"),
+                field_name="control review fence ownership_generation",
+            )
+            != ownership_generation
+        ):
+            raise DurableRecordConflict(
+                "review cancellation control effect changed its target fence"
+            )
+
+    @staticmethod
+    def _validate_existing_review_cancellation_gate(
+        row: sqlite3.Row,
+        *,
+        request: ReviewCancellationGateRequest,
+    ) -> None:
+        """Reject a duplicate control id that changes persisted target identity."""
+
+        persisted_identity = (
+            _required_exact_text(
+                row["request_event_id"],
+                field_name="persisted gate request_event_id",
+            ),
+            _required_exact_text(
+                row["review_operation_id"],
+                field_name="persisted gate review_operation_id",
+            ),
+            _required_exact_text(
+                row["review_effect_id"],
+                field_name="persisted gate review_effect_id",
+            ),
+            _required_exact_text(
+                row["review_effect_kind"],
+                field_name="persisted gate review_effect_kind",
+            ),
+            _required_nonnegative_int(
+                row["review_contract_version"],
+                field_name="persisted gate review_contract_version",
+            ),
+            _required_exact_text(
+                row["review_contract_signature"],
+                field_name="persisted gate review_contract_signature",
+            ),
+        )
+        requested_identity = (
+            request.request_event_id,
+            request.review_operation_id,
+            request.review_effect_id,
+            request.review_effect_kind,
+            request.review_contract_version,
+            request.review_contract_signature,
+        )
+        if persisted_identity != requested_identity:
+            raise DurableRecordConflict(
+                "review cancellation gate id changed target identity"
+            )
+
+    @staticmethod
+    def _validate_review_cancellation_target_effect(
+        row: sqlite3.Row,
+        *,
+        request: ReviewCancellationGateRequest,
+        ownership_generation: int,
+    ) -> None:
+        """Require the persisted outbox target to match the frozen review fence."""
+
+        if (
+            _required_nonnegative_int(
+                row["ownership_generation"],
+                field_name="review cancellation target ownership_generation",
+            )
+            != ownership_generation
+            or _required_exact_text(
+                row["operation_id"],
+                field_name="review cancellation target operation_id",
+            )
+            != request.review_operation_id
+            or _required_exact_text(
+                row["kind"],
+                field_name="review cancellation target kind",
+            )
+            != request.review_effect_kind
+            or _required_nonnegative_int(
+                row["contract_version"],
+                field_name="review cancellation target contract_version",
+            )
+            != request.review_contract_version
+            or _required_exact_text(
+                row["contract_signature"],
+                field_name="review cancellation target contract_signature",
+            )
+            != request.review_contract_signature
+        ):
+            raise DurableRecordConflict(
+                "review cancellation target outbox identity changed"
+            )
+
+    @staticmethod
+    def _commit_model_execution_cancellation_gates(
+        conn: sqlite3.Connection,
+        *,
+        claim: ClaimedSessionEvent,
+        current: AgentSessionAggregate,
+        target: AgentSessionAggregate,
+        transition: SessionTransition,
+        effects: tuple[SessionEffect, ...],
+        ownership_generation: int,
+        now: float,
+    ) -> None:
+        """Atomically supersede exact v3 model targets with their gate records.
+
+        A pending target can be terminalized in this actor transaction because
+        it has no claim.  A processing target retains its exact claim/worker
+        identity for the executor-owned witness protocol.  The latter is never
+        converted into a successful cancellation merely because its lease ages
+        out or the current process cannot find a task.
+        """
+
+        for request in transition.model_execution_cancellation_gate_requests:
+            SQLiteSessionActorStore._validate_model_execution_cancellation_gate_request(
+                claim=claim,
+                current=current,
+                target=target,
+                transition=transition,
+                effects=effects,
+                ownership_generation=ownership_generation,
+                request=request,
+            )
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM agent_model_execution_cancellation_gates
+                WHERE profile_id = ? AND session_id = ?
+                  AND ownership_generation = ?
+                  AND cancellation_effect_id = ?
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    ownership_generation,
+                    request.cancellation_effect_id,
+                ),
+            ).fetchone()
+            if existing is not None:
+                SQLiteSessionActorStore._validate_existing_model_execution_cancellation_gate(
+                    existing,
+                    request=request,
+                )
+                continue
+            target_gate = conn.execute(
+                """
+                SELECT cancellation_effect_id
+                FROM agent_model_execution_cancellation_gates
+                WHERE profile_id = ? AND session_id = ?
+                  AND ownership_generation = ? AND target_effect_id = ?
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    ownership_generation,
+                    request.target_effect_id,
+                ),
+            ).fetchone()
+            if target_gate is not None:
+                raise DurableRecordConflict(
+                    "model execution cancellation target already has gate: "
+                    + _required_exact_text(
+                        target_gate["cancellation_effect_id"],
+                        field_name="existing model cancellation effect id",
+                    )
+                )
+            effect_row = conn.execute(
+                """
+                SELECT *
+                FROM agent_effect_outbox
+                WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    request.target_effect_id,
+                ),
+            ).fetchone()
+            if effect_row is None:
+                raise DurableRecordConflict("model execution cancellation target is missing")
+            SQLiteSessionActorStore._validate_model_execution_cancellation_target_effect(
+                effect_row,
+                request=request,
+                ownership_generation=ownership_generation,
+            )
+            target_status = _required_exact_text(
+                effect_row["status"],
+                field_name="model execution cancellation target status",
+            )
+            target_attempt_count = _required_nonnegative_int(
+                effect_row["attempt_count"],
+                field_name="model execution cancellation target attempt_count",
+            )
+            target_claim_id = _optional_gate_audit_text(
+                effect_row["claim_id"],
+                field_name="model execution cancellation target claim_id",
+            )
+            target_worker_id = _optional_gate_audit_text(
+                effect_row["lease_owner"],
+                field_name="model execution cancellation target worker_id",
+            )
+            target_terminal_at = _optional_nonnegative_finite(
+                effect_row["completed_at"],
+                field_name="model execution cancellation target completed_at",
+            )
+            execution_status = "none"
+            blocker_code = ""
+            if target_status == "pending":
+                if (
+                    target_claim_id
+                    or target_worker_id
+                    or effect_row["lease_until"] is not None
+                ):
+                    raise DurableRecordConflict(
+                        "pending model cancellation target retains a live lease"
+                    )
+                cancelled = conn.execute(
+                    """
+                    UPDATE agent_effect_outbox
+                    SET status = 'cancelled', claim_id = '', lease_owner = '',
+                        lease_until = NULL, completed_at = ?, updated_at = ?,
+                        last_error = ?
+                    WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+                      AND ownership_generation = ? AND operation_id = ?
+                      AND kind = ? AND contract_version = ?
+                      AND contract_signature = ? AND status = 'pending'
+                      AND claim_id = '' AND lease_owner = '' AND lease_until IS NULL
+                    """,
+                    (
+                        now,
+                        now,
+                        "model_execution_cancellation_gate:"
+                        + request.cancellation_effect_id,
+                        claim.key.profile_id,
+                        claim.key.session_id,
+                        request.target_effect_id,
+                        ownership_generation,
+                        request.target_operation_id,
+                        request.target_effect_kind,
+                        request.target_contract_version,
+                        request.target_contract_signature,
+                    ),
+                )
+                if cancelled.rowcount != 1:
+                    raise DurableRecordConflict(
+                        "model cancellation target changed before gate commit"
+                    )
+                gate_status = ModelExecutionCancellationGateState.TERMINAL
+                target_status = "cancelled"
+                target_claim_id = ""
+                target_worker_id = ""
+                target_terminal_at = now
+            elif target_status == "processing":
+                if (
+                    not target_claim_id
+                    or not target_worker_id
+                    or effect_row["lease_until"] is None
+                ):
+                    raise DurableRecordConflict(
+                        "processing model cancellation target has no live claim evidence"
+                    )
+                runs = conn.execute(
+                    """
+                    SELECT *
+                    FROM agent_model_execution_runs
+                    WHERE profile_id = ? AND session_id = ?
+                      AND ownership_generation = ? AND effect_id = ?
+                    ORDER BY run_seq ASC
+                    """,
+                    (
+                        claim.key.profile_id,
+                        claim.key.session_id,
+                        ownership_generation,
+                        request.target_effect_id,
+                    ),
+                ).fetchall()
+                if len(runs) > 1:
+                    raise DurableRecordConflict(
+                        "model cancellation target has multiple execution witnesses"
+                    )
+                if not runs:
+                    gate_status = ModelExecutionCancellationGateState.REQUESTED
+                else:
+                    run = runs[0]
+                    SQLiteSessionActorStore._validate_model_execution_cancellation_run(
+                        run,
+                        request=request,
+                        target_claim_id=target_claim_id,
+                        target_worker_id=target_worker_id,
+                    )
+                    execution_status = _required_exact_text(
+                        run["execution_status"],
+                        field_name="model cancellation execution status",
+                    )
+                    if execution_status == "unknown":
+                        gate_status = ModelExecutionCancellationGateState.BLOCKED
+                        blocker_code = "model_execution_witness_unknown"
+                    elif execution_status == "running":
+                        gate_status = ModelExecutionCancellationGateState.REQUESTED
+                    elif execution_status == "finished":
+                        cancelled = conn.execute(
+                            """
+                            UPDATE agent_effect_outbox
+                            SET status = 'cancelled', claim_id = '', lease_owner = '',
+                                lease_until = NULL, completed_at = ?, updated_at = ?,
+                                last_error = ?
+                            WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+                              AND ownership_generation = ? AND operation_id = ?
+                              AND kind = ? AND contract_version = ?
+                              AND contract_signature = ? AND status = 'processing'
+                              AND claim_id = ? AND lease_owner = ?
+                            """,
+                            (
+                                now,
+                                now,
+                                "model_execution_cancellation_gate_finished:"
+                                + request.cancellation_effect_id,
+                                claim.key.profile_id,
+                                claim.key.session_id,
+                                request.target_effect_id,
+                                ownership_generation,
+                                request.target_operation_id,
+                                request.target_effect_kind,
+                                request.target_contract_version,
+                                request.target_contract_signature,
+                                target_claim_id,
+                                target_worker_id,
+                            ),
+                        )
+                        if cancelled.rowcount != 1:
+                            raise DurableRecordConflict(
+                                "finished model target changed before cancellation"
+                            )
+                        gate_status = ModelExecutionCancellationGateState.TERMINAL
+                        target_status = "cancelled"
+                        target_terminal_at = now
+                    else:
+                        raise DurableRecordConflict(
+                            "model cancellation target has unsupported witness status"
+                        )
+            elif target_status in {"completed", "failed", "cancelled"}:
+                if target_worker_id or effect_row["lease_until"] is not None or target_terminal_at is None:
+                    raise DurableRecordConflict(
+                        "terminal model cancellation target retains a live lease"
+                    )
+                runs = conn.execute(
+                    """
+                    SELECT *
+                    FROM agent_model_execution_runs
+                    WHERE profile_id = ? AND session_id = ?
+                      AND ownership_generation = ? AND effect_id = ?
+                    ORDER BY run_seq ASC
+                    """,
+                    (
+                        claim.key.profile_id,
+                        claim.key.session_id,
+                        ownership_generation,
+                        request.target_effect_id,
+                    ),
+                ).fetchall()
+                if len(runs) > 1:
+                    raise DurableRecordConflict(
+                        "terminal model cancellation target has multiple witnesses"
+                    )
+                if runs:
+                    run = runs[0]
+                    run_status = _required_exact_text(
+                        run["execution_status"],
+                        field_name="terminal model cancellation execution status",
+                    )
+                    if run_status != "finished":
+                        raise DurableRecordConflict(
+                            "terminal model cancellation target retains non-finished witness"
+                        )
+                    if (
+                        _required_exact_text(
+                            run["effect_id"],
+                            field_name="terminal model cancellation witness effect_id",
+                        )
+                        != request.target_effect_id
+                        or _required_exact_text(
+                            run["operation_id"],
+                            field_name="terminal model cancellation witness operation_id",
+                        )
+                        != request.target_operation_id
+                        or _required_exact_text(
+                            run["effect_kind"],
+                            field_name="terminal model cancellation witness effect_kind",
+                        )
+                        != request.target_effect_kind
+                        or _required_nonnegative_int(
+                            run["contract_version"],
+                            field_name="terminal model cancellation witness contract_version",
+                        )
+                        != request.target_contract_version
+                        or _required_exact_text(
+                            run["contract_signature"],
+                            field_name="terminal model cancellation witness contract_signature",
+                        )
+                        != request.target_contract_signature
+                        or _required_exact_text(
+                            run["claim_id"],
+                            field_name="terminal model cancellation witness claim_id",
+                        )
+                        != target_claim_id
+                        or run["finished_at"] is None
+                    ):
+                        raise DurableRecordConflict(
+                            "terminal model cancellation witness changed target identity"
+                        )
+                    target_worker_id = _required_exact_text(
+                        run["worker_id"],
+                        field_name="terminal model cancellation witness worker_id",
+                    )
+                    execution_status = "finished"
+                gate_status = ModelExecutionCancellationGateState.TERMINAL
+            else:
+                raise DurableRecordConflict(
+                    "model cancellation target has an unsupported outbox status"
+                )
+
+            conn.execute(
+                """
+                INSERT INTO agent_model_execution_cancellation_gates (
+                    profile_id, session_id, ownership_generation,
+                    cancellation_effect_id, request_event_id,
+                    target_operation_id, target_effect_id, target_effect_kind,
+                    target_contract_version, target_contract_signature,
+                    target_effect_status, target_claim_id, target_worker_id,
+                    target_effect_attempt_count, target_execution_status,
+                    gate_status, target_effect_terminal_at, blocker_code,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    claim.key.profile_id,
+                    claim.key.session_id,
+                    ownership_generation,
+                    request.cancellation_effect_id,
+                    request.request_event_id,
+                    request.target_operation_id,
+                    request.target_effect_id,
+                    request.target_effect_kind,
+                    request.target_contract_version,
+                    request.target_contract_signature,
+                    target_status,
+                    target_claim_id,
+                    target_worker_id,
+                    target_attempt_count,
+                    execution_status,
+                    gate_status.value,
+                    target_terminal_at,
+                    blocker_code,
+                    now,
+                    now,
+                ),
+            )
+
+    @staticmethod
+    def _validate_model_execution_cancellation_gate_request(
+        *,
+        claim: ClaimedSessionEvent,
+        current: AgentSessionAggregate,
+        target: AgentSessionAggregate,
+        transition: SessionTransition,
+        effects: tuple[SessionEffect, ...],
+        ownership_generation: int,
+        request: ModelExecutionCancellationGateRequest,
+    ) -> None:
+        """Require the first generic gate to match settling idle-planning work."""
+
+        if request.key != claim.key:
+            raise DurableRecordConflict(
+                "model execution cancellation gate key does not match mailbox claim"
+            )
+        if (
+            request.ownership_generation != ownership_generation
+            or current.ownership_generation != ownership_generation
+            or target.ownership_generation != ownership_generation
+        ):
+            raise AggregateVersionConflict(
+                "model execution cancellation gate ownership generation changed"
+            )
+        if request.request_event_id != claim.envelope.event_id:
+            raise DurableRecordConflict(
+                "model execution cancellation request event changed identity"
+            )
+        if claim.envelope.kind != "MessageReceived":
+            raise DurableRecordConflict(
+                "model execution cancellation gate requires a MessageReceived transition"
+            )
+        if current.state != "active_chat_settling" or target.state != "active_chat":
+            raise DurableRecordConflict(
+                "model execution cancellation gate requires settling-to-active-chat state"
+            )
+        if current.idle_planning_operation_id != request.target_operation_id:
+            raise DurableRecordConflict(
+                "model execution cancellation target does not own current idle planning"
+            )
+        if target.idle_planning_operation_id:
+            raise DurableRecordConflict(
+                "model execution cancellation did not clear idle planning operation"
+            )
+        fences = current.data.get("operation_fences")
+        if not isinstance(fences, Mapping):
+            raise DurableRecordConflict("model execution cancellation requires operation fences")
+        fence = fences.get(request.target_operation_id)
+        if not isinstance(fence, Mapping):
+            raise DurableRecordConflict("model execution cancellation target fence is missing")
+        if (
+            _required_exact_text(
+                fence.get("operation_id"),
+                field_name="model cancellation fence operation_id",
+            )
+            != request.target_operation_id
+            or _required_exact_text(
+                fence.get("effect_id"),
+                field_name="model cancellation fence effect_id",
+            )
+            != request.target_effect_id
+            or _required_exact_text(
+                fence.get("effect_kind"),
+                field_name="model cancellation fence effect_kind",
+            )
+            != request.target_effect_kind
+            or _required_nonnegative_int(
+                fence.get("contract_version"),
+                field_name="model cancellation fence contract_version",
+            )
+            != request.target_contract_version
+            or _required_exact_text(
+                fence.get("contract_signature"),
+                field_name="model cancellation fence contract_signature",
+            )
+            != request.target_contract_signature
+            or _required_nonnegative_int(
+                fence.get("ownership_generation"),
+                field_name="model cancellation fence ownership_generation",
+            )
+            != ownership_generation
+        ):
+            raise DurableRecordConflict(
+                "model execution cancellation changed its target operation fence"
+            )
+        superseded = [
+            operation
+            for operation in transition.operations
+            if operation.operation_id == request.target_operation_id
+        ]
+        if (
+            len(superseded) != 1
+            or superseded[0].kind != "idle_review_planning"
+            or superseded[0].status is not SessionOperationStatus.SUPERSEDED
+        ):
+            raise DurableRecordConflict(
+                "model execution cancellation requires a superseded idle planning operation"
+            )
+        controls = [
+            effect
+            for effect in effects
+            if effect.effect_id == request.cancellation_effect_id
+        ]
+        if len(controls) != 1:
+            raise DurableRecordConflict(
+                "model execution cancellation requires one control effect declaration"
+            )
+        control = controls[0]
+        contract = builtin_effect_contract(
+            MODEL_EXECUTION_CANCELLATION_EFFECT_KIND,
+            version=MODEL_EXECUTION_CANCELLATION_CONTRACT_VERSION,
+        )
+        if (
+            control.kind != MODEL_EXECUTION_CANCELLATION_EFFECT_KIND
+            or control.contract_version != contract.version
+            or control.contract_signature != contract.signature
+            or control.operation_id != request.target_operation_id
+            or control.idempotency_key != request.cancellation_effect_id
+        ):
+            raise DurableRecordConflict(
+                "model execution cancellation control effect changed gate identity"
+            )
+        control_fence = control.payload.get("cancelled_model_effect_fence")
+        if not isinstance(control_fence, Mapping):
+            raise DurableRecordConflict(
+                "model execution cancellation control omits target fence"
+            )
+        if dict(control_fence) != dict(fence):
+            raise DurableRecordConflict(
+                "model execution cancellation control changed target fence"
+            )
+
+    @staticmethod
+    def _validate_existing_model_execution_cancellation_gate(
+        row: sqlite3.Row,
+        *,
+        request: ModelExecutionCancellationGateRequest,
+    ) -> None:
+        """Reject a duplicate control id that changes model target identity."""
+
+        persisted = (
+            _required_exact_text(
+                row["request_event_id"],
+                field_name="persisted model gate request_event_id",
+            ),
+            _required_exact_text(
+                row["target_operation_id"],
+                field_name="persisted model gate target_operation_id",
+            ),
+            _required_exact_text(
+                row["target_effect_id"],
+                field_name="persisted model gate target_effect_id",
+            ),
+            _required_exact_text(
+                row["target_effect_kind"],
+                field_name="persisted model gate target_effect_kind",
+            ),
+            _required_nonnegative_int(
+                row["target_contract_version"],
+                field_name="persisted model gate target_contract_version",
+            ),
+            _required_exact_text(
+                row["target_contract_signature"],
+                field_name="persisted model gate target_contract_signature",
+            ),
+        )
+        requested = (
+            request.request_event_id,
+            request.target_operation_id,
+            request.target_effect_id,
+            request.target_effect_kind,
+            request.target_contract_version,
+            request.target_contract_signature,
+        )
+        if persisted != requested:
+            raise DurableRecordConflict(
+                "model execution cancellation gate id changed target identity"
+            )
+
+    @staticmethod
+    def _validate_model_execution_cancellation_target_effect(
+        row: sqlite3.Row,
+        *,
+        request: ModelExecutionCancellationGateRequest,
+        ownership_generation: int,
+    ) -> None:
+        """Require the persisted target outbox row to retain its frozen fence."""
+
+        if (
+            _required_nonnegative_int(
+                row["ownership_generation"],
+                field_name="model cancellation target ownership_generation",
+            )
+            != ownership_generation
+            or _required_exact_text(
+                row["operation_id"],
+                field_name="model cancellation target operation_id",
+            )
+            != request.target_operation_id
+            or _required_exact_text(
+                row["kind"],
+                field_name="model cancellation target kind",
+            )
+            != request.target_effect_kind
+            or _required_nonnegative_int(
+                row["contract_version"],
+                field_name="model cancellation target contract_version",
+            )
+            != request.target_contract_version
+            or _required_exact_text(
+                row["contract_signature"],
+                field_name="model cancellation target contract_signature",
+            )
+            != request.target_contract_signature
+        ):
+            raise DurableRecordConflict(
+                "model execution cancellation target outbox identity changed"
+            )
+
+    @staticmethod
+    def _validate_model_execution_cancellation_run(
+        row: sqlite3.Row,
+        *,
+        request: ModelExecutionCancellationGateRequest,
+        target_claim_id: str,
+        target_worker_id: str,
+    ) -> None:
+        """Require a witness to retain the gate target and its exact live claim."""
+
+        if (
+            _required_exact_text(
+                row["operation_id"],
+                field_name="model cancellation witness operation_id",
+            )
+            != request.target_operation_id
+            or _required_exact_text(
+                row["effect_kind"],
+                field_name="model cancellation witness effect_kind",
+            )
+            != request.target_effect_kind
+            or _required_nonnegative_int(
+                row["contract_version"],
+                field_name="model cancellation witness contract_version",
+            )
+            != request.target_contract_version
+            or _required_exact_text(
+                row["contract_signature"],
+                field_name="model cancellation witness contract_signature",
+            )
+            != request.target_contract_signature
+            or _required_exact_text(
+                row["claim_id"],
+                field_name="model cancellation witness claim_id",
+            )
+            != target_claim_id
+            or _required_exact_text(
+                row["worker_id"],
+                field_name="model cancellation witness worker_id",
+            )
+            != target_worker_id
+        ):
+            raise DurableRecordConflict(
+                "model execution cancellation witness changed target claim evidence"
+            )
+
     def _validate_recovery_materialized_transition(
         self,
         *,
@@ -864,7 +2104,14 @@ class SQLiteSessionActorStore:
             expected_revision=current.state_revision,
         )
 
-    async def release(self, claim: ClaimedSessionEvent, *, error: str) -> None:
+    async def release(
+        self,
+        claim: ClaimedSessionEvent,
+        *,
+        error: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> None:
         """Release a claimed event for retry after a bounded delay."""
 
         with self._database.connect() as conn:
@@ -872,10 +2119,12 @@ class SQLiteSessionActorStore:
             ownership_generation = _persistable_ownership_generation(
                 claim.envelope.ownership_generation
             )
-            self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            self._require_active_actor_ownership(
                 conn,
                 claim.key,
                 expected_generation=ownership_generation,
+                ownership_binding=ownership_binding,
+                execution_binding=execution_binding,
             )
             now = self._now()
             released = conn.execute(
@@ -924,7 +2173,14 @@ class SQLiteSessionActorStore:
                 if row is None or str(row["status"]) != MailboxEventStatus.COMPLETED.value:
                     raise MailboxLeaseConflict("mailbox event is not owned by this claim")
 
-    async def fail(self, claim: ClaimedSessionEvent, *, error: str) -> None:
+    async def fail(
+        self,
+        claim: ClaimedSessionEvent,
+        *,
+        error: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> None:
         """Atomically dead-letter one event and advance its causal sequence."""
 
         with self._database.connect() as conn:
@@ -932,10 +2188,12 @@ class SQLiteSessionActorStore:
             ownership_generation = _persistable_ownership_generation(
                 claim.envelope.ownership_generation
             )
-            self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            self._require_active_actor_ownership(
                 conn,
                 claim.key,
                 expected_generation=ownership_generation,
+                ownership_binding=ownership_binding,
+                execution_binding=execution_binding,
             )
             now = self._now()
             mailbox_row = conn.execute(
@@ -1023,7 +2281,14 @@ class SQLiteSessionActorStore:
             if failed.rowcount != 1:
                 raise MailboxLeaseConflict("mailbox event is not owned by this claim")
 
-    async def recover(self, key: SessionKey, *, worker_id: str) -> int:
+    async def recover(
+        self,
+        key: SessionKey,
+        *,
+        worker_id: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> int:
         """Release stale mailbox leases left by a previous actor worker."""
 
         normalized_worker_id = str(worker_id or "").strip()
@@ -1031,6 +2296,70 @@ class SQLiteSessionActorStore:
             raise ValueError("worker_id must not be empty")
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if ownership_binding is not None or execution_binding is not None:
+                self._require_active_actor_ownership(
+                    conn,
+                    key,
+                    ownership_binding=ownership_binding,
+                    execution_binding=execution_binding,
+                )
+            aggregate_row = self._load_row(conn, key)
+            if aggregate_row is None:
+                raise SessionAggregateNotFound(key.session_id)
+            ownership_generation = _persistable_ownership_generation(
+                aggregate_row["ownership_generation"]
+            )
+            self._require_active_actor_ownership(
+                conn,
+                key,
+                expected_generation=ownership_generation,
+                ownership_binding=ownership_binding,
+                execution_binding=execution_binding,
+            )
+            now = self._now()
+            recovered = conn.execute(
+                """
+                UPDATE agent_session_mailbox
+                SET status = 'pending',
+                    available_at = MIN(available_at, ?),
+                    claim_id = '',
+                    lease_owner = '',
+                    lease_until = NULL,
+                    last_error = CASE
+                        WHEN last_error = '' THEN 'mailbox_lease_recovered'
+                        ELSE last_error
+                    END
+                WHERE profile_id = ?
+                  AND session_id = ?
+                  AND ownership_generation = ?
+                  AND status = 'processing'
+                  AND COALESCE(lease_until, 0) <= ?
+                """,
+                (
+                    now,
+                    key.profile_id,
+                    key.session_id,
+                    ownership_generation,
+                    now,
+                ),
+            )
+            return int(recovered.rowcount)
+
+    async def recover_for_legacy_recovery(
+        self,
+        key: SessionKey,
+        *,
+        worker_id: str,
+        permit: LegacyRecoveryPermit,
+    ) -> int:
+        """Release one actor's stale leases while a durable permit is live."""
+
+        normalized_worker_id = str(worker_id or "").strip()
+        if not normalized_worker_id:
+            raise ValueError("worker_id must not be empty")
+        with self._database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_legacy_recovery_permit(conn, permit)
             aggregate_row = self._load_row(conn, key)
             if aggregate_row is None:
                 raise SessionAggregateNotFound(key.session_id)
@@ -1069,6 +2398,7 @@ class SQLiteSessionActorStore:
                     now,
                 ),
             )
+            self._require_legacy_recovery_permit(conn, permit)
             return int(recovered.rowcount)
 
     async def enqueue_recovery_requests(self) -> int:
@@ -1083,9 +2413,29 @@ class SQLiteSessionActorStore:
             The number of newly inserted recovery events.
         """
 
+        return await self._enqueue_recovery_requests(permit=None)
+
+    async def enqueue_recovery_requests_for_legacy_recovery(
+        self,
+        *,
+        permit: LegacyRecoveryPermit,
+    ) -> int:
+        """Discover and enqueue recovery events behind one exact permit."""
+
+        return await self._enqueue_recovery_requests(permit=permit)
+
+    async def _enqueue_recovery_requests(
+        self,
+        *,
+        permit: LegacyRecoveryPermit | None,
+    ) -> int:
+        """Run recovery discovery with an optional final durable permit gate."""
+
         inserted_count = 0
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if permit is not None:
+                self._require_legacy_recovery_permit(conn, permit)
             now = self._now()
             rows = conn.execute(
                 """
@@ -1136,12 +2486,84 @@ class SQLiteSessionActorStore:
                     now=now,
                 )
                 inserted_count += int(result.inserted)
+            if permit is not None:
+                self._require_legacy_recovery_permit(conn, permit)
         return inserted_count
 
     async def pending_keys(self) -> list[SessionKey]:
         """Return actor keys with pending or recoverable mailbox work."""
 
+        return await self._pending_keys(permit=None)
+
+    async def has_pending_for_key(
+        self,
+        key: SessionKey,
+        *,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> bool:
+        """Return whether one exact active actor generation has mailbox work.
+
+        Actors use this after a failed head claim to decide whether to retry.
+        It intentionally avoids the registry's broad recovery discovery query.
+        """
+
+        if not isinstance(key, SessionKey):
+            raise TypeError("key must be a SessionKey")
         with self._database.connect() as conn:
+            binding_filter_sql = ""
+            binding_params: tuple[object, ...] = ()
+            if ownership_binding is not None or execution_binding is not None:
+                conn.execute("BEGIN IMMEDIATE")
+                bound_ownership = self._require_active_actor_ownership(
+                    conn,
+                    key,
+                    ownership_binding=ownership_binding,
+                    execution_binding=execution_binding,
+                )
+                binding_filter_sql = "AND mailbox.ownership_generation = ?"
+                binding_params = (bound_ownership.generation,)
+            row = conn.execute(
+                f"""
+                SELECT 1
+                FROM agent_session_mailbox AS mailbox
+                JOIN agent_session_runtime_ownership AS ownership
+                  ON ownership.profile_id = mailbox.profile_id
+                 AND ownership.session_id = mailbox.session_id
+                 AND ownership.mode = 'actor_v2'
+                 AND ownership.status = 'active'
+                 AND ownership.generation = mailbox.ownership_generation
+                WHERE mailbox.profile_id = ?
+                  AND mailbox.session_id = ?
+                  AND mailbox.ownership_generation >= 1
+                  {binding_filter_sql}
+                  AND mailbox.status IN ('pending', 'processing')
+                LIMIT 1
+                """,
+                (key.profile_id, key.session_id, *binding_params),
+            ).fetchone()
+        return row is not None
+
+    async def pending_keys_for_legacy_recovery(
+        self,
+        *,
+        permit: LegacyRecoveryPermit,
+    ) -> list[SessionKey]:
+        """Discover pending keys only while one exact permit is still durable."""
+
+        return await self._pending_keys(permit=permit)
+
+    async def _pending_keys(
+        self,
+        *,
+        permit: LegacyRecoveryPermit | None,
+    ) -> list[SessionKey]:
+        """Read pending keys with an optional same-transaction permit check."""
+
+        with self._database.connect() as conn:
+            if permit is not None:
+                conn.execute("BEGIN IMMEDIATE")
+                self._require_legacy_recovery_permit(conn, permit)
             rows = conn.execute(
                 """
                 SELECT DISTINCT mailbox.profile_id, mailbox.session_id
@@ -1157,7 +2579,19 @@ class SQLiteSessionActorStore:
                 ORDER BY mailbox.profile_id ASC, mailbox.session_id ASC
                 """
             ).fetchall()
+            if permit is not None:
+                self._require_legacy_recovery_permit(conn, permit)
         return [SessionKey(str(row["profile_id"]), str(row["session_id"])) for row in rows]
+
+    async def validate_legacy_recovery_permit(
+        self,
+        permit: LegacyRecoveryPermit,
+    ) -> None:
+        """Revalidate one permit at a registry actor-creation boundary."""
+
+        with self._database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_legacy_recovery_permit(conn, permit)
 
     async def next_available_at(self, key: SessionKey) -> float | None:
         """Return the earliest time at which the actor can claim its head event."""
@@ -1188,6 +2622,84 @@ class SQLiteSessionActorStore:
             return _optional_float(row["lease_until"])
         return float(row["available_at"])
 
+    def _require_legacy_recovery_permit(
+        self,
+        conn: sqlite3.Connection,
+        permit: LegacyRecoveryPermit,
+    ) -> None:
+        """Require the exact global recovery permit in the caller transaction."""
+
+        self._database.actor_v2_legacy_recovery_gate.validate_legacy_recovery_permit_in_transaction(
+            conn,
+            permit,
+        )
+
+    def _require_active_actor_ownership(
+        self,
+        conn: sqlite3.Connection,
+        key: SessionKey,
+        *,
+        expected_generation: int | None = None,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> AgentRuntimeOwnership:
+        """Require active ownership and an optional live target lease binding."""
+
+        if execution_binding is not None:
+            if not isinstance(execution_binding, FencedActorExecutionBinding):
+                raise TypeError("execution_binding must be a FencedActorExecutionBinding")
+            if execution_binding.request.key != key:
+                raise ValueError("execution_binding key does not match session key")
+            if ownership_binding is None:
+                ownership_binding = execution_binding.request
+            elif ownership_binding != execution_binding.request:
+                raise ValueError("execution_binding request does not match ownership_binding")
+
+        if ownership_binding is None:
+            return self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+                conn,
+                key,
+                expected_generation=expected_generation,
+            )
+        if not isinstance(ownership_binding, FencedMailboxWakeRequest):
+            raise TypeError("ownership_binding must be a FencedMailboxWakeRequest")
+        if ownership_binding.key != key:
+            raise ValueError("ownership_binding key does not match session key")
+        if (
+            expected_generation is not None
+            and expected_generation != ownership_binding.ownership_generation
+        ):
+            raise AgentRuntimeOwnershipGenerationConflict(
+                "ownership binding generation does not match expected generation"
+            )
+        fence_id = ownership_binding.admission_fence_id or None
+        fence_generation = (
+            ownership_binding.admission_fence_generation
+            if ownership_binding.has_admission_fence
+            else None
+        )
+        ownership = self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            conn,
+            key,
+            expected_generation=ownership_binding.ownership_generation,
+            expected_admission_fence_id=fence_id,
+            expected_admission_fence_generation=fence_generation,
+        )
+        if (
+            ownership.admission_fence_id != ownership_binding.admission_fence_id
+            or ownership.admission_fence_generation
+            != ownership_binding.admission_fence_generation
+        ):
+            raise AgentRuntimeOwnershipGenerationConflict(
+                "ownership admission fence differs from actor binding"
+            )
+        if execution_binding is not None:
+            self._database.actor_v2_fenced_wake_target_leases.validate_in_transaction(
+                conn,
+                execution_binding.target_lease,
+            )
+        return ownership
+
     def _now(self) -> float:
         """Return a validated persistence clock value."""
 
@@ -1202,59 +2714,116 @@ class SQLiteSessionActorStore:
     ) -> EventEnqueueResult:
         """Insert one envelope using an existing write transaction."""
 
+        if envelope.kind == MANUAL_REVIEW_EVENT_KIND:
+            raise ManualReviewAdmissionRequiredError(
+                "ManualReviewRequested must be written through "
+                "DurableReviewDueRepository.admit_manual_review"
+            )
+        ownership_generation = _persistable_ownership_generation(
+            envelope.ownership_generation
+        )
+        ownership = self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+            conn,
+            envelope.key,
+            expected_generation=ownership_generation,
+        )
+        handoff_request = (
+            FencedMailboxWakeRequest(
+                key=ownership.key,
+                ownership_generation=ownership.generation,
+                admission_fence_id=ownership.admission_fence_id,
+                admission_fence_generation=ownership.admission_fence_generation,
+            )
+            if ownership.has_admission_fence
+            else None
+        )
         occurred_at = envelope.occurred_at or now
         available_at = envelope.available_at or now
         created_at = envelope.created_at or now
         payload_json = _json_dumps(envelope.payload)
-        inserted = conn.execute(
-            """
-            INSERT OR IGNORE INTO agent_session_mailbox (
-                event_id, profile_id, session_id, ownership_generation,
-                kind, source, occurred_at,
-                payload_json, causation_id, correlation_id, trace_id,
-                status, attempt_count, available_at, claim_id, lease_owner,
-                lease_until, created_at, handled_at, last_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, NULL, '')
-            """,
-            (
-                envelope.event_id,
-                envelope.key.profile_id,
-                envelope.key.session_id,
-                _persistable_ownership_generation(envelope.ownership_generation),
-                envelope.kind,
-                envelope.source,
-                occurred_at,
-                payload_json,
-                envelope.causation_id,
-                envelope.correlation_id,
-                envelope.trace_id,
-                available_at,
-                created_at,
-            ),
-        )
-        row = conn.execute(
-            """
-            SELECT profile_id, session_id, kind, source, payload_json,
-                   ownership_generation, causation_id, correlation_id,
-                   trace_id, status
-            FROM agent_session_mailbox
-            WHERE profile_id = ? AND session_id = ? AND event_id = ?
-            """,
-            (
-                envelope.key.profile_id,
-                envelope.key.session_id,
-                envelope.event_id,
-            ),
-        ).fetchone()
-        assert row is not None
-        if inserted.rowcount != 1:
-            self._validate_duplicate_event(row, envelope, payload_json)
-        return EventEnqueueResult(
-            event_id=envelope.event_id,
-            key=envelope.key,
-            inserted=inserted.rowcount == 1,
-            status=_mailbox_status(str(row["status"])),
-        )
+        conn.execute("SAVEPOINT actor_v2_mailbox_enqueue_handoff")
+        try:
+            inserted = conn.execute(
+                """
+                INSERT OR IGNORE INTO agent_session_mailbox (
+                    event_id, profile_id, session_id, ownership_generation,
+                    kind, source, occurred_at,
+                    payload_json, causation_id, correlation_id, trace_id,
+                    status, attempt_count, available_at, claim_id, lease_owner,
+                    lease_until, created_at, handled_at, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, NULL, '')
+                """,
+                (
+                    envelope.event_id,
+                    envelope.key.profile_id,
+                    envelope.key.session_id,
+                    ownership_generation,
+                    envelope.kind,
+                    envelope.source,
+                    occurred_at,
+                    payload_json,
+                    envelope.causation_id,
+                    envelope.correlation_id,
+                    envelope.trace_id,
+                    available_at,
+                    created_at,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT mailbox_id, profile_id, session_id, kind, source,
+                       payload_json, ownership_generation, causation_id,
+                       correlation_id, trace_id, status
+                FROM agent_session_mailbox
+                WHERE profile_id = ? AND session_id = ? AND event_id = ?
+                """,
+                (
+                    envelope.key.profile_id,
+                    envelope.key.session_id,
+                    envelope.event_id,
+                ),
+            ).fetchone()
+            assert row is not None
+            if inserted.rowcount != 1:
+                # Historical mailbox rows are deliberately not retrofitted from
+                # a later ownership read. Their absent or unknown sidecar
+                # evidence remains fail-closed.
+                self._validate_duplicate_event(row, envelope, payload_json)
+            elif handoff_request is None:
+                self._database.actor_v2_mailbox_handoffs.record_unfenced_legacy_handoff_in_transaction(
+                    conn,
+                    int(row["mailbox_id"]),
+                )
+            else:
+                self._database.actor_v2_mailbox_handoffs.record_fenced_handoff_in_transaction(
+                    conn,
+                    int(row["mailbox_id"]),
+                    handoff_request,
+                )
+                # The repository performs its own candidate gate. Repeat it
+                # at the producer boundary so the mailbox row, sidecar, and
+                # final exact ownership proof share this outer savepoint.
+                self._database.agent_runtime_ownership.require_actor_v2_in_transaction(
+                    conn,
+                    handoff_request.key,
+                    expected_generation=handoff_request.ownership_generation,
+                    expected_admission_fence_id=handoff_request.admission_fence_id,
+                    expected_admission_fence_generation=(
+                        handoff_request.admission_fence_generation
+                    ),
+                )
+            result = EventEnqueueResult(
+                event_id=envelope.event_id,
+                key=envelope.key,
+                inserted=inserted.rowcount == 1,
+                status=_mailbox_status(str(row["status"])),
+            )
+            conn.execute("RELEASE SAVEPOINT actor_v2_mailbox_enqueue_handoff")
+            return result
+        except BaseException:
+            conn.execute("ROLLBACK TO SAVEPOINT actor_v2_mailbox_enqueue_handoff")
+            conn.execute("RELEASE SAVEPOINT actor_v2_mailbox_enqueue_handoff")
+            raise
 
     def _ensure_with_connection(
         self,
@@ -3267,6 +4836,36 @@ def _required_exact_text(value: object, *, field_name: str) -> str:
             f"{field_name} must contain valid UTF-8 text"
         ) from exc
     return value
+
+
+def _optional_gate_audit_text(value: object, *, field_name: str) -> str:
+    """Return optional exact SQLite text retained in a gate audit record."""
+
+    if not isinstance(value, str):
+        raise DurableRecordConflict(f"{field_name} must be SQLite text")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise DurableRecordConflict(
+            f"{field_name} must contain valid UTF-8 text"
+        ) from exc
+    return value
+
+
+def _optional_nonnegative_finite(
+    value: object,
+    *,
+    field_name: str,
+) -> float | None:
+    """Return an optional non-negative SQLite timestamp without coercion."""
+
+    if value is None:
+        return None
+    normalized = _required_nonnegative_finite_number(
+        value,
+        field_name=field_name,
+    )
+    return float(normalized)
 
 
 def _required_nonnegative_finite_number(

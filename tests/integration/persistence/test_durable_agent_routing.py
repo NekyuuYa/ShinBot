@@ -10,14 +10,26 @@ from pathlib import Path
 
 import pytest
 
+from shinbot.core.dispatch.actor_v2_admission import (
+    ActorV2AdmissionFenceNotFound,
+    ActorV2AdmissionFenceStatus,
+)
 from shinbot.core.dispatch.agent_delivery import AgentRouteDelivery
-from shinbot.core.dispatch.agent_identity import SessionKeyFactory
+from shinbot.core.dispatch.agent_identity import SessionKey, SessionKeyFactory
 from shinbot.core.dispatch.agent_ownership import (
     AgentRuntimeOwnershipEvidenceConflict,
     AgentRuntimeOwnershipMode,
     AgentRuntimeOwnershipNotFound,
 )
-from shinbot.core.dispatch.durable_routing import MessageRoutingJobEnvelope
+from shinbot.core.dispatch.durable_routing import (
+    AGENT_ROUTE_MAILBOX_KIND,
+    AGENT_ROUTE_MAILBOX_SOURCE,
+    MessageRoutingJobEnvelope,
+)
+from shinbot.core.dispatch.mailbox_handoff import (
+    MailboxHandoffEvidenceState,
+    MailboxHandoffState,
+)
 from shinbot.persistence import DatabaseManager, MessageLogRecord
 from shinbot.persistence.repositories.durable_routing import (
     ClaimedMessageRoutingJob,
@@ -148,6 +160,47 @@ def _persist_and_claim(
     return persisted.message_log_id, claim
 
 
+def _fenced_routing_claim(
+    tmp_path: Path,
+) -> tuple[
+    DatabaseManager,
+    DurableMessageRoutingRepository,
+    ClaimedMessageRoutingJob,
+    AgentRouteDelivery,
+]:
+    """Build one claimed routing job with committed admission evidence."""
+
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    clock = _Clock()
+    store = DurableMessageRoutingRepository(db, lease_seconds=5.0, clock=clock)
+    delivery_key = _delivery(1).session_key
+    grant = db.actor_v2_admission_fences.reserve(
+        delivery_key,
+        holder_id="durable-routing-final-gate",
+        ttl_seconds=60.0,
+    )
+    ownership = db.agent_runtime_ownership.claim(
+        delivery_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="durable routing final-gate test activation",
+        legacy_session_id="instance-main:group:room",
+        admission_grant=grant,
+    ).ownership
+    envelope = replace(
+        _job(),
+        profile_id=delivery_key.profile_id,
+        session_id=delivery_key.session_id,
+        ownership_generation=ownership.generation,
+        admission_fence_id=grant.fence.fence_id,
+        admission_fence_generation=grant.fence.generation,
+    )
+    persisted = store.persist_message_and_job(_record(), envelope)
+    claim = store.claim_next_job(worker_id="fenced-router")
+    assert claim is not None
+    return db, store, claim, _delivery(persisted.message_log_id)
+
+
 def _install_abort_trigger(
     db: DatabaseManager,
     *,
@@ -171,6 +224,183 @@ def _install_abort_trigger(
 def _drop_trigger(db: DatabaseManager, name: str) -> None:
     with db.connect() as conn:
         conn.execute(f"DROP TRIGGER {name}")
+
+
+def _insert_pending_route_mailbox(
+    db: DatabaseManager,
+    key: SessionKey,
+    event_id: str,
+) -> None:
+    """Insert one pending route mailbox event for keyset pagination tests."""
+
+    ownership = db.agent_runtime_ownership.get(key)
+    if ownership is None:
+        ownership = db.agent_runtime_ownership.claim(
+            key,
+            AgentRuntimeOwnershipMode.ACTOR_V2,
+            reason="durable route wake keyset test owner",
+            legacy_session_id=key.session_id,
+        ).ownership
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO agent_session_aggregates (
+                profile_id, session_id, ownership_generation, state,
+                state_revision, event_sequence, activity_generation,
+                active_epoch, review_plan_json, current_plan_id,
+                review_plan_revision, active_reply_resume_json,
+                active_chat_state_json, review_operation_id,
+                active_reply_operation_id, active_chat_round_operation_id,
+                idle_planning_operation_id, data_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 'idle', 0, 0, 0, 0, '{}', '', 0, '{}', '{}',
+                      '', '', '', '', '{}', 1000, 1000)
+            """,
+            (key.profile_id, key.session_id, ownership.generation),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation,
+                kind, source, occurred_at, payload_json, causation_id,
+                correlation_id, trace_id, status, attempt_count,
+                available_at, claim_id, lease_owner, lease_until,
+                created_at, handled_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, 1000, '{}', '', '', '', 'pending',
+                      0, 1000, '', '', NULL, 1000, NULL, '')
+            """,
+            (
+                event_id,
+                key.profile_id,
+                key.session_id,
+                ownership.generation,
+                AGENT_ROUTE_MAILBOX_KIND,
+                AGENT_ROUTE_MAILBOX_SOURCE,
+            ),
+        )
+
+
+def _insert_historical_route_mailbox(
+    db: DatabaseManager,
+    delivery: AgentRouteDelivery,
+    *,
+    has_unknown_handoff: bool,
+) -> int:
+    """Insert a pre-dual-write mailbox matching one claimed route delivery."""
+
+    with db.connect() as conn:
+        outbox = conn.execute(
+            """
+            SELECT routing_job_id, ownership_generation
+            FROM agent_route_outbox
+            WHERE delivery_id = ?
+            """,
+            (delivery.delivery_id,),
+        ).fetchone()
+        assert outbox is not None
+        ownership_generation = int(outbox["ownership_generation"])
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO agent_session_aggregates (
+                profile_id, session_id, ownership_generation, created_at, updated_at
+            ) VALUES (?, ?, ?, 1000.0, 1000.0)
+            """,
+            (
+                delivery.session_key.profile_id,
+                delivery.session_key.session_id,
+                ownership_generation,
+            ),
+        )
+        payload_json = json.dumps(
+            delivery.to_mailbox_payload(),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        inserted = conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation,
+                kind, source, occurred_at, payload_json, causation_id,
+                correlation_id, trace_id,
+                status, attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, handled_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 1000.0,
+                      '', '', NULL, 1000.0, NULL, '')
+            """,
+            (
+                delivery.event_id,
+                delivery.session_key.profile_id,
+                delivery.session_key.session_id,
+                ownership_generation,
+                AGENT_ROUTE_MAILBOX_KIND,
+                AGENT_ROUTE_MAILBOX_SOURCE,
+                delivery.observed_at,
+                payload_json,
+                str(outbox["routing_job_id"]),
+                str(outbox["routing_job_id"]),
+                delivery.trace_id,
+            ),
+        )
+        mailbox_id = int(inserted.lastrowid)
+        if has_unknown_handoff:
+            conn.execute(
+                """
+                INSERT INTO agent_session_mailbox_handoffs (
+                    mailbox_id, handoff_id,
+                    profile_id, session_id, event_id, ownership_generation,
+                    evidence_state, admission_fence_id, admission_fence_generation,
+                    state, attempt_count, available_at,
+                    claim_id, lease_owner, lease_until,
+                    target_id, target_incarnation_id, target_disposition,
+                    created_at, updated_at, claimed_at, settled_at, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, 'unknown', '', 0,
+                          'blocked', 0, 1000.0, '', '', NULL, '', '', '',
+                          1000.0, 1000.0, NULL, NULL, '')
+                """,
+                (
+                    mailbox_id,
+                    f"historical-unknown-{mailbox_id}",
+                    delivery.session_key.profile_id,
+                    delivery.session_key.session_id,
+                    delivery.event_id,
+                    ownership_generation,
+                ),
+            )
+    return mailbox_id
+
+
+def _install_fence_delete_trigger(
+    db: DatabaseManager,
+    *,
+    name: str,
+    table: str,
+    timing_sql: str,
+    match_new_fence: bool,
+) -> None:
+    """Delete the current fence after a candidate write for final-gate tests."""
+
+    fence_match = (
+        """
+              AND fence_id = NEW.admission_fence_id
+              AND generation = NEW.admission_fence_generation
+        """
+        if match_new_fence
+        else ""
+    )
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TRIGGER {name}
+            {timing_sql} ON {table}
+            BEGIN
+                DELETE FROM agent_session_actor_v2_admission_fences
+                WHERE profile_id = NEW.profile_id
+                  AND session_id = NEW.session_id
+                  {fence_match};
+            END
+            """
+        )
 
 
 def test_schema_creates_recoverable_routing_tables(routing_store) -> None:
@@ -448,6 +678,136 @@ def test_route_decision_and_all_outbox_rows_share_one_crash_boundary(
     assert committed.inserted_delivery_count == 1
 
 
+def test_decision_final_fence_gate_rolls_back_all_candidate_writes(
+    tmp_path: Path,
+) -> None:
+    """A fence lost after outbox insertion cannot commit a route decision."""
+
+    db, store, claim, delivery = _fenced_routing_claim(tmp_path)
+    _install_fence_delete_trigger(
+        db,
+        name="delete_fence_after_outbox_insert",
+        table="agent_route_outbox",
+        timing_sql="AFTER INSERT",
+        match_new_fence=True,
+    )
+
+    try:
+        with pytest.raises(ActorV2AdmissionFenceNotFound, match="does not exist"):
+            store.complete_with_agent_deliveries(claim, [delivery])
+    finally:
+        _drop_trigger(db, "delete_fence_after_outbox_insert")
+
+    with db.connect() as conn:
+        outbox_count = conn.execute("SELECT COUNT(*) FROM agent_route_outbox").fetchone()[0]
+        job = conn.execute("SELECT status FROM message_routing_jobs").fetchone()
+        message = conn.execute("SELECT routing_status FROM message_logs").fetchone()
+    fence = db.actor_v2_admission_fences.get(delivery.session_key)
+
+    assert outbox_count == 0
+    assert job["status"] == "processing"
+    assert message["routing_status"] == MessageRoutingStatus.PENDING.value
+    assert fence is not None
+    assert fence.status is ActorV2AdmissionFenceStatus.COMMITTED
+
+
+def test_decision_final_gate_rejects_rewritten_outbox_identity(
+    tmp_path: Path,
+) -> None:
+    """The final gate must retain the identity captured before outbox writes."""
+
+    db, store, claim, delivery = _fenced_routing_claim(tmp_path)
+    alternate_key = SessionKey("alternate-profile", "alternate-profile:group:room")
+    alternate_owner = db.agent_runtime_ownership.claim(
+        alternate_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="alternate durable routing final-gate owner",
+        legacy_session_id="alternate-instance:group:room",
+    ).ownership
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TRIGGER rewrite_outbox_identity_after_decision_completion
+            AFTER UPDATE OF status ON message_routing_jobs
+            WHEN NEW.status = 'completed'
+            BEGIN
+                UPDATE agent_route_outbox
+                SET profile_id = '{alternate_key.profile_id}',
+                    session_id = '{alternate_key.session_id}',
+                    ownership_generation = {alternate_owner.generation},
+                    admission_fence_id = '',
+                    admission_fence_generation = 0
+                WHERE routing_job_id = NEW.routing_job_id;
+            END
+            """
+        )
+
+    try:
+        with pytest.raises(DurableRoutingConflict, match="identity changed"):
+            store.complete_with_agent_deliveries(claim, [delivery])
+    finally:
+        _drop_trigger(db, "rewrite_outbox_identity_after_decision_completion")
+
+    with db.connect() as conn:
+        outbox_count = conn.execute("SELECT COUNT(*) FROM agent_route_outbox").fetchone()[0]
+        job = conn.execute("SELECT status FROM message_routing_jobs").fetchone()
+        message = conn.execute("SELECT routing_status FROM message_logs").fetchone()
+
+    assert outbox_count == 0
+    assert job["status"] == "processing"
+    assert message["routing_status"] == MessageRoutingStatus.PENDING.value
+
+
+def test_decision_final_gate_rejects_rewritten_job_identity(
+    tmp_path: Path,
+) -> None:
+    """A route decision cannot commit after its job identity is rewritten."""
+
+    db, store, claim, delivery = _fenced_routing_claim(tmp_path)
+    alternate_key = SessionKey("alternate-profile", "alternate-profile:group:room")
+    alternate_owner = db.agent_runtime_ownership.claim(
+        alternate_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="alternate durable routing job final-gate owner",
+        legacy_session_id="alternate-instance:group:room",
+    ).ownership
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TRIGGER rewrite_job_identity_after_decision_completion
+            AFTER UPDATE OF status ON message_routing_jobs
+            WHEN NEW.status = 'completed'
+            BEGIN
+                UPDATE message_routing_jobs
+                SET profile_id = '{alternate_key.profile_id}',
+                    session_id = '{alternate_key.session_id}',
+                    ownership_generation = {alternate_owner.generation},
+                    admission_fence_id = '',
+                    admission_fence_generation = 0
+                WHERE routing_job_id = NEW.routing_job_id;
+            END
+            """
+        )
+
+    try:
+        with pytest.raises(DurableRoutingConflict, match="identity changed"):
+            store.complete_with_agent_deliveries(claim, [delivery])
+    finally:
+        _drop_trigger(db, "rewrite_job_identity_after_decision_completion")
+
+    with db.connect() as conn:
+        outbox_count = conn.execute("SELECT COUNT(*) FROM agent_route_outbox").fetchone()[0]
+        job = conn.execute("SELECT status FROM message_routing_jobs").fetchone()
+        message = conn.execute("SELECT routing_status FROM message_logs").fetchone()
+    fence = db.actor_v2_admission_fences.get(delivery.session_key)
+
+    assert outbox_count == 0
+    assert job["status"] == "processing"
+    assert message["routing_status"] == MessageRoutingStatus.PENDING.value
+    assert fence is not None
+    assert fence.status is ActorV2AdmissionFenceStatus.COMMITTED
+
+
 def test_route_decision_isolates_profiles_and_route_rules(routing_store) -> None:
     db, store, _clock = routing_store
     message_log_id, claim = _persist_and_claim(store)
@@ -622,6 +982,9 @@ def test_mailbox_insert_and_outbox_completion_share_one_crash_boundary(
     _drop_trigger(db, "abort_outbox_complete")
     relayed = store.relay_delivery(delivery_claim)
     assert relayed.mailbox_inserted is True
+    assert relayed.wake_request.key == delivery_claim.delivery.session_key
+    assert relayed.wake_request.ownership_generation == 1
+    assert not relayed.wake_request.has_admission_fence
     with db.connect() as conn:
         aggregate = conn.execute(
             "SELECT ownership_generation FROM agent_session_aggregates"
@@ -634,6 +997,235 @@ def test_mailbox_insert_and_outbox_completion_share_one_crash_boundary(
         ).fetchone()
     assert aggregate["ownership_generation"] == 1
     assert tuple(mailbox) == (1, "routing-job-a", "routing-job-a")
+
+
+def test_relay_dual_writes_fenced_mailbox_handoff_for_new_mailbox(
+    tmp_path: Path,
+) -> None:
+    """A newly relayed fenced mailbox retains the exact outbox fence evidence."""
+
+    db, store, job_claim, delivery = _fenced_routing_claim(tmp_path)
+    store.complete_with_agent_deliveries(job_claim, [delivery])
+    delivery_claim = store.claim_next_delivery(worker_id="fenced-relay")
+    assert delivery_claim is not None
+
+    relayed = store.relay_delivery(delivery_claim)
+
+    with db.connect() as conn:
+        mailbox_id = int(
+            conn.execute(
+                "SELECT mailbox_id FROM agent_session_mailbox WHERE event_id = ?",
+                (delivery.event_id,),
+            ).fetchone()[0]
+        )
+    handoff = db.actor_v2_mailbox_handoffs.read(mailbox_id)
+    assert handoff is not None
+    assert handoff.evidence.state is MailboxHandoffEvidenceState.FENCED
+    assert handoff.state is MailboxHandoffState.PENDING
+    assert handoff.evidence.as_fenced_wake_request() == relayed.wake_request
+
+
+def test_relay_dual_writes_explicit_legacy_handoff_without_fence(routing_store) -> None:
+    """A newly relayed unfenced mailbox is durably blocked as legacy work."""
+
+    db, store, _clock = routing_store
+    message_log_id, job_claim = _persist_and_claim(store)
+    delivery = _delivery(message_log_id)
+    store.complete_with_agent_deliveries(job_claim, [delivery])
+    delivery_claim = store.claim_next_delivery(worker_id="legacy-relay")
+    assert delivery_claim is not None
+
+    relayed = store.relay_delivery(delivery_claim)
+
+    with db.connect() as conn:
+        mailbox_id = int(
+            conn.execute(
+                "SELECT mailbox_id FROM agent_session_mailbox WHERE event_id = ?",
+                (delivery.event_id,),
+            ).fetchone()[0]
+        )
+    handoff = db.actor_v2_mailbox_handoffs.read(mailbox_id)
+    assert handoff is not None
+    assert handoff.evidence.state is MailboxHandoffEvidenceState.UNFENCED_LEGACY
+    assert handoff.state is MailboxHandoffState.BLOCKED
+    assert handoff.evidence.admission_fence_id == ""
+    assert handoff.evidence.admission_fence_generation == 0
+    assert not relayed.wake_request.has_admission_fence
+
+
+@pytest.mark.parametrize(
+    "has_unknown_handoff",
+    [False, True],
+    ids=["missing-sidecar", "unknown-sidecar"],
+)
+def test_relay_duplicate_historic_mailbox_does_not_upgrade_handoff_evidence(
+    routing_store,
+    has_unknown_handoff: bool,
+) -> None:
+    """Replaying a pre-dual-write mailbox never infers or upgrades its evidence."""
+
+    db, store, _clock = routing_store
+    message_log_id, job_claim = _persist_and_claim(store)
+    delivery = _delivery(message_log_id)
+    store.complete_with_agent_deliveries(job_claim, [delivery])
+    delivery_claim = store.claim_next_delivery(worker_id="historic-relay")
+    assert delivery_claim is not None
+    mailbox_id = _insert_historical_route_mailbox(
+        db,
+        delivery,
+        has_unknown_handoff=has_unknown_handoff,
+    )
+
+    relayed = store.relay_delivery(delivery_claim)
+    completed_replay = store.relay_delivery(delivery_claim)
+
+    assert relayed.duplicate is True
+    assert completed_replay.duplicate is True
+    assert completed_replay.wake_request == relayed.wake_request
+    handoff = db.actor_v2_mailbox_handoffs.read(mailbox_id)
+    if has_unknown_handoff:
+        assert handoff is not None
+        assert handoff.evidence.state is MailboxHandoffEvidenceState.UNKNOWN
+        assert handoff.state is MailboxHandoffState.BLOCKED
+    else:
+        assert handoff is None
+
+
+def test_relay_final_fence_gate_rolls_back_all_candidate_writes(
+    tmp_path: Path,
+) -> None:
+    """A fence lost after mailbox insertion cannot complete its outbox row."""
+
+    db, store, job_claim, delivery = _fenced_routing_claim(tmp_path)
+    store.complete_with_agent_deliveries(job_claim, [delivery])
+    delivery_claim = store.claim_next_delivery(worker_id="fenced-relay")
+    assert delivery_claim is not None
+    _install_fence_delete_trigger(
+        db,
+        name="delete_fence_after_mailbox_insert",
+        table="agent_session_mailbox",
+        timing_sql="AFTER INSERT",
+        match_new_fence=False,
+    )
+
+    try:
+        with pytest.raises(ActorV2AdmissionFenceNotFound, match="does not exist"):
+            store.relay_delivery(delivery_claim)
+    finally:
+        _drop_trigger(db, "delete_fence_after_mailbox_insert")
+
+    with db.connect() as conn:
+        mailbox_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox"
+        ).fetchone()[0]
+        aggregate_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_aggregates"
+        ).fetchone()[0]
+        outbox = conn.execute("SELECT status FROM agent_route_outbox").fetchone()
+    fence = db.actor_v2_admission_fences.get(delivery.session_key)
+
+    assert mailbox_count == 0
+    assert aggregate_count == 0
+    assert outbox["status"] == "processing"
+    assert fence is not None
+    assert fence.status is ActorV2AdmissionFenceStatus.COMMITTED
+
+
+def test_relay_final_gate_rolls_back_mailbox_handoff_and_outbox_completion(
+    tmp_path: Path,
+) -> None:
+    """A fence revoked after sidecar/outbox writes rolls back the full candidate."""
+
+    db, store, job_claim, delivery = _fenced_routing_claim(tmp_path)
+    store.complete_with_agent_deliveries(job_claim, [delivery])
+    delivery_claim = store.claim_next_delivery(worker_id="fenced-relay-final-gate")
+    assert delivery_claim is not None
+    _install_fence_delete_trigger(
+        db,
+        name="delete_fence_after_route_outbox_completion",
+        table="agent_route_outbox",
+        timing_sql="AFTER UPDATE OF status",
+        match_new_fence=True,
+    )
+
+    try:
+        with pytest.raises(ActorV2AdmissionFenceNotFound, match="does not exist"):
+            store.relay_delivery(delivery_claim)
+    finally:
+        _drop_trigger(db, "delete_fence_after_route_outbox_completion")
+
+    with db.connect() as conn:
+        mailbox_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox"
+        ).fetchone()[0]
+        handoff_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox_handoffs"
+        ).fetchone()[0]
+        outbox = conn.execute("SELECT status FROM agent_route_outbox").fetchone()
+    fence = db.actor_v2_admission_fences.get(delivery.session_key)
+
+    assert mailbox_count == 0
+    assert handoff_count == 0
+    assert outbox["status"] == "processing"
+    assert fence is not None
+    assert fence.status is ActorV2AdmissionFenceStatus.COMMITTED
+
+
+def test_relay_final_gate_rejects_rewritten_outbox_identity(
+    tmp_path: Path,
+) -> None:
+    """A relay cannot commit after a trigger rewrites its captured identity."""
+
+    db, store, job_claim, delivery = _fenced_routing_claim(tmp_path)
+    store.complete_with_agent_deliveries(job_claim, [delivery])
+    delivery_claim = store.claim_next_delivery(worker_id="fenced-relay-identity")
+    assert delivery_claim is not None
+    alternate_key = SessionKey("alternate-profile", "alternate-profile:group:room")
+    alternate_owner = db.agent_runtime_ownership.claim(
+        alternate_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="alternate durable relay final-gate owner",
+        legacy_session_id="alternate-instance:group:room",
+    ).ownership
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TRIGGER rewrite_outbox_identity_after_relay_completion
+            AFTER UPDATE OF status ON agent_route_outbox
+            WHEN NEW.status = 'completed'
+            BEGIN
+                UPDATE agent_route_outbox
+                SET profile_id = '{alternate_key.profile_id}',
+                    session_id = '{alternate_key.session_id}',
+                    ownership_generation = {alternate_owner.generation},
+                    admission_fence_id = '',
+                    admission_fence_generation = 0
+                WHERE delivery_id = NEW.delivery_id;
+            END
+            """
+        )
+
+    try:
+        with pytest.raises(DurableRoutingConflict, match="identity changed"):
+            store.relay_delivery(delivery_claim)
+    finally:
+        _drop_trigger(db, "rewrite_outbox_identity_after_relay_completion")
+
+    with db.connect() as conn:
+        mailbox_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox"
+        ).fetchone()[0]
+        handoff_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox_handoffs"
+        ).fetchone()[0]
+        outbox = conn.execute("SELECT status FROM agent_route_outbox").fetchone()
+    fence = db.actor_v2_admission_fences.get(delivery.session_key)
+
+    assert mailbox_count == 0
+    assert handoff_count == 0
+    assert outbox["status"] == "processing"
+    assert fence is not None
+    assert fence.status is ActorV2AdmissionFenceStatus.COMMITTED
 
 
 def test_relay_rejects_existing_aggregate_from_another_generation(
@@ -685,6 +1277,7 @@ def test_relay_is_idempotent_and_validates_existing_mailbox_identity(
 
     assert first.mailbox_inserted is True
     assert replay.duplicate is True
+    assert replay.wake_request == first.wake_request
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM agent_session_mailbox").fetchone()[0] == 1
 
@@ -698,6 +1291,72 @@ def test_relay_is_idempotent_and_validates_existing_mailbox_identity(
         )
     with pytest.raises(DurableRoutingConflict, match="different work"):
         store.relay_delivery(delivery_claim)
+
+
+def test_pending_route_wake_requests_retain_current_ownership_identity(
+    routing_store,
+) -> None:
+    """Restart recovery returns the same full identity emitted by relay."""
+
+    _db, store, _clock = routing_store
+    message_log_id, job_claim = _persist_and_claim(store)
+    delivery = _delivery(message_log_id)
+    store.complete_with_agent_deliveries(job_claim, [delivery])
+    delivery_claim = store.claim_next_delivery(worker_id="relay-a")
+    assert delivery_claim is not None
+    relayed = store.relay_delivery(delivery_claim)
+
+    requests = store.pending_route_wake_requests()
+
+    assert requests == (relayed.wake_request,)
+
+
+def test_pending_route_wake_debts_use_keyset_cursor_under_churn(routing_store) -> None:
+    """Keyset pages survive consumption and appends without skipping debt."""
+
+    db, store, _clock = routing_store
+    first_key = SessionKey("profile-a", "route-keyset:first")
+    shared_key = SessionKey("profile-a", "route-keyset:shared")
+    last_key = SessionKey("profile-a", "route-keyset:last")
+    appended_key = SessionKey("profile-a", "route-keyset:appended")
+
+    _insert_pending_route_mailbox(db, first_key, "route-keyset:first")
+    _insert_pending_route_mailbox(db, shared_key, "route-keyset:shared-old")
+    _insert_pending_route_mailbox(db, shared_key, "route-keyset:shared-new")
+    _insert_pending_route_mailbox(db, last_key, "route-keyset:last")
+
+    first_page = store.pending_route_wake_debts(limit=2)
+    assert tuple(debt.event_id for debt in first_page) == (
+        "route-keyset:first",
+        "route-keyset:shared-new",
+    )
+    assert first_page[-1].cursor is not None
+
+    with db.connect() as conn:
+        conn.execute(
+            "DELETE FROM agent_session_mailbox WHERE event_id = ?",
+            ("route-keyset:first",),
+        )
+    _insert_pending_route_mailbox(db, appended_key, "route-keyset:appended")
+
+    second_page = store.pending_route_wake_debts(
+        limit=2,
+        after=first_page[-1].cursor,
+    )
+    assert tuple(debt.event_id for debt in second_page) == (
+        "route-keyset:last",
+        "route-keyset:appended",
+    )
+    with pytest.raises(ValueError, match="offset cannot be combined"):
+        store.pending_route_wake_debts(
+            limit=1,
+            offset=1,
+            after=first_page[-1].cursor,
+        )
+
+    old_first = first_page[0]
+    _insert_pending_route_mailbox(db, first_key, "route-keyset:first")
+    assert not store.is_pending_route_wake_debt(old_first)
 
 
 def test_outbox_claim_rejects_a_resigned_noncanonical_payload(routing_store) -> None:
@@ -951,26 +1610,24 @@ def test_intermediate_routing_job_schema_backfills_session_fence_without_resigni
         for statement in SCHEMA_STATEMENTS
         if "CREATE TABLE IF NOT EXISTS message_routing_jobs" in statement
     )
-    ownership_check = """        CHECK(ownership_generation >= 0),
-        CHECK(
-            (
-                profile_id = ''
-                AND session_id = ''
-                AND ownership_generation = 0
-            )
-            OR
-            (
-                profile_id != ''
-                AND session_id != ''
-                AND ownership_generation >= 1
-            )
-        ),
-"""
+    intermediate_ddl = current_ddl
+    for column in (
+        "        profile_id TEXT NOT NULL DEFAULT '',\n",
+        "        session_id TEXT NOT NULL DEFAULT '',\n",
+        "        ownership_generation INTEGER NOT NULL DEFAULT 0,\n",
+        "        admission_fence_id TEXT NOT NULL DEFAULT '',\n",
+        "        admission_fence_generation INTEGER NOT NULL DEFAULT 0,\n",
+    ):
+        intermediate_ddl = intermediate_ddl.replace(column, "")
+    scope_check_start = intermediate_ddl.index(
+        "        CHECK(ownership_generation >= 0),"
+    )
+    scope_check_end = intermediate_ddl.index(
+        "        CHECK(status IN",
+        scope_check_start,
+    )
     intermediate_ddl = (
-        current_ddl.replace("        profile_id TEXT NOT NULL DEFAULT '',\n", "")
-        .replace("        session_id TEXT NOT NULL DEFAULT '',\n", "")
-        .replace("        ownership_generation INTEGER NOT NULL DEFAULT 0,\n", "")
-        .replace(ownership_check, "")
+        intermediate_ddl[:scope_check_start] + intermediate_ddl[scope_check_end:]
     )
     payload_json = json.dumps(
         {
@@ -1019,6 +1676,7 @@ def test_intermediate_routing_job_schema_backfills_session_fence_without_resigni
         row = conn.execute(
             """
             SELECT profile_id, session_id, ownership_generation,
+                   admission_fence_id, admission_fence_generation,
                    payload_json, payload_digest
             FROM message_routing_jobs
             """
@@ -1033,6 +1691,8 @@ def test_intermediate_routing_job_schema_backfills_session_fence_without_resigni
         "bot-a",
         "bot-a:group:room",
         4,
+        "",
+        0,
         payload_json,
         payload_digest,
     )

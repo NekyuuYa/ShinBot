@@ -26,6 +26,7 @@ class RecordingScheduler:
     def __init__(self) -> None:
         self.consumed: list[tuple[str, list[int]]] = []
         self.adjustments: list[dict[str, object]] = []
+        self.adjustment_active_epochs: list[int | None] = []
         self.planned_review: ReviewPlan | None = None
 
     def mark_active_chat_consumed(
@@ -42,9 +43,11 @@ class RecordingScheduler:
         *,
         delta: float = 0.0,
         force_exit: bool = False,
+        active_epoch: int | None = None,
         reason: str = "",
         next_review_plan: ReviewPlan | None = None,
     ) -> object:
+        self.adjustment_active_epochs.append(active_epoch)
         self.adjustments.append(
             {
                 "session_id": session_id,
@@ -62,6 +65,7 @@ class RecordingScheduler:
         *,
         delta: float = 0.0,
         force_exit: bool = False,
+        active_epoch: int | None = None,
     ) -> object:
         return type(
             "Preview",
@@ -75,7 +79,13 @@ class RecordingScheduler:
             },
         )()
 
-    async def plan_idle_review_after_active_chat(self, session_id: str) -> ReviewPlan | None:
+    async def plan_idle_review_after_active_chat(
+        self,
+        session_id: str,
+        *,
+        request: object | None = None,
+    ) -> ReviewPlan | None:
+        del request
         return self.planned_review
 
 

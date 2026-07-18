@@ -18,6 +18,7 @@ from shinbot.agent.runtime.session_actor.events import (
     EventEnqueueResult,
     SessionEventEnvelope,
 )
+from shinbot.core.dispatch.legacy_recovery_gate import LegacyRecoveryPermit
 
 
 @runtime_checkable
@@ -26,6 +27,35 @@ class _RecoveryDiscoveryStore(Protocol):
 
     async def enqueue_recovery_requests(self) -> int:
         """Enqueue recovery events for orphaned non-idle aggregates."""
+
+
+@runtime_checkable
+class _LegacyRecoveryDiscoveryStore(Protocol):
+    """Permit-aware discovery used only by a lifecycle-owning controller."""
+
+    async def enqueue_recovery_requests_for_legacy_recovery(
+        self,
+        *,
+        permit: LegacyRecoveryPermit,
+    ) -> int:
+        """Insert recovery work only while the exact lifecycle permit is live."""
+
+    async def pending_keys_for_legacy_recovery(
+        self,
+        *,
+        permit: LegacyRecoveryPermit,
+    ) -> list[SessionKey]:
+        """Discover pending keys only while the exact lifecycle permit is live."""
+
+    async def validate_legacy_recovery_permit(
+        self,
+        permit: LegacyRecoveryPermit,
+    ) -> None:
+        """Revalidate the permit at every actor-creation boundary."""
+
+
+class LegacyRecoveryLifecycleRequiredError(RuntimeError):
+    """Raised when durable broad recovery lacks a permit-owning controller."""
 
 
 class AgentSessionActorRegistry:
@@ -76,14 +106,22 @@ class AgentSessionActorRegistry:
         self._actors: dict[SessionKey, AgentSessionActor] = {}
         self._actors_lock = asyncio.Lock()
         self._lifecycle = asyncio.Condition()
+        self._shutdown_lock = asyncio.Lock()
         self._accepting = True
         self._submissions_in_flight = 0
+        self._shutdown_complete = False
 
     @property
     def accepting(self) -> bool:
         """Return whether new mailbox submissions are accepted."""
 
         return self._accepting
+
+    @property
+    def shutdown_complete(self) -> bool:
+        """Return whether every supervised actor has confirmed shutdown."""
+
+        return self._shutdown_complete
 
     @property
     def effect_contract_authority(self) -> EffectContractAuthority:
@@ -127,7 +165,18 @@ class AgentSessionActorRegistry:
             await self._finish_submission()
 
     async def recover(self) -> int:
-        """Discover orphaned state, then wake all keys with mailbox work."""
+        """Recover only non-durable test stores without a lifecycle permit.
+
+        SQLite stores expose permit-aware recovery boundaries. Starting their
+        actors from this short-lived method would let a later fenced mailbox be
+        claimed after the caller returns, so durable recovery must use
+        :class:`LegacyRecoveryActorLifecycleController` instead.
+        """
+
+        if isinstance(self._store, _LegacyRecoveryDiscoveryStore):
+            raise LegacyRecoveryLifecycleRequiredError(
+                "durable broad recovery requires LegacyRecoveryActorLifecycleController"
+            )
 
         await self._begin_submission()
         try:
@@ -140,6 +189,44 @@ class AgentSessionActorRegistry:
                 actor = await self._ensure_actor(key)
                 self._validate_store_binding()
                 actor.wake()
+            self._validate_store_binding()
+            return len(keys)
+        finally:
+            await self._finish_submission()
+
+    async def _recover_under_legacy_recovery_lifecycle(
+        self,
+        permit: LegacyRecoveryPermit,
+    ) -> int:
+        """Recover only while an external controller retains ``permit``.
+
+        This private entry point deliberately cannot be used as a short-lived
+        routing callback. Its caller must keep the permit until
+        :meth:`shutdown` proves every actor created here has stopped.
+        """
+
+        if not isinstance(permit, LegacyRecoveryPermit):
+            raise TypeError("permit must be a LegacyRecoveryPermit")
+        store = self._store
+        if not isinstance(store, _LegacyRecoveryDiscoveryStore):
+            raise TypeError(
+                "session actor store does not support lifecycle-owned legacy recovery"
+            )
+        await self._begin_submission()
+        try:
+            await store.validate_legacy_recovery_permit(permit)
+            await store.enqueue_recovery_requests_for_legacy_recovery(permit=permit)
+            self._validate_store_binding()
+            await store.validate_legacy_recovery_permit(permit)
+            keys = await store.pending_keys_for_legacy_recovery(permit=permit)
+            self._validate_store_binding()
+            for key in keys:
+                await store.validate_legacy_recovery_permit(permit)
+                actor = await self._ensure_actor_for_legacy_recovery(key, permit)
+                self._validate_store_binding()
+                await store.validate_legacy_recovery_permit(permit)
+                actor.wake()
+            await store.validate_legacy_recovery_permit(permit)
             self._validate_store_binding()
             return len(keys)
         finally:
@@ -176,18 +263,25 @@ class AgentSessionActorRegistry:
     async def shutdown(self, *, drain: bool = True) -> None:
         """Stop accepting submissions and shut down all supervised actors."""
 
-        async with self._lifecycle:
-            self._accepting = False
-            await self._lifecycle.wait_for(lambda: self._submissions_in_flight == 0)
-        async with self._actors_lock:
-            actors = list(self._actors.values())
-        if actors:
-            await asyncio.gather(
-                *(actor.shutdown(drain=drain) for actor in actors),
-                return_exceptions=False,
-            )
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            async with self._lifecycle:
+                self._accepting = False
+                await self._lifecycle.wait_for(lambda: self._submissions_in_flight == 0)
+            async with self._actors_lock:
+                actors = list(self._actors.values())
+            if actors:
+                await asyncio.gather(
+                    *(actor.shutdown(drain=drain) for actor in actors),
+                    return_exceptions=False,
+                )
+            self._shutdown_complete = True
 
-    async def _ensure_actor(self, key: SessionKey) -> AgentSessionActor:
+    async def _ensure_actor(
+        self,
+        key: SessionKey,
+    ) -> AgentSessionActor:
         async with self._actors_lock:
             actor = self._actors.get(key)
             if actor is not None:
@@ -203,6 +297,32 @@ class AgentSessionActorRegistry:
                 max_attempts=self._max_attempts,
             )
             await actor.start()
+            self._actors[key] = actor
+            return actor
+
+    async def _ensure_actor_for_legacy_recovery(
+        self,
+        key: SessionKey,
+        permit: LegacyRecoveryPermit,
+    ) -> AgentSessionActor:
+        """Start one new actor under the controller-held recovery permit."""
+
+        async with self._actors_lock:
+            if self._actors.get(key) is not None:
+                raise RuntimeError(
+                    "legacy recovery lifecycle cannot adopt an existing session actor"
+                )
+            actor = AgentSessionActor(
+                key=key,
+                store=self._store,
+                handler=self._handler,
+                worker_id=(
+                    f"{self._worker_id}:{key.profile_id or 'default'}:{key.session_id}"
+                ),
+                retry_delay_seconds=self._retry_delay_seconds,
+                max_attempts=self._max_attempts,
+            )
+            await actor._start_for_legacy_recovery(permit)
             self._actors[key] = actor
             return actor
 
@@ -226,4 +346,4 @@ class AgentSessionActorRegistry:
         _ = self.persistence_domain
 
 
-__all__ = ["AgentSessionActorRegistry"]
+__all__ = ["AgentSessionActorRegistry", "LegacyRecoveryLifecycleRequiredError"]

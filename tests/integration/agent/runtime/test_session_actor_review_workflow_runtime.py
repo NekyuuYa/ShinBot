@@ -32,6 +32,9 @@ from shinbot.agent.runtime.session_actor.review_due_identity import (
     REVIEW_DUE_EVENT_SOURCE,
     review_due_event_id,
 )
+from shinbot.agent.runtime.session_actor.review_execution_gate import (
+    SQLiteReviewExecutionGateStore,
+)
 from shinbot.agent.runtime.session_actor.review_workflow import RunnerReviewWorkflow
 from shinbot.agent.runtime.session_actor.review_workflow_context import (
     ActorReviewWorkflowContextProjector,
@@ -46,6 +49,7 @@ from shinbot.agent.services.context.review_context_builder import ReviewStageInp
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
+from tests.agent_runtime_helpers import wait_for_session_actor_idle
 
 
 @dataclass(slots=True)
@@ -228,7 +232,11 @@ async def test_review_due_effect_executor_and_completion_use_one_actor_snapshot(
         ),
         handlers=handlers,
         session_registry=registry,
-        renew_interval_seconds=None,
+        renew_interval_seconds=10.0,
+        review_execution_gate_store=SQLiteReviewExecutionGateStore(
+            database,
+            clock=lambda: now[0],
+        ),
         clock=lambda: now[0],
     )
 
@@ -252,7 +260,7 @@ async def test_review_due_effect_executor_and_completion_use_one_actor_snapshot(
                 message_log_id=message_log_id,
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
         planned = await actor_store.load(key)
 
         now[0] = 160.0
@@ -264,7 +272,7 @@ async def test_review_due_effect_executor_and_completion_use_one_actor_snapshot(
                 plan_revision=planned.review_plan_revision,
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
         reviewing = await actor_store.load(key)
         assert reviewing.state == AgentSessionState.REVIEW
         operation_id = reviewing.review_operation_id
@@ -275,7 +283,7 @@ async def test_review_due_effect_executor_and_completion_use_one_actor_snapshot(
         now[0] = 200.0
         result = await executor.run_once(lane=EffectLane.PLANNER)
         assert result.status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
 
         settled = await actor_store.load(key)
         assert settled.state == AgentSessionState.IDLE

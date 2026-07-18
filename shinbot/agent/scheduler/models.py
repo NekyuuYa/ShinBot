@@ -48,6 +48,14 @@ class SchedulerEventKind(StrEnum):
     ACTIVE_CHAT_BOOTSTRAP = "active_chat_bootstrap"
 
 
+class IdleReviewPlanningTrigger(StrEnum):
+    """State transition that requested one external idle-review plan."""
+
+    ACTIVE_CHAT_TICK = "active_chat_tick"
+    ACTIVE_CHAT_BOOTSTRAP = "active_chat_bootstrap"
+    ACTIVE_CHAT_INTEREST_ADJUSTMENT = "active_chat_interest_adjustment"
+
+
 class HighPriorityEventKind(StrEnum):
     """High-attention event kinds detected at message ingress time."""
 
@@ -103,6 +111,30 @@ class ReviewPlan:
     updated_at: float = 0.0
 
 
+def review_plan_fence_matches(
+    current: ReviewPlan | None,
+    expected: ReviewPlan | None,
+) -> bool:
+    """Return whether two plans represent the same scheduling decision.
+
+    ``updated_at`` is persistence bookkeeping, not part of the decision. The
+    legacy SQLite store currently shares its timestamp column with scheduler
+    state writes, so an ``IDLE -> REVIEW`` transition can refresh that value
+    without replacing the review plan. Fences must therefore compare the
+    fields that affect actual scheduling behavior instead of dataclass equality.
+    """
+
+    if current is None or expected is None:
+        return current is expected
+    return (
+        current.session_id == expected.session_id
+        and current.next_review_at == expected.next_review_at
+        and current.reason == expected.reason
+        and current.mention_sensitivity == expected.mention_sensitivity
+        and current.active_reply_threshold == expected.active_reply_threshold
+    )
+
+
 @dataclass(slots=True, frozen=True)
 class ActiveChatState:
     """Scheduler-owned interest state for one active chat session."""
@@ -116,6 +148,36 @@ class ActiveChatState:
     active_epoch: int = 0
     bootstrap_applied: bool = False
     bootstrap_disposition: ActiveChatDisposition | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class IdleReviewPlanningRequest:
+    """Frozen active-chat exit intent for one external review-plan decision.
+
+    The scheduler creates this value while its caller serializes a session,
+    then the model planner runs outside that critical section.  Applying the
+    result requires ``expected_active_chat_state`` to still match exactly, so
+    a message, timer tick, bootstrap update, or replacement active-chat epoch
+    cannot be overwritten by a stale model result.
+    """
+
+    session_id: str
+    trigger: IdleReviewPlanningTrigger
+    signal_id: str
+    checked_at: float
+    expected_active_chat_state: ActiveChatState
+    planning_active_chat_state: ActiveChatState
+    expected_review_plan: ReviewPlan | None = None
+    bootstrap_disposition: ActiveChatDisposition | None = None
+    interest_delta: float = 0.0
+    force_exit: bool = False
+    interest_reason: str = ""
+
+    @property
+    def active_epoch(self) -> int:
+        """Return the epoch fenced by this planning request."""
+
+        return self.expected_active_chat_state.active_epoch
 
 
 @dataclass(slots=True, frozen=True)
@@ -252,6 +314,17 @@ class ActiveChatBootstrapApplyDecision:
     next_review_plan: ReviewPlan | None = None
     bootstrap_applied: bool = False
     returned_to_idle: bool = False
+    skipped_reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatBootstrapPreview:
+    """Preview of a delayed active-chat bootstrap application without mutation."""
+
+    session_id: str
+    state: AgentState
+    active_chat_state: ActiveChatState | None = None
+    will_return_idle: bool = False
     skipped_reason: str | None = None
 
 

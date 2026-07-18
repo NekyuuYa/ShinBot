@@ -62,6 +62,7 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import MessageElement
+from tests.agent_runtime_helpers import wait_for_session_actor_idle
 
 
 @dataclass(slots=True)
@@ -305,7 +306,7 @@ async def test_active_reply_workflow_materializes_one_receipt_fenced_reply(
                 message_log_id=message_log_id,
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
 
         active = await actor_store.load(key)
         assert active.state == AgentSessionState.ACTIVE_REPLY
@@ -318,7 +319,7 @@ async def test_active_reply_workflow_materializes_one_receipt_fenced_reply(
         now[0] = 150.0
         planner_result = await executor.run_once(lane=EffectLane.PLANNER)
         assert planner_result.status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
 
         after_planner = await actor_store.load(key)
         assert after_planner.state == AgentSessionState.IDLE
@@ -374,7 +375,7 @@ async def test_active_reply_workflow_materializes_one_receipt_fenced_reply(
         now[0] = 200.0
         action_result = await executor.run_once(lane=EffectLane.DEFAULT)
         assert action_result.status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(database, registry, key)
 
         settled = await actor_store.load(key)
         assert settled.state == AgentSessionState.IDLE

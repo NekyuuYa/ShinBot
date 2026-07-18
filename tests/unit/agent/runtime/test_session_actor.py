@@ -256,6 +256,15 @@ class _MemorySessionActorStore(SessionActorStore):
                 }
             )
 
+    async def has_pending_for_key(self, key: SessionKey) -> bool:
+        async with self._lock:
+            return any(
+                record_key == key
+                and record.status
+                in {MailboxEventStatus.PENDING, MailboxEventStatus.PROCESSING}
+                for (record_key, _event_id), record in self.records.items()
+            )
+
 
 def _event(
     event_id: str,
@@ -1121,6 +1130,21 @@ async def test_registry_recovers_pending_events_and_rejects_after_shutdown() -> 
         await registry.submit(_event("too-late"))
 
 
+def test_registry_does_not_expose_short_lived_permit_recovery() -> None:
+    """Long-lived actors cannot be created through a pass-scoped permit API."""
+
+    registry = AgentSessionActorRegistry(
+        store=_MemorySessionActorStore(),
+        handler=lambda aggregate, _event: SessionTransition(
+            aggregate=aggregate.advance(),
+            disposition="unexpected",
+        ),
+    )
+
+    assert not hasattr(registry, "recover_with_legacy_recovery_permit")
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_registry_wake_drains_an_already_durable_event_without_reenqueue() -> None:
     store = _MemorySessionActorStore()

@@ -31,9 +31,33 @@ from shinbot.agent.runtime.session_actor.effect_contracts import (
     builtin_session_actor_effect_contracts,
     resolved_outcome_fence_fields,
 )
+from shinbot.agent.runtime.session_actor.effect_execution_errors import (
+    EffectExecutionCancelled,
+    EffectExecutionDeferred,
+)
 from shinbot.agent.runtime.session_actor.events import SessionEventEnvelope
+from shinbot.agent.runtime.session_actor.model_execution_witness import (
+    MODEL_EXECUTION_WITNESSED_EFFECT_KINDS,
+    ModelExecutionClaim,
+    ModelExecutionPermit,
+    ModelExecutionPermitDisposition,
+    ModelExecutionWitnessStorePort,
+)
+from shinbot.agent.runtime.session_actor.review_execution_gate import (
+    ReviewExecutionClaim,
+    ReviewExecutionGateStorePort,
+    ReviewExecutionPermit,
+    ReviewExecutionPermitDisposition,
+)
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
+from shinbot.core.dispatch.fenced_wake_target_lease import (
+    FencedActorExecutionBinding,
+    FencedWakeTargetLeaseError,
+)
+from shinbot.core.dispatch.mailbox_handoff import MailboxHandoffNotifier
 
 logger = logging.getLogger(__name__)
+
 
 class _FrozenDict(dict[str, Any]):
     """JSON-compatible dictionary that rejects handler mutation."""
@@ -84,10 +108,7 @@ def _freeze_json(value: Any) -> Any:
         raise ValueError("durable effect numeric values must be finite")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    raise TypeError(
-        "durable effect values must be JSON-compatible, "
-        f"got {type(value)!r}"
-    )
+    raise TypeError(f"durable effect values must be JSON-compatible, got {type(value)!r}")
 
 
 class DurableEffectStatus(StrEnum):
@@ -97,6 +118,7 @@ class DurableEffectStatus(StrEnum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class EffectSettlementStatus(StrEnum):
@@ -105,6 +127,7 @@ class EffectSettlementStatus(StrEnum):
     COMMITTED = "committed"
     ALREADY_COMMITTED = "already_committed"
     PRECONDITION_SKIPPED = "precondition_skipped"
+    CANCELLED = "cancelled"
 
 
 class EffectRunStatus(StrEnum):
@@ -113,9 +136,31 @@ class EffectRunStatus(StrEnum):
     EMPTY = "empty"
     COMPLETED = "completed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+    DEFERRED = "deferred"
     RETRY_SCHEDULED = "retry_scheduled"
     FAILED = "failed"
     CLAIM_LOST = "claim_lost"
+
+
+class LocalOperationQuiescenceScope(StrEnum):
+    """Scope of an operation quiescence observation.
+
+    The effect executor only owns tasks created by this executor instance in
+    the current Python process. It cannot observe another executor process, a
+    stale durable lease, or an external action that has crossed the process
+    boundary.
+    """
+
+    LOCAL_PROCESS = "local_process"
+
+
+class LocalOperationQuiescenceStatus(StrEnum):
+    """Outcome of one local operation quiescence request."""
+
+    NO_LOCAL_HANDLER_TASKS = "no_local_handler_tasks"
+    QUIESCENT = "quiescent"
+    TIMED_OUT = "timed_out"
 
 
 class EffectQuarantineReason(StrEnum):
@@ -137,6 +182,10 @@ class EffectStoreBindingChanged(EffectExecutorError):
     """Raised when a durable store changes a composed runtime identity."""
 
 
+class FencedEffectExecutionLeaseLost(EffectStoreBindingChanged):
+    """Raised when a scoped executor loses its durable target lease authority."""
+
+
 class EffectAuthorityChanged(EffectStoreBindingChanged):
     """Raised when a composed durable store swaps its authority snapshot."""
 
@@ -151,6 +200,10 @@ class EffectHandlerNotFound(EffectExecutorError):
 
 class EffectContractSignatureMismatch(EffectExecutorError):
     """Raised when persisted work does not match its registered contract."""
+
+
+class EffectExecutionConfigurationError(EffectExecutorError):
+    """Raised when an effect lacks a required execution liveness safeguard."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -247,6 +300,109 @@ class ClaimedEffect:
 
 
 @dataclass(slots=True, frozen=True)
+class InFlightEffectHandlerKey:
+    """Immutable local identity for one executing durable effect handler.
+
+    ``claim_id`` is part of the identity on purpose. A reclaimed durable
+    effect can have the same session, operation, kind, and effect id while a
+    cancellation tail from the old fenced claim is still unwinding.
+    """
+
+    key: SessionKey
+    operation_id: str
+    effect_kind: str
+    effect_id: str
+    claim_id: str
+
+    def __post_init__(self) -> None:
+        """Normalize durable task identity fields."""
+
+        if not isinstance(self.key, SessionKey):
+            raise TypeError("key must be a SessionKey")
+        operation_id = str(self.operation_id or "").strip()
+        effect_kind = str(self.effect_kind or "").strip()
+        effect_id = str(self.effect_id or "").strip()
+        claim_id = str(self.claim_id or "").strip()
+        if not effect_kind:
+            raise ValueError("effect_kind must not be empty")
+        if not effect_id:
+            raise ValueError("effect_id must not be empty")
+        if not claim_id:
+            raise ValueError("claim_id must not be empty")
+        object.__setattr__(self, "operation_id", operation_id)
+        object.__setattr__(self, "effect_kind", effect_kind)
+        object.__setattr__(self, "effect_id", effect_id)
+        object.__setattr__(self, "claim_id", claim_id)
+
+    @classmethod
+    def from_claim(cls, claim: ClaimedEffect) -> InFlightEffectHandlerKey:
+        """Build the exact local task identity for one fenced claim."""
+
+        return cls(
+            key=claim.key,
+            operation_id=claim.effect.operation_id,
+            effect_kind=claim.effect.kind,
+            effect_id=claim.effect.effect_id,
+            claim_id=claim.claim_id,
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class LocalOperationQuiescence:
+    """Result of cancelling and observing local handler tasks for one operation.
+
+    This is deliberately a process-local observation. In particular,
+    :attr:`status` being :attr:`~LocalOperationQuiescenceStatus.NO_LOCAL_HANDLER_TASKS`
+    means only that this executor found no matching task in its own registry;
+    it is never a proof that another process, a durable lease, or an external
+    side effect is quiescent.
+    """
+
+    scope: LocalOperationQuiescenceScope
+    status: LocalOperationQuiescenceStatus
+    key: SessionKey
+    operation_id: str
+    matched_handler_keys: tuple[InFlightEffectHandlerKey, ...] = ()
+    cancelled_handler_keys: tuple[InFlightEffectHandlerKey, ...] = ()
+    remaining_handler_keys: tuple[InFlightEffectHandlerKey, ...] = ()
+
+    @property
+    def locally_confirmed_quiescent(self) -> bool:
+        """Return whether observed local tasks were confirmed to have ended.
+
+        This property deliberately excludes ``NO_LOCAL_HANDLER_TASKS``. The
+        latter is an empty local lookup, while this result proves that at least
+        one locally observed task ended before the report was returned.
+        """
+
+        return self.status is LocalOperationQuiescenceStatus.QUIESCENT
+
+
+@dataclass(slots=True, frozen=True)
+class LocalEffectExecutorQuiescence:
+    """Process-local handler quiescence report for one whole effect executor.
+
+    This result is intentionally narrower than a durable lease or external
+    side-effect proof. It becomes useful for a future target-retirement
+    sequence only after the target has stopped the executor from claiming new
+    work. At that point, ``QUIESCENT`` proves every handler task observed by
+    this executor instance ended before the report was returned.
+    """
+
+    scope: LocalOperationQuiescenceScope
+    status: LocalOperationQuiescenceStatus
+    matched_handler_keys: tuple[InFlightEffectHandlerKey, ...] = ()
+    cancelled_handler_keys: tuple[InFlightEffectHandlerKey, ...] = ()
+    remaining_handler_keys: tuple[InFlightEffectHandlerKey, ...] = ()
+
+    @property
+    def locally_confirmed_quiescent(self) -> bool:
+        """Return whether observed local handler tasks all ended."""
+
+        return self.status is LocalOperationQuiescenceStatus.QUIESCENT
+
+
+@dataclass(slots=True, frozen=True)
 class EffectHandlerResult:
     """Mailbox completion requested by a successful effect handler."""
 
@@ -266,6 +422,18 @@ class EffectSettlementResult:
     effect_id: str
     event_id: str
     key: SessionKey
+    wake_request: FencedMailboxWakeRequest | None = None
+    mailbox_id: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the optional immutable identity of the settled mailbox."""
+
+        if self.mailbox_id is None:
+            return
+        if isinstance(self.mailbox_id, bool) or not isinstance(self.mailbox_id, int):
+            raise ValueError("mailbox_id must be an integer or None")
+        if self.mailbox_id < 1:
+            raise ValueError("mailbox_id must be positive when supplied")
 
 
 @dataclass(slots=True, frozen=True)
@@ -297,6 +465,7 @@ class DurableEffectStore(Protocol):
         worker_id: str,
         effect_contracts: tuple[tuple[str, int], ...] | None = None,
         excluded_effect_contracts: tuple[tuple[str, int], ...] = (),
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ClaimedEffect | None:
         """Claim the next available effect with a newly generated claim id."""
 
@@ -305,7 +474,12 @@ class DurableEffectStore(Protocol):
     ) -> tuple[EffectSettlementResult, ...]:
         """Return raw-row quarantines committed while scanning for a claim."""
 
-    async def renew_lease(self, claim: ClaimedEffect) -> ClaimedEffect:
+    async def renew_lease(
+        self,
+        claim: ClaimedEffect,
+        *,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> ClaimedEffect:
         """Extend a lease only if ``claim_id`` is still authoritative."""
 
     async def complete_with_event(
@@ -314,6 +488,7 @@ class DurableEffectStore(Protocol):
         completion_envelope: SessionEventEnvelope,
         *,
         outcome_fence_fields: tuple[str, ...] = DEFAULT_OUTCOME_FENCE_FIELDS,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> EffectSettlementResult:
         """Atomically complete an effect and insert its completion event."""
 
@@ -323,8 +498,19 @@ class DurableEffectStore(Protocol):
         *,
         error: str,
         available_at: float,
-    ) -> None:
-        """Release the current claim to pending with a bounded retry time."""
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> EffectSettlementResult | None:
+        """Release the current claim or report a gate-driven cancellation."""
+
+    async def defer_without_attempt(
+        self,
+        claim: ClaimedEffect,
+        *,
+        reason: str,
+        available_at: float,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> EffectSettlementResult | None:
+        """Release one live claim or report a gate-driven cancellation."""
 
     async def fail_with_event(
         self,
@@ -333,6 +519,7 @@ class DurableEffectStore(Protocol):
         *,
         error: str,
         outcome_fence_fields: tuple[str, ...] = DEFAULT_OUTCOME_FENCE_FIELDS,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> EffectSettlementResult:
         """Atomically fail an effect and insert an ``EffectFailed`` event."""
 
@@ -342,20 +529,33 @@ class DurableEffectStore(Protocol):
         *,
         reason: EffectQuarantineReason,
         message: str,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> EffectSettlementResult:
         """Terminalize unsupported work with a store-owned diagnostic event."""
 
-    async def release(self, claim: ClaimedEffect, *, error: str) -> None:
-        """Immediately release a live claim during executor shutdown."""
+    async def release(
+        self,
+        claim: ClaimedEffect,
+        *,
+        error: str,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> EffectSettlementResult | None:
+        """Release a live shutdown claim or report a gate cancellation."""
 
-    async def recover_expired(self, *, worker_id: str) -> int:
-        """Return expired processing claims to pending state."""
+    async def recover_expired(
+        self,
+        *,
+        worker_id: str,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> int:
+        """Maintain expired claims and publish any durable blocker notices."""
 
     async def next_available_at(
         self,
         *,
         effect_contracts: tuple[tuple[str, int], ...] | None = None,
         excluded_effect_contracts: tuple[tuple[str, int], ...] = (),
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> float | None:
         """Return the earliest pending availability or processing lease expiry."""
 
@@ -365,9 +565,6 @@ class SessionActorWakeTarget(Protocol):
 
     def wake(self, key: SessionKey) -> Awaitable[None] | None:
         """Wake an actor without performing another mailbox write."""
-
-    def recover(self) -> Awaitable[int]:
-        """Discover and wake actors for mailbox events already committed."""
 
 
 class EffectHandler(Protocol):
@@ -407,11 +604,7 @@ class EffectHandlerRegistry:
         self._handlers: dict[tuple[str, int], EffectHandler] = {}
         self._contracts: dict[tuple[str, int], EffectExecutionContract] = {}
         self._sealed = False
-        if (
-            contract_authority is None
-            and include_builtin_contracts
-            and contracts is None
-        ):
+        if contract_authority is None and include_builtin_contracts and contracts is None:
             contract_authority = builtin_effect_contract_authority()
         if contract_authority is not None and not isinstance(
             contract_authority,
@@ -419,9 +612,7 @@ class EffectHandlerRegistry:
         ):
             raise TypeError("contract_authority must be an EffectContractAuthority")
         if contract_authority is not None and contracts is not None:
-            raise ValueError(
-                "contracts cannot be supplied with an immutable contract_authority"
-            )
+            raise ValueError("contracts cannot be supplied with an immutable contract_authority")
         self._authority_locked = contract_authority is not None
         self._effect_contract_authority = contract_authority or EffectContractAuthority(())
         if contract_authority is not None:
@@ -476,11 +667,7 @@ class EffectHandlerRegistry:
         recoverable instead of being treated as an unknown orphan.
         """
 
-        return tuple(
-            contract
-            for contract in self.contracts()
-            if contract.ref in self._handlers
-        )
+        return tuple(contract for contract in self.contracts() if contract.ref in self._handlers)
 
     def register_contract(
         self,
@@ -511,13 +698,10 @@ class EffectHandlerRegistry:
             if self._contracts[key] == contract:
                 return
             raise ValueError(
-                "effect contract is already registered: "
-                f"{contract.effect_kind}:v{contract.version}"
+                f"effect contract is already registered: {contract.effect_kind}:v{contract.version}"
             )
         self._contracts[key] = contract
-        self._effect_contract_authority = EffectContractAuthority(
-            self._contracts.values()
-        )
+        self._effect_contract_authority = EffectContractAuthority(self._contracts.values())
 
     def register(
         self,
@@ -569,9 +753,7 @@ class EffectHandlerRegistry:
             )
         key = (normalized, version)
         if key in self._handlers and not replace_existing:
-            raise ValueError(
-                f"effect handler is already registered: {normalized}:v{version}"
-            )
+            raise ValueError(f"effect handler is already registered: {normalized}:v{version}")
         self._handlers[key] = handler
 
     def resolve(
@@ -591,8 +773,7 @@ class EffectHandlerRegistry:
             return contract, self._handlers[(normalized, version)]
         except KeyError as exc:
             raise EffectHandlerNotFound(
-                "no durable effect handler is registered for "
-                f"{normalized!r} version {version}"
+                f"no durable effect handler is registered for {normalized!r} version {version}"
             ) from exc
 
     def contract_for(self, kind: str, version: int = 1) -> EffectExecutionContract:
@@ -603,8 +784,7 @@ class EffectHandlerRegistry:
             return self._contracts[(normalized, version)]
         except KeyError as exc:
             raise EffectHandlerNotFound(
-                "no durable effect contract is registered for "
-                f"{normalized!r} version {version}"
+                f"no durable effect contract is registered for {normalized!r} version {version}"
             ) from exc
 
     def effect_contracts_for_lane(
@@ -634,11 +814,7 @@ class EffectHandlerRegistry:
         """
 
         contracts = sorted(
-            (
-                contract
-                for contract in self.handled_contracts()
-                if contract.lane is lane
-            ),
+            (contract for contract in self.handled_contracts() if contract.lane is lane),
             key=lambda contract: (
                 contract.priority,
                 contract.effect_kind,
@@ -650,18 +826,12 @@ class EffectHandlerRegistry:
     def lanes(self) -> tuple[EffectLane, ...]:
         """Return lanes that own at least one registered contract."""
 
-        return tuple(
-            lane for lane in EffectLane if self.effect_contracts_for_lane(lane)
-        )
+        return tuple(lane for lane in EffectLane if self.effect_contracts_for_lane(lane))
 
     def handled_lanes(self) -> tuple[EffectLane, ...]:
         """Return lanes with at least one contract bound to a handler."""
 
-        return tuple(
-            lane
-            for lane in EffectLane
-            if self.handled_effect_contracts_for_lane(lane)
-        )
+        return tuple(lane for lane in EffectLane if self.handled_effect_contracts_for_lane(lane))
 
     def _require_mutable(self) -> None:
         if self._sealed:
@@ -677,11 +847,19 @@ class EffectExecutionContext:
     crash can occur after the write but before durable completion.
     """
 
-    def __init__(self, store: DurableEffectStore, claim: ClaimedEffect) -> None:
+    def __init__(
+        self,
+        store: DurableEffectStore,
+        claim: ClaimedEffect,
+        *,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> None:
         self._store = store
         self._claim = claim
+        self._execution_binding = execution_binding
         self._renew_lock = asyncio.Lock()
         self._revoked = False
+        self._model_execution_witness_started = False
 
     @property
     def claim(self) -> ClaimedEffect:
@@ -696,6 +874,17 @@ class EffectExecutionContext:
         return self._claim.effect
 
     @property
+    def execution_binding(self) -> FencedActorExecutionBinding | None:
+        """Return the optional target lease scoped to this handler execution.
+
+        Infrastructure handlers use this only to pass the same lease authority
+        into their own durable pre-dispatch or witness transactions. Domain
+        handlers must not persist or transform this opaque capability.
+        """
+
+        return self._execution_binding
+
+    @property
     def idempotency_key(self) -> str:
         """Return the mandatory downstream idempotency key."""
 
@@ -708,7 +897,13 @@ class EffectExecutionContext:
             if self._revoked:
                 raise EffectClaimLost("effect execution context has been revoked")
             current = self._claim
-            renewed = await self._store.renew_lease(current)
+            if self._execution_binding is None:
+                renewed = await self._store.renew_lease(current)
+            else:
+                renewed = await self._store.renew_lease(
+                    current,
+                    execution_binding=self._execution_binding,
+                )
             if renewed.claim_id != current.claim_id:
                 raise EffectClaimLost("lease renewal changed the effect claim id")
             if renewed.worker_id != current.worker_id:
@@ -723,6 +918,26 @@ class EffectExecutionContext:
 
         self._revoked = True
 
+    @property
+    def model_execution_witness_started(self) -> bool:
+        """Return whether this handler task crossed the model-call start fence."""
+
+        return self._model_execution_witness_started
+
+    def mark_model_execution_witness_started(self) -> None:
+        """Record that the executor persisted a model start witness for this task."""
+
+        self._model_execution_witness_started = True
+
+
+@dataclass(slots=True)
+class _InFlightEffectHandler:
+    """Executor-owned local task and context for one fenced handler claim."""
+
+    identity: InFlightEffectHandlerKey
+    task: asyncio.Task[EffectHandlerResult]
+    context: EffectExecutionContext
+
 
 Clock = Callable[[], float]
 
@@ -736,12 +951,16 @@ class DurableEffectExecutor:
         store: DurableEffectStore,
         handlers: EffectHandlerRegistry,
         session_registry: SessionActorWakeTarget,
+        mailbox_handoff_notifier: MailboxHandoffNotifier | None = None,
         worker_id: str | None = None,
         worker_count: int = 1,
         control_worker_count: int = 1,
         orphan_worker_count: int = 1,
         poll_interval_seconds: float = 1.0,
         renew_interval_seconds: float | None = 10.0,
+        review_execution_gate_store: ReviewExecutionGateStorePort | None = None,
+        model_execution_witness_store: ModelExecutionWitnessStorePort | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
         clock: Clock | None = None,
     ) -> None:
         """Initialize an executor without starting worker tasks.
@@ -750,12 +969,27 @@ class DurableEffectExecutor:
             store: Durable outbox and atomic settlement implementation.
             handlers: Registry of async effect handlers.
             session_registry: Actor registry woken only after settlement commits.
+            mailbox_handoff_notifier: Optional advisory sink for a committed
+                admission-fenced mailbox id. It is never an authorization
+                boundary and does not activate or bind an Actor v2 target.
             worker_id: Optional stable process-level worker prefix.
             worker_count: Worker count for planner and default lanes.
             control_worker_count: Dedicated workers reserved for control effects.
             orphan_worker_count: Workers that terminally fail unknown effect kinds.
             poll_interval_seconds: Recovery polling bound when no wake is received.
-            renew_interval_seconds: Automatic lease renewal cadence, or ``None``.
+            renew_interval_seconds: Automatic lease renewal cadence, or ``None``
+                for non-review effects. Review workflow effects require renewal
+                before their handler task can start.
+            review_execution_gate_store: Durable start/finish witness store for
+                ``run_review_workflow``. Review work remains fail-closed when
+                this port is not composed.
+            model_execution_witness_store: Optional durable start/finish
+                witness store for non-review model workflow effects. It is
+                opt-in so direct executor users retain their historic behavior;
+                the inactive Actor v2 assembly always composes this port.
+            execution_binding: Optional exact target lease capability. When
+                supplied, this executor is restricted to one owner request and
+                must be started with :meth:`start_fenced`.
             clock: Injectable wall clock for retry and event timestamps.
         """
 
@@ -771,35 +1005,57 @@ class DurableEffectExecutor:
             raise ValueError("poll_interval_seconds must be finite")
         if renew_interval_seconds is not None and renew_interval_seconds <= 0:
             raise ValueError("renew_interval_seconds must be positive or None")
-        if renew_interval_seconds is not None and not math.isfinite(
-            renew_interval_seconds
-        ):
+        if renew_interval_seconds is not None and not math.isfinite(renew_interval_seconds):
             raise ValueError("renew_interval_seconds must be finite or None")
+        if mailbox_handoff_notifier is not None and not callable(
+            getattr(mailbox_handoff_notifier, "notify", None)
+        ):
+            raise TypeError("mailbox_handoff_notifier must implement notify(mailbox_id)")
+        if execution_binding is not None and not isinstance(
+            execution_binding,
+            FencedActorExecutionBinding,
+        ):
+            raise TypeError("execution_binding must be a FencedActorExecutionBinding")
+        if execution_binding is not None and renew_interval_seconds is None:
+            raise ValueError(
+                "a fenced effect executor requires automatic lease renewal"
+            )
         self._store = store
         self._handlers = handlers
         self._effect_contract_authority: EffectContractAuthority | None = None
         self._persistence_domain: object | None = None
         self._session_registry = session_registry
+        self._mailbox_handoff_notifier = mailbox_handoff_notifier
         self.worker_id = str(worker_id or f"effect-executor:{uuid.uuid4().hex}")
         self._worker_count = worker_count
         self._control_worker_count = control_worker_count
         self._orphan_worker_count = orphan_worker_count
         self._poll_interval_seconds = float(poll_interval_seconds)
         self._renew_interval_seconds = renew_interval_seconds
+        self._review_execution_gate_store = review_execution_gate_store
+        self._model_execution_witness_store = model_execution_witness_store
+        self._execution_binding = execution_binding
         self._clock = clock or time.time
         self._lane_wake_events = {lane: asyncio.Event() for lane in EffectLane}
         self._idle_event = asyncio.Event()
         self._idle_event.set()
         self._start_lock = asyncio.Lock()
-        self._wake_recovery_lock = asyncio.Lock()
+        self._legacy_wake_recovery_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
         self._handler_tasks: set[asyncio.Task[None]] = set()
         self._cancellation_tails: set[asyncio.Task[Any]] = set()
+        self._review_execution_finish_tasks: set[asyncio.Task[ReviewExecutionPermit]] = set()
+        self._model_execution_finish_tasks: set[asyncio.Task[ModelExecutionPermit]] = set()
+        self._in_flight_handler_tasks: dict[
+            InFlightEffectHandlerKey,
+            _InFlightEffectHandler,
+        ] = {}
         self._active_claims: dict[str, ClaimedEffect] = {}
-        self._pending_wakes: set[SessionKey] = set()
+        self._pending_legacy_wakes: set[SessionKey] = set()
         self._binding_failure: EffectStoreBindingChanged | None = None
         self._closing = False
         self._drain_on_shutdown = False
+        self._recover_expired_claims = True
 
     @property
     def started(self) -> bool:
@@ -810,9 +1066,7 @@ class DurableEffectExecutor:
         known effect contract and therefore do not make it ``started``.
         """
 
-        return self.healthy and any(
-            not task.done() for task in self._handler_tasks
-        )
+        return self.healthy and any(not task.done() for task in self._handler_tasks)
 
     @property
     def running(self) -> bool:
@@ -836,9 +1090,7 @@ class DurableEffectExecutor:
     def has_runnable_handlers(self) -> bool:
         """Return whether the registry currently has a non-orphan handler lane."""
 
-        return any(
-            lane is not EffectLane.ORPHAN for lane in self._handlers.handled_lanes()
-        )
+        return any(lane is not EffectLane.ORPHAN for lane in self._handlers.handled_lanes())
 
     @property
     def handler_registry(self) -> EffectHandlerRegistry:
@@ -857,9 +1109,7 @@ class DurableEffectExecutor:
 
         authority = self._store.effect_contract_authority
         if not isinstance(authority, EffectContractAuthority):
-            raise TypeError(
-                "durable effect store must expose an EffectContractAuthority"
-            )
+            raise TypeError("durable effect store must expose an EffectContractAuthority")
         if not authority.sealed:
             raise TypeError("durable effect store authority must be sealed")
         composed_authority = self._effect_contract_authority
@@ -897,13 +1147,37 @@ class DurableEffectExecutor:
         """Verify authority and persistence identities remain immutable."""
 
         _ = self.effect_contract_authority
-        _ = self.persistence_domain
+        persistence_domain = self.persistence_domain
+        gate_store = self._review_execution_gate_store
+        if gate_store is not None:
+            gate_domain = gate_store.persistence_domain
+            if gate_domain is None:
+                raise TypeError("review execution gate store persistence_domain must not be None")
+            if gate_domain is not persistence_domain:
+                raise EffectStoreBindingChanged(
+                    "review execution gate store uses a different persistence domain"
+                )
+        model_witness_store = self._model_execution_witness_store
+        if model_witness_store is not None:
+            witness_domain = model_witness_store.persistence_domain
+            if witness_domain is None:
+                raise TypeError("model execution witness store persistence_domain must not be None")
+            if witness_domain is not persistence_domain:
+                raise EffectStoreBindingChanged(
+                    "model execution witness store uses a different persistence domain"
+                )
 
     @property
     def closed(self) -> bool:
         """Return whether executor shutdown has begun."""
 
         return self._closing
+
+    @property
+    def execution_binding(self) -> FencedActorExecutionBinding | None:
+        """Return the optional durable target lease capability for this executor."""
+
+        return self._execution_binding
 
     def wake(self) -> None:
         """Notify workers that committed outbox effects may be available."""
@@ -916,13 +1190,56 @@ class DurableEffectExecutor:
     async def start(self) -> int:
         """Recover expired claims and start supervised effect workers."""
 
+        if self._execution_binding is not None:
+            raise RuntimeError("a fenced effect executor must use start_fenced")
+        return await self._start(recover_expired=True)
+
+    async def start_clean_session(self) -> int:
+        """Start workers after a harness has proven an empty durable domain.
+
+        This intentionally does not release expired claims before or during
+        polling. It is a narrow lifecycle primitive for
+        :class:`ActorRuntimeHarness`; callers still need an external ingress
+        and ownership controller before they can create new durable work.
+        """
+
+        if self._execution_binding is not None:
+            raise RuntimeError("a fenced effect executor must use start_fenced")
+        return await self._start(recover_expired=False)
+
+    async def start_fenced(self) -> int:
+        """Start one scoped executor without broad expired-effect recovery.
+
+        A target lease grants authority for one current owner request only. It
+        cannot be used to scan or recover other sessions' historical effects.
+        A later lifecycle controller must provide a separately fenced recovery
+        protocol before restarting model/external-action work after a crash.
+        """
+
+        if self._execution_binding is None:
+            raise RuntimeError("start_fenced requires an execution_binding")
+        return await self._start(recover_expired=False)
+
+    async def _start(self, *, recover_expired: bool) -> int:
+        """Start worker tasks under one already-selected recovery policy."""
+
         async with self._start_lock:
             self._validate_store_binding()
             if self._tasks:
                 return 0
             if self._closing:
                 raise RuntimeError("a closed durable effect executor cannot be restarted")
-            recovered = await self._store.recover_expired(worker_id=self.worker_id)
+            self._recover_expired_claims = bool(recover_expired)
+            recovered = 0
+            if self._execution_binding is not None:
+                # This is a read-only liveness boundary. It prevents a target
+                # that has already lost its lease from spawning even a single
+                # handler task, while deliberately avoiding broad recovery.
+                await self._store.next_available_at(
+                    execution_binding=self._execution_binding,
+                )
+            if self._recover_expired_claims and self._execution_binding is None:
+                recovered = await self._store.recover_expired(worker_id=self.worker_id)
             self._validate_store_binding()
             tasks: list[asyncio.Task[None]] = []
             handler_tasks: list[asyncio.Task[None]] = []
@@ -930,17 +1247,12 @@ class DurableEffectExecutor:
                 if lane is EffectLane.ORPHAN:
                     continue
                 count = (
-                    self._control_worker_count
-                    if lane is EffectLane.CONTROL
-                    else self._worker_count
+                    self._control_worker_count if lane is EffectLane.CONTROL else self._worker_count
                 )
                 lane_tasks = [
                     asyncio.create_task(
                         self._worker_loop(lane, index),
-                        name=(
-                            f"agent-effect-executor:{self.worker_id}:"
-                            f"{lane.value}:{index}"
-                        ),
+                        name=(f"agent-effect-executor:{self.worker_id}:{lane.value}:{index}"),
                     )
                     for index in range(count)
                 ]
@@ -950,8 +1262,7 @@ class DurableEffectExecutor:
                 asyncio.create_task(
                     self._worker_loop(EffectLane.ORPHAN, index),
                     name=(
-                        f"agent-effect-executor:{self.worker_id}:"
-                        f"{EffectLane.ORPHAN.value}:{index}"
+                        f"agent-effect-executor:{self.worker_id}:{EffectLane.ORPHAN.value}:{index}"
                     ),
                 )
                 for index in range(self._orphan_worker_count)
@@ -970,35 +1281,23 @@ class DurableEffectExecutor:
         """Claim and execute at most one currently available effect."""
 
         self._validate_store_binding()
-        await self._recover_pending_wakes()
+        effective_worker_id = worker_id or self.worker_id
+        if self._recover_expired_claims and self._execution_binding is None:
+            await self._store.recover_expired(worker_id=effective_worker_id)
+        self._validate_store_binding()
+        await self._recover_pending_legacy_wakes()
         effect_contracts, excluded_effect_contracts = self._claim_filter(lane)
         claim = await self._store.claim_next(
-            worker_id=worker_id or self.worker_id,
+            worker_id=effective_worker_id,
             effect_contracts=effect_contracts,
             excluded_effect_contracts=excluded_effect_contracts,
+            **self._execution_binding_kwargs(),
         )
         if claim is not None:
             self._idle_event.clear()
             self._active_claims[claim.claim_id] = claim
         try:
-            self._validate_store_binding()
-            quarantine_notifications = (
-                await self._store.drain_quarantine_notifications()
-            )
-            self._validate_store_binding()
-            notified_keys: set[SessionKey] = set()
-            for notification in quarantine_notifications:
-                if notification.status not in {
-                    EffectSettlementStatus.COMMITTED,
-                    EffectSettlementStatus.ALREADY_COMMITTED,
-                }:
-                    raise RuntimeError(
-                        "effect store returned an uncommitted quarantine notification"
-                    )
-                notified_keys.add(notification.key)
-            self._pending_wakes.update(notified_keys)
-            for key in notified_keys:
-                await self._wake_after_commit(key)
+            await self._drain_store_notifications()
         except asyncio.CancelledError:
             if claim is not None:
                 await self._release_after_cancellation(claim)
@@ -1027,6 +1326,213 @@ class DurableEffectExecutor:
 
         await self._idle_event.wait()
 
+    def local_in_flight_handler_keys(
+        self,
+        *,
+        key: SessionKey,
+        operation_id: str,
+        effect_kind: str | None = None,
+        effect_id: str | None = None,
+    ) -> tuple[InFlightEffectHandlerKey, ...]:
+        """Return currently live handler identities for one local operation.
+
+        The returned identities are drawn only from handler tasks created by
+        this executor instance. An empty tuple is not a cross-process lease or
+        side-effect safety proof; callers need durable cancellation evidence
+        before treating an operation as globally stopped.
+        """
+
+        normalized_key = self._require_session_key(key)
+        normalized_operation_id = self._require_operation_id(operation_id)
+        normalized_effect_kind = self._optional_effect_identity_part(
+            effect_kind,
+            field_name="effect_kind",
+        )
+        normalized_effect_id = self._optional_effect_identity_part(
+            effect_id,
+            field_name="effect_id",
+        )
+        return tuple(
+            tracked.identity
+            for tracked in self._matching_local_handler_tasks(
+                key=normalized_key,
+                operation_id=normalized_operation_id,
+                effect_kind=normalized_effect_kind,
+                effect_id=normalized_effect_id,
+            )
+        )
+
+    async def ensure_local_operation_quiescent(
+        self,
+        *,
+        key: SessionKey,
+        operation_id: str,
+        cancel: bool = True,
+        timeout_seconds: float | None = None,
+        effect_kind: str | None = None,
+        effect_id: str | None = None,
+    ) -> LocalOperationQuiescence:
+        """Cancel and await this executor's live handlers for one operation.
+
+        This method is intentionally useful only as a local execution-control
+        primitive. It revokes matching handler contexts before requesting task
+        cancellation, then waits for those actual task objects to finish. A
+        durable control handler must still obtain store-owned proof before it
+        can claim cross-process operation quiescence.
+
+        Args:
+            key: Exact durable session that owns the operation.
+            operation_id: Exact durable operation identifier to inspect.
+            cancel: Whether to request cancellation before waiting. ``False``
+                only observes natural completion.
+            timeout_seconds: Optional local wait bound. Timeout does not
+                unregister or discard still-running handler tasks.
+            effect_kind: Optional exact durable effect kind filter.
+            effect_id: Optional exact durable effect id filter.
+
+        Returns:
+            A report explicitly scoped to this process. ``NO_LOCAL_HANDLER_TASKS``
+            means no matching local task was found. ``QUIESCENT`` means one or
+            more locally observed tasks finished before the report. Neither is
+            a distributed quiescence proof.
+        """
+
+        normalized_key = self._require_session_key(key)
+        normalized_operation_id = self._require_operation_id(operation_id)
+        normalized_effect_kind = self._optional_effect_identity_part(
+            effect_kind,
+            field_name="effect_kind",
+        )
+        normalized_effect_id = self._optional_effect_identity_part(
+            effect_id,
+            field_name="effect_id",
+        )
+        timeout = self._validate_quiescence_timeout(timeout_seconds)
+        deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
+        matched: dict[InFlightEffectHandlerKey, None] = {}
+        cancelled: dict[InFlightEffectHandlerKey, None] = {}
+
+        while True:
+            tracked_handlers = self._matching_local_handler_tasks(
+                key=normalized_key,
+                operation_id=normalized_operation_id,
+                effect_kind=normalized_effect_kind,
+                effect_id=normalized_effect_id,
+            )
+            if not tracked_handlers:
+                status = (
+                    LocalOperationQuiescenceStatus.QUIESCENT
+                    if matched
+                    else LocalOperationQuiescenceStatus.NO_LOCAL_HANDLER_TASKS
+                )
+                return self._local_operation_quiescence_report(
+                    status=status,
+                    key=normalized_key,
+                    operation_id=normalized_operation_id,
+                    matched=matched,
+                    cancelled=cancelled,
+                )
+
+            current_task = asyncio.current_task()
+            if any(tracked.task is current_task for tracked in tracked_handlers):
+                raise RuntimeError("an effect handler cannot wait for its own operation quiescence")
+
+            for tracked in tracked_handlers:
+                matched.setdefault(tracked.identity, None)
+                if cancel and self._cancel_in_flight_handler_task(tracked):
+                    cancelled.setdefault(tracked.identity, None)
+
+            remaining_timeout = self._remaining_quiescence_timeout(deadline)
+            _done, pending = await asyncio.wait(
+                tuple(tracked.task for tracked in tracked_handlers),
+                timeout=remaining_timeout,
+            )
+            if pending:
+                remaining = self._matching_local_handler_tasks(
+                    key=normalized_key,
+                    operation_id=normalized_operation_id,
+                    effect_kind=normalized_effect_kind,
+                    effect_id=normalized_effect_id,
+                )
+                if not remaining:
+                    continue
+                return self._local_operation_quiescence_report(
+                    status=LocalOperationQuiescenceStatus.TIMED_OUT,
+                    key=normalized_key,
+                    operation_id=normalized_operation_id,
+                    matched=matched,
+                    cancelled=cancelled,
+                    remaining=remaining,
+                )
+
+    async def ensure_local_executor_quiescent(
+        self,
+        *,
+        cancel: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> LocalEffectExecutorQuiescence:
+        """Cancel and observe every handler task owned by this executor.
+
+        This is a local task observation, not a distributed stop proof. A
+        target-retirement controller must first stop this executor from
+        claiming new work, then require a ``QUIESCENT`` report before it may
+        release the target lease that authorizes those tasks.
+
+        Args:
+            cancel: Whether to request cancellation before waiting. ``False``
+                only observes natural completion.
+            timeout_seconds: Optional local wait bound. A timeout leaves live
+                tasks registered so a later caller can continue observing them.
+
+        Returns:
+            A deterministic report of tasks observed by this process. An empty
+            lookup is intentionally distinct from confirmed quiescence.
+        """
+
+        timeout = self._validate_quiescence_timeout(timeout_seconds)
+        deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
+        matched: dict[InFlightEffectHandlerKey, None] = {}
+        cancelled: dict[InFlightEffectHandlerKey, None] = {}
+
+        while True:
+            tracked_handlers = self._all_local_handler_tasks()
+            if not tracked_handlers:
+                status = (
+                    LocalOperationQuiescenceStatus.QUIESCENT
+                    if matched
+                    else LocalOperationQuiescenceStatus.NO_LOCAL_HANDLER_TASKS
+                )
+                return self._local_executor_quiescence_report(
+                    status=status,
+                    matched=matched,
+                    cancelled=cancelled,
+                )
+
+            current_task = asyncio.current_task()
+            if any(tracked.task is current_task for tracked in tracked_handlers):
+                raise RuntimeError("an effect handler cannot wait for executor quiescence")
+
+            for tracked in tracked_handlers:
+                matched.setdefault(tracked.identity, None)
+                if cancel and self._cancel_in_flight_handler_task(tracked):
+                    cancelled.setdefault(tracked.identity, None)
+
+            remaining_timeout = self._remaining_quiescence_timeout(deadline)
+            _done, pending = await asyncio.wait(
+                tuple(tracked.task for tracked in tracked_handlers),
+                timeout=remaining_timeout,
+            )
+            if pending:
+                remaining = self._all_local_handler_tasks()
+                if not remaining:
+                    continue
+                return self._local_executor_quiescence_report(
+                    status=LocalOperationQuiescenceStatus.TIMED_OUT,
+                    matched=matched,
+                    cancelled=cancelled,
+                    remaining=remaining,
+                )
+
     async def shutdown(self, *, drain: bool = False) -> None:
         """Stop workers and leave every interrupted claim durably recoverable.
 
@@ -1052,6 +1558,18 @@ class DurableEffectExecutor:
             await asyncio.gather(*tasks, return_exceptions=True)
         for tail in list(self._cancellation_tails):
             tail.cancel()
+        # A review start witness may only be acknowledged after its real
+        # handler task ends. Do not cancel these finish tasks during shutdown;
+        # doing so would turn a local stop into a false distributed quiescence
+        # proof on the next process.
+        review_finish_tasks = list(self._review_execution_finish_tasks)
+        model_finish_tasks = list(self._model_execution_finish_tasks)
+        if review_finish_tasks or model_finish_tasks:
+            await asyncio.gather(
+                *review_finish_tasks,
+                *model_finish_tasks,
+                return_exceptions=True,
+            )
         self._tasks.clear()
         self._handler_tasks.clear()
         self._active_claims.clear()
@@ -1083,7 +1601,7 @@ class DurableEffectExecutor:
             if self._closing:
                 return
             try:
-                await self._recover_pending_wakes()
+                await self._recover_pending_legacy_wakes()
                 await self._wait_for_work(lane)
             except EffectStoreBindingChanged as exc:
                 self._mark_binding_failure(exc)
@@ -1102,6 +1620,7 @@ class DurableEffectExecutor:
             next_available_at = await self._store.next_available_at(
                 effect_contracts=effect_contracts,
                 excluded_effect_contracts=excluded_effect_contracts,
+                **self._execution_binding_kwargs(),
             )
             self._validate_store_binding()
         except EffectStoreBindingChanged:
@@ -1125,7 +1644,12 @@ class DurableEffectExecutor:
         lane: EffectLane | None,
     ) -> EffectRunResult:
         self._validate_store_binding()
-        context = EffectExecutionContext(self._store, initial_claim)
+        self._validate_claim_execution_binding(initial_claim)
+        context = EffectExecutionContext(
+            self._store,
+            initial_claim,
+            execution_binding=self._execution_binding,
+        )
         try:
             contract = self._handlers.contract_for(
                 initial_claim.effect.kind,
@@ -1196,21 +1720,48 @@ class DurableEffectExecutor:
                 context.claim,
                 completion,
                 outcome_fence_fields=resolved_outcome_fence_fields(contract),
+                **self._execution_binding_kwargs(),
             )
             self._validate_store_binding()
         except asyncio.CancelledError:
-            await self._release_after_cancellation(context.claim)
+            if not context.model_execution_witness_started:
+                await self._release_after_cancellation(context.claim)
             raise
+        except FencedWakeTargetLeaseError as exc:
+            context.revoke()
+            raise FencedEffectExecutionLeaseLost(
+                "fenced effect execution lost target lease authority"
+            ) from exc
         except EffectStoreBindingChanged:
             context.revoke()
             raise
         except EffectClaimLost as exc:
             return self._claim_lost_result(context.claim, exc)
+        except EffectExecutionCancelled as exc:
+            return EffectRunResult(
+                status=EffectRunStatus.CANCELLED,
+                effect_id=context.claim.effect.effect_id,
+                attempt_count=context.claim.attempt_count,
+                error=exc.reason,
+            )
+        except EffectExecutionDeferred as exc:
+            return await self._defer_without_attempt(context.claim, exc)
         except Exception as exc:
-            return await self._retry_or_fail(context.claim, exc, contract)
+            return await self._retry_or_fail(
+                context.claim,
+                exc,
+                contract,
+                force_terminal=context.model_execution_witness_started,
+            )
 
+        if settlement.status is EffectSettlementStatus.CANCELLED:
+            return EffectRunResult(
+                status=EffectRunStatus.CANCELLED,
+                effect_id=context.claim.effect.effect_id,
+                attempt_count=context.claim.attempt_count,
+            )
         self._validate_settlement(context.claim, completion, settlement)
-        await self._wake_after_commit(context.claim.key)
+        await self._wake_after_settlement(settlement)
         run_status = (
             EffectRunStatus.SKIPPED
             if settlement.status == EffectSettlementStatus.PRECONDITION_SKIPPED
@@ -1229,21 +1780,54 @@ class DurableEffectExecutor:
         context: EffectExecutionContext,
         contract: EffectExecutionContract,
     ) -> EffectHandlerResult:
-        handler_task = asyncio.create_task(
-            handler(context),
-            name=f"agent-effect-handler:{context.effect.effect_id}",
-        )
-        renew_task: asyncio.Task[None] | None = None
-        if self._renew_interval_seconds is not None:
-            renew_task = asyncio.create_task(
-                self._renew_while_running(context, handler_task),
-                name=f"agent-effect-renew:{context.effect.effect_id}",
-            )
-        timeout_task = asyncio.create_task(
-            asyncio.sleep(contract.timeout_seconds),
-            name=f"agent-effect-timeout:{context.effect.effect_id}",
-        )
+        if self._execution_binding is not None:
+            # Every scoped handler, including control-only handlers that do
+            # not create a model witness or external-action receipt, crosses
+            # one fresh target-lease check before Python work can begin.
+            await context.renew_lease()
+        review_claim = await self._begin_review_execution(context)
+        model_claim = await self._begin_model_execution(context)
         try:
+            handler_task = asyncio.create_task(
+                handler(context),
+                name=f"agent-effect-handler:{context.effect.effect_id}",
+            )
+        except BaseException:
+            if model_claim is not None:
+                await self._finish_model_execution_without_task(model_claim)
+            if review_claim is not None:
+                permit = await self._finish_review_execution_without_task(review_claim)
+                self._raise_if_review_execution_cancelled(permit)
+            raise
+
+        review_finish_task = (
+            self._start_review_execution_finish_task(handler_task, review_claim)
+            if review_claim is not None
+            else None
+        )
+        model_finish_task = (
+            self._start_model_execution_finish_task(handler_task, model_claim)
+            if model_claim is not None
+            else None
+        )
+        handler_identity: InFlightEffectHandlerKey | None = None
+        renew_task: asyncio.Task[None] | None = None
+        timeout_task: asyncio.Task[None] | None = None
+        result: EffectHandlerResult | None = None
+        try:
+            handler_identity = self._register_in_flight_handler_task(
+                context,
+                handler_task,
+            )
+            if self._renew_interval_seconds is not None:
+                renew_task = asyncio.create_task(
+                    self._renew_while_running(context, handler_task),
+                    name=f"agent-effect-renew:{context.effect.effect_id}",
+                )
+            timeout_task = asyncio.create_task(
+                asyncio.sleep(contract.timeout_seconds),
+                name=f"agent-effect-timeout:{context.effect.effect_id}",
+            )
             watched: set[asyncio.Task[Any]] = {handler_task, timeout_task}
             if renew_task is not None:
                 watched.add(renew_task)
@@ -1254,24 +1838,24 @@ class DurableEffectExecutor:
             if timeout_task in done and not handler_task.done():
                 context.revoke()
                 handler_task.cancel()
-                self._observe_cancellation_tail(handler_task)
-                raise TimeoutError(
-                    f"effect handler exceeded {contract.timeout_seconds:g} seconds"
-                )
+                if review_finish_task is None:
+                    self._observe_cancellation_tail(handler_task)
+                raise TimeoutError(f"effect handler exceeded {contract.timeout_seconds:g} seconds")
             if renew_task is not None and renew_task in done and not handler_task.done():
                 renewal_error = renew_task.exception()
                 context.revoke()
                 handler_task.cancel()
-                self._observe_cancellation_tail(handler_task)
+                if review_finish_task is None:
+                    self._observe_cancellation_tail(handler_task)
                 if renewal_error is None:
                     raise EffectClaimLost("lease renewal stopped before handler completion")
                 raise renewal_error
             result = await handler_task
             if not isinstance(result, EffectHandlerResult):
                 raise TypeError("effect handlers must return EffectHandlerResult")
-            return result
         finally:
-            timeout_task.cancel()
+            if timeout_task is not None:
+                timeout_task.cancel()
             if renew_task is not None and not renew_task.done():
                 renew_task.cancel()
             if renew_task is not None:
@@ -1279,8 +1863,305 @@ class DurableEffectExecutor:
             if not handler_task.done():
                 context.revoke()
                 handler_task.cancel()
-                self._observe_cancellation_tail(handler_task)
-            await asyncio.gather(timeout_task, return_exceptions=True)
+                if review_finish_task is None:
+                    self._observe_cancellation_tail(handler_task)
+            if review_finish_task is not None:
+                permit = await self._await_review_execution_finish(review_finish_task)
+                self._raise_if_review_execution_cancelled(permit)
+            if model_finish_task is not None:
+                permit = await self._await_model_execution_finish(model_finish_task)
+                self._raise_if_model_execution_deferred(permit)
+            elif handler_identity is not None and handler_task.done():
+                self._unregister_in_flight_handler_task(
+                    handler_identity,
+                    handler_task,
+                )
+            if timeout_task is not None:
+                await asyncio.gather(timeout_task, return_exceptions=True)
+
+        assert result is not None
+        return result
+
+    async def _begin_review_execution(
+        self,
+        context: EffectExecutionContext,
+    ) -> ReviewExecutionClaim | None:
+        """Persist a review start witness before creating its handler task."""
+
+        if context.effect.kind != "run_review_workflow":
+            return None
+        if self._renew_interval_seconds is None:
+            raise EffectExecutionConfigurationError(
+                "run_review_workflow requires automatic effect lease renewal"
+            )
+        gate_store = self._review_execution_gate_store
+        if gate_store is None:
+            raise EffectExecutionDeferred(
+                "review_execution_gate_store_unconfigured",
+                delay_seconds=1.0,
+            )
+        claim = ReviewExecutionClaim(
+            key=context.claim.key,
+            ownership_generation=context.effect.ownership_generation,
+            review_effect_id=context.effect.effect_id,
+            review_operation_id=context.effect.operation_id,
+            review_effect_kind=context.effect.kind,
+            review_contract_version=context.effect.contract_version,
+            review_contract_signature=context.effect.contract_signature,
+            claim_id=context.claim.claim_id,
+            worker_id=context.claim.worker_id,
+        )
+        permit = await gate_store.begin_execution(
+            claim,
+            **self._execution_binding_kwargs(),
+        )
+        if permit.claim != claim:
+            raise EffectStoreBindingChanged(
+                "review execution gate store returned a different claim identity"
+            )
+        if permit.cancelled:
+            raise EffectExecutionCancelled(
+                "review_execution_cancelled_before_task_start:" + permit.cancellation_effect_id
+            )
+        if permit.deferred:
+            raise EffectExecutionDeferred(permit.blocker_code, delay_seconds=1.0)
+        if permit.disposition is not ReviewExecutionPermitDisposition.STARTED:
+            raise EffectStoreBindingChanged(
+                "review execution gate store returned an unsupported permit"
+            )
+        return claim
+
+    async def _begin_model_execution(
+        self,
+        context: EffectExecutionContext,
+    ) -> ModelExecutionClaim | None:
+        """Persist a non-review model start witness before creating its task."""
+
+        if context.effect.kind not in MODEL_EXECUTION_WITNESSED_EFFECT_KINDS:
+            return None
+        witness_store = self._model_execution_witness_store
+        if witness_store is None:
+            return None
+        claim = ModelExecutionClaim(
+            key=context.claim.key,
+            ownership_generation=context.effect.ownership_generation,
+            effect_id=context.effect.effect_id,
+            operation_id=context.effect.operation_id,
+            effect_kind=context.effect.kind,
+            contract_version=context.effect.contract_version,
+            contract_signature=context.effect.contract_signature,
+            claim_id=context.claim.claim_id,
+            worker_id=context.claim.worker_id,
+        )
+        permit = await witness_store.begin_execution(
+            claim,
+            **self._execution_binding_kwargs(),
+        )
+        if permit.claim != claim:
+            raise EffectStoreBindingChanged(
+                "model execution witness store returned a different claim identity"
+            )
+        if permit.cancelled:
+            raise EffectExecutionCancelled(
+                "model_execution_cancelled_before_task_start:" + permit.cancellation_effect_id
+            )
+        if permit.deferred:
+            raise EffectExecutionDeferred(permit.blocker_code, delay_seconds=1.0)
+        if permit.disposition is not ModelExecutionPermitDisposition.STARTED:
+            raise EffectStoreBindingChanged(
+                "model execution witness store returned an unsupported permit"
+            )
+        context.mark_model_execution_witness_started()
+        return claim
+
+    async def _finish_review_execution_without_task(
+        self,
+        claim: ReviewExecutionClaim,
+    ) -> ReviewExecutionPermit:
+        """Close a start witness after task creation itself failed."""
+
+        gate_store = self._review_execution_gate_store
+        assert gate_store is not None
+        return await gate_store.finish_execution(
+            claim,
+            **self._execution_binding_kwargs(),
+        )
+
+    async def _finish_model_execution_without_task(
+        self,
+        claim: ModelExecutionClaim,
+    ) -> ModelExecutionPermit:
+        """Close a generic start witness after task creation itself failed."""
+
+        witness_store = self._model_execution_witness_store
+        assert witness_store is not None
+        return await witness_store.finish_execution(
+            claim,
+            **self._execution_binding_kwargs(),
+        )
+
+    def _start_review_execution_finish_task(
+        self,
+        handler_task: asyncio.Task[EffectHandlerResult],
+        claim: ReviewExecutionClaim,
+    ) -> asyncio.Task[ReviewExecutionPermit]:
+        """Ensure a review witness is finished only after its real task ends."""
+
+        finish_task = asyncio.create_task(
+            self._finish_review_execution_after_handler(handler_task, claim),
+            name=f"agent-review-execution-finish:{claim.review_effect_id}:{claim.claim_id}",
+        )
+        self._review_execution_finish_tasks.add(finish_task)
+
+        def _finished(completed: asyncio.Task[ReviewExecutionPermit]) -> None:
+            self._review_execution_finish_tasks.discard(completed)
+            if completed.cancelled():
+                logger.critical(
+                    "review execution finish witness task was cancelled",
+                    extra={"effect_id": claim.review_effect_id, "claim_id": claim.claim_id},
+                )
+                return
+            try:
+                error = completed.exception()
+            except asyncio.CancelledError:
+                return
+            if error is not None:
+                logger.error(
+                    "failed to persist review execution finish witness",
+                    extra={
+                        "effect_id": claim.review_effect_id,
+                        "claim_id": claim.claim_id,
+                    },
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        finish_task.add_done_callback(_finished)
+        return finish_task
+
+    def _start_model_execution_finish_task(
+        self,
+        handler_task: asyncio.Task[EffectHandlerResult],
+        claim: ModelExecutionClaim,
+    ) -> asyncio.Task[ModelExecutionPermit]:
+        """Persist generic finish evidence only after the real task exits."""
+
+        finish_task = asyncio.create_task(
+            self._finish_model_execution_after_handler(handler_task, claim),
+            name=f"agent-model-execution-finish:{claim.effect_id}:{claim.claim_id}",
+        )
+        self._model_execution_finish_tasks.add(finish_task)
+
+        def _finished(completed: asyncio.Task[ModelExecutionPermit]) -> None:
+            self._model_execution_finish_tasks.discard(completed)
+            if completed.cancelled():
+                logger.critical(
+                    "model execution finish witness task was cancelled",
+                    extra={"effect_id": claim.effect_id, "claim_id": claim.claim_id},
+                )
+                return
+            try:
+                error = completed.exception()
+            except asyncio.CancelledError:
+                return
+            if error is not None:
+                logger.error(
+                    "failed to persist model execution finish witness",
+                    extra={"effect_id": claim.effect_id, "claim_id": claim.claim_id},
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        finish_task.add_done_callback(_finished)
+        return finish_task
+
+    async def _finish_review_execution_after_handler(
+        self,
+        handler_task: asyncio.Task[EffectHandlerResult],
+        claim: ReviewExecutionClaim,
+    ) -> ReviewExecutionPermit:
+        """Wait for an actual task exit, then record the durable finish witness."""
+
+        try:
+            await asyncio.shield(handler_task)
+        except BaseException:
+            # A handler exception or its own cancellation makes its task done.
+            # Cancellation of this observer does not: leaving the witness
+            # running is the only honest durable result while the handler may
+            # still be alive.
+            if not handler_task.done():
+                raise
+        gate_store = self._review_execution_gate_store
+        assert gate_store is not None
+        return await gate_store.finish_execution(
+            claim,
+            **self._execution_binding_kwargs(),
+        )
+
+    async def _finish_model_execution_after_handler(
+        self,
+        handler_task: asyncio.Task[EffectHandlerResult],
+        claim: ModelExecutionClaim,
+    ) -> ModelExecutionPermit:
+        """Wait for a task exit, then persist its generic model finish witness."""
+
+        try:
+            await asyncio.shield(handler_task)
+        except BaseException:
+            if not handler_task.done():
+                raise
+        witness_store = self._model_execution_witness_store
+        assert witness_store is not None
+        return await witness_store.finish_execution(
+            claim,
+            **self._execution_binding_kwargs(),
+        )
+
+    @staticmethod
+    async def _await_review_execution_finish(
+        finish_task: asyncio.Task[ReviewExecutionPermit],
+    ) -> ReviewExecutionPermit:
+        """Await a durable finish tail without cancelling it with the caller."""
+
+        return await asyncio.shield(finish_task)
+
+    @staticmethod
+    async def _await_model_execution_finish(
+        finish_task: asyncio.Task[ModelExecutionPermit],
+    ) -> ModelExecutionPermit:
+        """Await generic finish evidence without cancelling its observer tail."""
+
+        return await asyncio.shield(finish_task)
+
+    @staticmethod
+    def _raise_if_review_execution_cancelled(
+        permit: ReviewExecutionPermit,
+    ) -> None:
+        """Turn a fenced finish permit into the executor's no-mailbox outcome."""
+
+        if permit.cancelled:
+            raise EffectExecutionCancelled(
+                "review_execution_cancelled_after_task_exit:" + permit.cancellation_effect_id
+            )
+        if permit.disposition is not ReviewExecutionPermitDisposition.STARTED:
+            raise EffectStoreBindingChanged(
+                "review execution finish returned an unsupported permit"
+            )
+
+    @staticmethod
+    def _raise_if_model_execution_deferred(
+        permit: ModelExecutionPermit,
+    ) -> None:
+        """Keep unsettled generic evidence in processing rather than retrying it."""
+
+        if permit.cancelled:
+            raise EffectExecutionCancelled(
+                "model_execution_cancelled_after_task_exit:" + permit.cancellation_effect_id
+            )
+        if permit.deferred:
+            raise EffectClaimLost(
+                "model execution witness became unresolved: " + permit.blocker_code
+            )
+        if permit.disposition is not ModelExecutionPermitDisposition.STARTED:
+            raise EffectStoreBindingChanged("model execution finish returned an unsupported permit")
 
     async def _renew_while_running(
         self,
@@ -1301,23 +2182,33 @@ class DurableEffectExecutor:
         claim: ClaimedEffect,
         exc: BaseException,
         contract: EffectExecutionContract,
+        *,
+        force_terminal: bool = False,
     ) -> EffectRunResult:
         self._validate_store_binding()
         error = _error_text(exc)
-        if claim.attempt_count < contract.max_attempts:
+        if not force_terminal and claim.attempt_count < contract.max_attempts:
             retry_at = self._clock() + self._retry_delay(
                 contract,
                 claim.attempt_count,
             )
             try:
-                await self._store.release_for_retry(
+                release = await self._store.release_for_retry(
                     claim,
                     error=error,
                     available_at=retry_at,
+                    **self._execution_binding_kwargs(),
                 )
                 self._validate_store_binding()
             except EffectClaimLost as claim_exc:
                 return self._claim_lost_result(claim, claim_exc)
+            if release is not None and release.status is EffectSettlementStatus.CANCELLED:
+                return EffectRunResult(
+                    status=EffectRunStatus.CANCELLED,
+                    effect_id=claim.effect.effect_id,
+                    attempt_count=claim.attempt_count,
+                    error=error,
+                )
             self.wake()
             return EffectRunResult(
                 status=EffectRunStatus.RETRY_SCHEDULED,
@@ -1334,18 +2225,61 @@ class DurableEffectExecutor:
                 failure,
                 error=error,
                 outcome_fence_fields=resolved_outcome_fence_fields(contract),
+                **self._execution_binding_kwargs(),
             )
             self._validate_store_binding()
         except EffectClaimLost as claim_exc:
             return self._claim_lost_result(claim, claim_exc)
+        if settlement.status is EffectSettlementStatus.CANCELLED:
+            return EffectRunResult(
+                status=EffectRunStatus.CANCELLED,
+                effect_id=claim.effect.effect_id,
+                attempt_count=claim.attempt_count,
+                error=error,
+            )
         self._validate_settlement(claim, failure, settlement)
-        await self._wake_after_commit(claim.key)
+        await self._wake_after_settlement(settlement)
         return EffectRunResult(
             status=EffectRunStatus.FAILED,
             effect_id=claim.effect.effect_id,
             event_id=failure.event_id,
             attempt_count=claim.attempt_count,
             error=error,
+        )
+
+    async def _defer_without_attempt(
+        self,
+        claim: ClaimedEffect,
+        exc: EffectExecutionDeferred,
+    ) -> EffectRunResult:
+        """Persist a non-terminal control wait without burning retry budget."""
+
+        self._validate_store_binding()
+        available_at = self._clock() + exc.delay_seconds
+        try:
+            deferred = await self._store.defer_without_attempt(
+                claim,
+                reason=exc.reason,
+                available_at=available_at,
+                **self._execution_binding_kwargs(),
+            )
+            self._validate_store_binding()
+        except EffectClaimLost as claim_exc:
+            return self._claim_lost_result(claim, claim_exc)
+        if deferred is not None and deferred.status is EffectSettlementStatus.CANCELLED:
+            return EffectRunResult(
+                status=EffectRunStatus.CANCELLED,
+                effect_id=claim.effect.effect_id,
+                attempt_count=max(0, claim.attempt_count - 1),
+                error=exc.reason,
+            )
+        self.wake()
+        return EffectRunResult(
+            status=EffectRunStatus.DEFERRED,
+            effect_id=claim.effect.effect_id,
+            attempt_count=max(0, claim.attempt_count - 1),
+            retry_at=available_at,
+            error=exc.reason,
         )
 
     async def _quarantine_claim(
@@ -1363,17 +2297,25 @@ class DurableEffectExecutor:
                 claim,
                 reason=reason,
                 message=message,
+                **self._execution_binding_kwargs(),
             )
             self._validate_store_binding()
         except EffectClaimLost as exc:
             return self._claim_lost_result(claim, exc)
+        if settlement.status is EffectSettlementStatus.CANCELLED:
+            return EffectRunResult(
+                status=EffectRunStatus.CANCELLED,
+                effect_id=claim.effect.effect_id,
+                attempt_count=claim.attempt_count,
+                error=f"{reason.value}: {message}",
+            )
         if settlement.effect_id != claim.effect.effect_id:
             raise RuntimeError("effect quarantine returned a different effect id")
         if settlement.key != claim.key:
             raise RuntimeError("effect quarantine returned a different actor key")
         if settlement.event_id != quarantined_event_id(claim.effect):
             raise RuntimeError("effect quarantine returned a different mailbox event id")
-        await self._wake_after_commit(claim.key)
+        await self._wake_after_settlement(settlement)
         return EffectRunResult(
             status=EffectRunStatus.FAILED,
             effect_id=claim.effect.effect_id,
@@ -1384,7 +2326,11 @@ class DurableEffectExecutor:
 
     async def _release_after_cancellation(self, claim: ClaimedEffect) -> None:
         release_task = asyncio.create_task(
-            self._store.release(claim, error="effect_executor_shutdown"),
+            self._store.release(
+                claim,
+                error="effect_executor_shutdown",
+                **self._execution_binding_kwargs(),
+            ),
             name=f"agent-effect-release:{claim.effect.effect_id}",
         )
         try:
@@ -1404,6 +2350,7 @@ class DurableEffectExecutor:
             await self._store.release(
                 claim,
                 error="effect_executor_pre_execution_failure",
+                **self._execution_binding_kwargs(),
             )
         except EffectClaimLost:
             return
@@ -1421,8 +2368,74 @@ class DurableEffectExecutor:
             if task is not current and not task.done():
                 task.cancel()
 
-    async def _wake_after_commit(self, key: SessionKey) -> None:
-        self._pending_wakes.add(key)
+    async def _wake_after_settlement(self, settlement: EffectSettlementResult) -> None:
+        """Publish a committed mailbox outcome without weakening fenced evidence.
+
+        A fenced result can only be discovered through its immutable mailbox
+        sidecar.  It must never be compressed to a session key because the
+        legacy registry cannot validate the admission fence or mailbox identity.
+        Unfenced historical results retain the existing exact-key wake path.
+        """
+
+        wake_request = settlement.wake_request
+        if wake_request is None:
+            if settlement.mailbox_id is not None:
+                raise RuntimeError(
+                    "effect settlement with mailbox_id is missing wake evidence"
+                )
+            await self._wake_legacy_after_commit(settlement.key)
+            return
+        if wake_request.has_admission_fence:
+            mailbox_id = settlement.mailbox_id
+            if mailbox_id is None:
+                raise RuntimeError(
+                    "fenced effect settlement is missing its durable mailbox_id"
+                )
+            await self._notify_fenced_mailbox_handoff(settlement, mailbox_id)
+            return
+        await self._wake_legacy_after_commit(settlement.key)
+
+    async def _notify_fenced_mailbox_handoff(
+        self,
+        settlement: EffectSettlementResult,
+        mailbox_id: int,
+    ) -> None:
+        """Send a best-effort hint without touching the legacy actor registry."""
+
+        notifier = self._mailbox_handoff_notifier
+        if notifier is None:
+            logger.debug(
+                "retaining fenced effect mailbox handoff for future pull delivery",
+                extra={
+                    "mailbox_id": mailbox_id,
+                    "effect_id": settlement.effect_id,
+                    "event_id": settlement.event_id,
+                },
+            )
+            return
+        try:
+            outcome = notifier.notify(mailbox_id)
+            if isawaitable(outcome):
+                await outcome
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The mailbox handoff sidecar committed with the settlement remains
+            # the durable debt. A notifier is advisory, so it cannot fall back
+            # to key-only wake or rerun an already settled effect.
+            logger.exception(
+                "failed to notify fenced effect mailbox handoff",
+                extra={
+                    "mailbox_id": mailbox_id,
+                    "effect_id": settlement.effect_id,
+                    "event_id": settlement.event_id,
+                },
+            )
+
+    async def _wake_legacy_after_commit(self, key: SessionKey) -> None:
+        """Wake an explicitly unfenced legacy mailbox by its session key."""
+
+        self._pending_legacy_wakes.add(key)
         try:
             outcome = self._session_registry.wake(key)
             if isawaitable(outcome):
@@ -1434,25 +2447,75 @@ class DurableEffectExecutor:
                 "failed to wake session actor after effect settlement",
                 extra={"profile_id": key.profile_id, "session_id": key.session_id},
             )
-            # The mailbox is already durable. Record wake debt and recover via
-            # mailbox discovery; never rerun the effect handler for wake errors.
-            self._pending_wakes.add(key)
-            await self._recover_pending_wakes()
+            # The mailbox is already durable. Retain this exact key as wake
+            # debt; never rerun the effect handler or invoke broad registry
+            # recovery, which can write legacy recovery mailbox events.
+            self._pending_legacy_wakes.add(key)
+            await self._recover_pending_legacy_wakes()
         else:
-            self._pending_wakes.discard(key)
+            self._pending_legacy_wakes.discard(key)
 
-    async def _recover_pending_wakes(self) -> None:
-        if not self._pending_wakes:
+    async def _recover_pending_legacy_wakes(self) -> None:
+        """Retry only unfenced legacy wakes whose exact session keys are known."""
+
+        if not self._pending_legacy_wakes:
             return
-        async with self._wake_recovery_lock:
-            if not self._pending_wakes:
+        async with self._legacy_wake_recovery_lock:
+            if not self._pending_legacy_wakes:
                 return
-            try:
-                await self._session_registry.recover()
-            except Exception:
-                logger.exception("failed to recover committed effect mailbox wakeups")
-                return
-            self._pending_wakes.clear()
+            for key in tuple(self._pending_legacy_wakes):
+                try:
+                    outcome = self._session_registry.wake(key)
+                    if isawaitable(outcome):
+                        await outcome
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "failed to redrive committed effect mailbox wakeup",
+                        extra={
+                            "profile_id": key.profile_id,
+                            "session_id": key.session_id,
+                        },
+                    )
+                else:
+                    self._pending_legacy_wakes.discard(key)
+
+    async def _drain_store_notifications(self) -> None:
+        """Publish store-owned committed mailbox events without fence downgrade."""
+
+        if self._execution_binding is not None:
+            # Scoped claims never perform the broad malformed-row or expiry
+            # maintenance that populates this store-instance queue. Draining
+            # it here could consume and wake a foreign session's maintenance
+            # outcome, so a target-bound executor must leave it untouched for
+            # an explicit unscoped maintenance controller.
+            return
+        self._validate_store_binding()
+        notifications = await self._store.drain_quarantine_notifications()
+        self._validate_store_binding()
+        legacy_notified_keys: set[SessionKey] = set()
+        for notification in notifications:
+            if notification.status not in {
+                EffectSettlementStatus.COMMITTED,
+                EffectSettlementStatus.ALREADY_COMMITTED,
+            }:
+                raise RuntimeError("effect store returned an uncommitted mailbox notification")
+            wake_request = notification.wake_request
+            if wake_request is None:
+                if notification.mailbox_id is not None:
+                    raise RuntimeError(
+                        "effect mailbox notification with mailbox_id is missing wake evidence"
+                    )
+                legacy_notified_keys.add(notification.key)
+                continue
+            if wake_request.has_admission_fence:
+                await self._wake_after_settlement(notification)
+                continue
+            legacy_notified_keys.add(notification.key)
+        self._pending_legacy_wakes.update(legacy_notified_keys)
+        for key in legacy_notified_keys:
+            await self._wake_legacy_after_commit(key)
 
     def _completion_envelope(
         self,
@@ -1510,9 +2573,7 @@ class DurableEffectExecutor:
             kind="EffectFailed",
             ownership_generation=effect.ownership_generation,
             payload={
-                **effect.outcome_fence_payload(
-                    resolved_outcome_fence_fields(contract)
-                ),
+                **effect.outcome_fence_payload(resolved_outcome_fence_fields(contract)),
                 **action_identity,
                 "effect_id": effect.effect_id,
                 "effect_kind": effect.kind,
@@ -1560,15 +2621,256 @@ class DurableEffectExecutor:
         handled = tuple(
             contract_ref
             for handled_lane in self._handlers.handled_lanes()
-            for contract_ref in self._handlers.handled_effect_contracts_for_lane(
-                handled_lane
-            )
+            for contract_ref in self._handlers.handled_effect_contracts_for_lane(handled_lane)
         )
         if lane is EffectLane.ORPHAN:
             return None, registered
         if lane is None:
             return handled, ()
         return self._handlers.handled_effect_contracts_for_lane(lane), ()
+
+    def _execution_binding_kwargs(self) -> dict[str, FencedActorExecutionBinding]:
+        """Return an optional typed keyword without widening legacy store calls."""
+
+        if self._execution_binding is None:
+            return {}
+        return {"execution_binding": self._execution_binding}
+
+    def _validate_claim_execution_binding(self, claim: ClaimedEffect) -> None:
+        """Reject a store result that escapes this executor's target lease scope."""
+
+        binding = self._execution_binding
+        if binding is None:
+            return
+        if (
+            claim.key != binding.request.key
+            or claim.effect.ownership_generation != binding.request.ownership_generation
+        ):
+            raise FencedEffectExecutionLeaseLost(
+                "fenced effect store returned work outside its execution binding"
+            )
+
+    def _register_in_flight_handler_task(
+        self,
+        context: EffectExecutionContext,
+        task: asyncio.Task[EffectHandlerResult],
+    ) -> InFlightEffectHandlerKey:
+        """Track one real handler task until that exact task has finished."""
+
+        identity = InFlightEffectHandlerKey.from_claim(context.claim)
+        existing = self._in_flight_handler_tasks.get(identity)
+        if existing is not None and existing.task is not task:
+            raise RuntimeError(
+                "duplicate live durable effect handler task identity: "
+                f"{identity.effect_id}:{identity.claim_id}"
+            )
+        self._in_flight_handler_tasks[identity] = _InFlightEffectHandler(
+            identity=identity,
+            task=task,
+            context=context,
+        )
+        task.add_done_callback(
+            lambda completed, tracked_identity=identity: self._unregister_in_flight_handler_task(
+                tracked_identity,
+                completed,
+            )
+        )
+        return identity
+
+    def _unregister_in_flight_handler_task(
+        self,
+        identity: InFlightEffectHandlerKey,
+        task: asyncio.Task[Any],
+    ) -> None:
+        """Remove a task only when it still owns its exact registry entry."""
+
+        tracked = self._in_flight_handler_tasks.get(identity)
+        if tracked is not None and tracked.task is task:
+            self._in_flight_handler_tasks.pop(identity, None)
+
+    def _cancel_in_flight_handler_task(
+        self,
+        tracked: _InFlightEffectHandler,
+    ) -> bool:
+        """Revoke and cancel one local handler while preserving its tail record."""
+
+        tracked.context.revoke()
+        if tracked.task.done():
+            self._unregister_in_flight_handler_task(
+                tracked.identity,
+                tracked.task,
+            )
+            return False
+        cancelled = tracked.task.cancel()
+        if cancelled:
+            self._observe_cancellation_tail(tracked.task)
+        return cancelled
+
+    def _matching_local_handler_tasks(
+        self,
+        *,
+        key: SessionKey,
+        operation_id: str,
+        effect_kind: str | None = None,
+        effect_id: str | None = None,
+    ) -> tuple[_InFlightEffectHandler, ...]:
+        """Return live local handlers, cleaning only their own stale entries."""
+
+        matching: list[_InFlightEffectHandler] = []
+        for identity, tracked in tuple(self._in_flight_handler_tasks.items()):
+            if tracked.task.done():
+                self._unregister_in_flight_handler_task(identity, tracked.task)
+                continue
+            if identity.key != key or identity.operation_id != operation_id:
+                continue
+            if effect_kind is not None and identity.effect_kind != effect_kind:
+                continue
+            if effect_id is not None and identity.effect_id != effect_id:
+                continue
+            matching.append(tracked)
+        return tuple(
+            sorted(
+                matching,
+                key=lambda tracked: (
+                    tracked.identity.effect_kind,
+                    tracked.identity.effect_id,
+                    tracked.identity.claim_id,
+                ),
+            )
+        )
+
+    def _all_local_handler_tasks(self) -> tuple[_InFlightEffectHandler, ...]:
+        """Return every currently live handler task owned by this executor."""
+
+        tracked_handlers: list[_InFlightEffectHandler] = []
+        for identity, tracked in tuple(self._in_flight_handler_tasks.items()):
+            if tracked.task.done():
+                self._unregister_in_flight_handler_task(identity, tracked.task)
+                continue
+            tracked_handlers.append(tracked)
+        return tuple(
+            sorted(
+                tracked_handlers,
+                key=lambda tracked: (
+                    tracked.identity.key.profile_id,
+                    tracked.identity.key.session_id,
+                    tracked.identity.operation_id,
+                    tracked.identity.effect_kind,
+                    tracked.identity.effect_id,
+                    tracked.identity.claim_id,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _require_session_key(key: SessionKey) -> SessionKey:
+        """Require a canonical session key for local operation lookup."""
+
+        if not isinstance(key, SessionKey):
+            raise TypeError("key must be a SessionKey")
+        return key
+
+    @staticmethod
+    def _require_operation_id(operation_id: str) -> str:
+        """Normalize a non-empty durable operation identifier."""
+
+        normalized = str(operation_id or "").strip()
+        if not normalized:
+            raise ValueError("operation_id must not be empty")
+        return normalized
+
+    @staticmethod
+    def _optional_effect_identity_part(
+        value: str | None,
+        *,
+        field_name: str,
+    ) -> str | None:
+        """Normalize an optional exact effect identity filter."""
+
+        if value is None:
+            return None
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError(f"{field_name} must not be empty when supplied")
+        return normalized
+
+    @staticmethod
+    def _validate_quiescence_timeout(timeout_seconds: float | None) -> float | None:
+        """Validate an optional local wait bound without changing task state."""
+
+        if timeout_seconds is None:
+            return None
+        timeout = float(timeout_seconds)
+        if timeout < 0 or not math.isfinite(timeout):
+            raise ValueError("timeout_seconds must be finite and non-negative")
+        return timeout
+
+    @staticmethod
+    def _remaining_quiescence_timeout(deadline: float | None) -> float | None:
+        """Return the remaining local wait time for one quiescence request."""
+
+        if deadline is None:
+            return None
+        return max(0.0, deadline - asyncio.get_running_loop().time())
+
+    def _local_operation_quiescence_report(
+        self,
+        *,
+        status: LocalOperationQuiescenceStatus,
+        key: SessionKey,
+        operation_id: str,
+        matched: Mapping[InFlightEffectHandlerKey, None],
+        cancelled: Mapping[InFlightEffectHandlerKey, None],
+        remaining: tuple[_InFlightEffectHandler, ...] = (),
+    ) -> LocalOperationQuiescence:
+        """Build a deterministic report for a process-local task observation."""
+
+        def sort_key(identity: InFlightEffectHandlerKey) -> tuple[str, str, str]:
+            return (
+                identity.effect_kind,
+                identity.effect_id,
+                identity.claim_id,
+            )
+
+        return LocalOperationQuiescence(
+            scope=LocalOperationQuiescenceScope.LOCAL_PROCESS,
+            status=status,
+            key=key,
+            operation_id=operation_id,
+            matched_handler_keys=tuple(sorted(matched, key=sort_key)),
+            cancelled_handler_keys=tuple(sorted(cancelled, key=sort_key)),
+            remaining_handler_keys=tuple(tracked.identity for tracked in remaining),
+        )
+
+    def _local_executor_quiescence_report(
+        self,
+        *,
+        status: LocalOperationQuiescenceStatus,
+        matched: Mapping[InFlightEffectHandlerKey, None],
+        cancelled: Mapping[InFlightEffectHandlerKey, None],
+        remaining: tuple[_InFlightEffectHandler, ...] = (),
+    ) -> LocalEffectExecutorQuiescence:
+        """Build a deterministic full-executor local quiescence observation."""
+
+        def sort_key(identity: InFlightEffectHandlerKey) -> tuple[str, ...]:
+            return (
+                identity.key.profile_id,
+                identity.key.session_id,
+                identity.operation_id,
+                identity.effect_kind,
+                identity.effect_id,
+                identity.claim_id,
+            )
+
+        return LocalEffectExecutorQuiescence(
+            scope=LocalOperationQuiescenceScope.LOCAL_PROCESS,
+            status=status,
+            matched_handler_keys=tuple(sorted(matched, key=sort_key)),
+            cancelled_handler_keys=tuple(sorted(cancelled, key=sort_key)),
+            remaining_handler_keys=tuple(
+                tracked.identity for tracked in remaining
+            ),
+        )
 
     def _observe_cancellation_tail(self, task: asyncio.Task[Any]) -> None:
         if task.done():
@@ -1732,8 +3034,11 @@ __all__ = [
     "DurableEffectStore",
     "EffectAuthorityChanged",
     "EffectExecutionContract",
+    "EffectExecutionConfigurationError",
     "EffectContractSignatureMismatch",
     "EffectClaimLost",
+    "EffectExecutionCancelled",
+    "EffectExecutionDeferred",
     "EffectExecutionContext",
     "EffectQuarantineReason",
     "EffectExecutorError",
@@ -1747,6 +3052,11 @@ __all__ = [
     "EffectSettlementResult",
     "EffectSettlementStatus",
     "EffectStoreBindingChanged",
+    "InFlightEffectHandlerKey",
+    "LocalOperationQuiescence",
+    "LocalOperationQuiescenceScope",
+    "LocalOperationQuiescenceStatus",
+    "MailboxHandoffNotifier",
     "SessionActorWakeTarget",
     "builtin_session_actor_effect_contracts",
     "completion_event_id",

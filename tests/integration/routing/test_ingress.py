@@ -25,12 +25,17 @@ from shinbot.core.dispatch.ingress import (
     ROUTING_SKIP_NO_ROUTE_MATCHED,
     ROUTING_SKIP_SESSION_MUTED,
     ROUTING_SKIP_WAIT_FOR_INPUT,
+    ROUTING_SKIP_WAIT_FOR_INPUT_SCOPE_MISMATCH,
     MessageIngress,
     RouteDispatchContext,
     RouteTargetRegistry,
     is_event_fresh,
 )
-from shinbot.core.dispatch.message_context import WaitingInputRegistry
+from shinbot.core.dispatch.legacy_ingress_quiescence import (
+    LegacyIngressDurableAdmissionRequired,
+    LegacyIngressQuiescenceStatus,
+)
+from shinbot.core.dispatch.message_context import WaitingInputRegistry, WaitingInputScope
 from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule, RouteTable
 from shinbot.core.message_routes import (
     KEYWORD_DISPATCHER_TARGET,
@@ -256,6 +261,93 @@ async def test_ingress_shutdown_cancels_and_awaits_route_target_tasks(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_ingress_freeze_drains_a_route_task_admitted_before_freeze(tmp_path) -> None:
+    """A target scheduled by pre-freeze ingress stays visible to local drain."""
+
+    table = RouteTable()
+    add_message_route(table)
+    targets = RouteTargetRegistry()
+    pre_route_started = asyncio.Event()
+    release_pre_route = asyncio.Event()
+    target_started = asyncio.Event()
+    release_target = asyncio.Event()
+
+    async def pre_route_hook(_context: RouteDispatchContext) -> None:
+        pre_route_started.set()
+        await release_pre_route.wait()
+
+    async def handler(_context: RouteDispatchContext, _rule: RouteRule) -> None:
+        target_started.set()
+        await release_target.wait()
+
+    targets.register("recorder", handler)
+    ingress, _db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+    ingress.add_pre_route_hook(pre_route_hook)
+    process_task = asyncio.create_task(ingress.process_event(make_event("hello"), adapter))
+    try:
+        await asyncio.wait_for(pre_route_started.wait(), timeout=0.5)
+        ticket = ingress.freeze_legacy_ingress_session(
+            "test-bot:private:user-1",
+            cutover_id="cutover-a",
+        )
+
+        release_pre_route.set()
+        await asyncio.wait_for(target_started.wait(), timeout=0.5)
+        await asyncio.wait_for(process_task, timeout=0.5)
+
+        timed_out = await ingress.await_legacy_ingress_quiescent(
+            ticket,
+            timeout_seconds=0.0,
+        )
+
+        assert timed_out.status is LegacyIngressQuiescenceStatus.TIMED_OUT
+        assert timed_out.remaining_task_names == ("route.target.route.recorder",)
+
+        release_target.set()
+        quiescent = await ingress.await_legacy_ingress_quiescent(
+            ticket,
+            timeout_seconds=0.5,
+        )
+        assert quiescent.status is LegacyIngressQuiescenceStatus.QUIESCENT
+        assert ingress.thaw_legacy_ingress_session(ticket) is True
+    finally:
+        release_pre_route.set()
+        release_target.set()
+        await ingress.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ingress_freeze_refuses_new_legacy_admission_without_persistence(tmp_path) -> None:
+    """A local freeze never creates legacy ownership while rejecting a new event."""
+
+    ingress, db, adapter = build_ingress(tmp_path)
+    ticket = ingress.freeze_legacy_ingress_session(
+        "test-bot:private:user-1",
+        cutover_id="cutover-a",
+    )
+
+    with pytest.raises(LegacyIngressDurableAdmissionRequired):
+        await ingress.process_event(make_event("blocked"), adapter)
+
+    with db.connect() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM agent_session_runtime_ownership),
+                (SELECT COUNT(*) FROM message_logs)
+            """
+        ).fetchone()
+    assert tuple(counts) == (0, 0)
+
+    quiescent = await ingress.await_legacy_ingress_quiescent(
+        ticket,
+        timeout_seconds=0.0,
+    )
+    assert quiescent.status is LegacyIngressQuiescenceStatus.QUIESCENT
+    assert ingress.thaw_legacy_ingress_session(ticket) is True
+
+
+@pytest.mark.asyncio
 async def test_route_target_registry_cancels_only_selected_owner_tasks(tmp_path) -> None:
     table = RouteTable()
     targets = RouteTargetRegistry()
@@ -381,7 +473,11 @@ async def test_ingress_marks_no_route_match_skipped(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_wait_for_input_reply_is_persisted_and_skipped(tmp_path) -> None:
     waiting_registry = WaitingInputRegistry()
-    future = waiting_registry.register("test-bot:private:user-1")
+    scope = WaitingInputScope.from_routing_identity(
+        legacy_session_id="test-bot:private:user-1",
+    )
+    lease = waiting_registry.acquire(scope, track_owner=False)
+    future = lease.future
     ingress, db, adapter = build_ingress(tmp_path, waiting_registry=waiting_registry)
 
     result = await ingress.process_event(make_event("Nekyuu"), adapter)
@@ -397,6 +493,111 @@ async def test_wait_for_input_reply_is_persisted_and_skipped(tmp_path) -> None:
     assert row["raw_text"] == "Nekyuu"
     assert row["routing_status"] == "skipped"
     assert row["routing_skip_reason"] == ROUTING_SKIP_WAIT_FOR_INPUT
+    assert waiting_registry.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_scope_mismatched_waiter_fails_closed_without_waiting_for_session_lock(tmp_path) -> None:
+    """A bot-scope mismatch cannot deadlock behind the legacy handler's lock."""
+
+    waiting_registry = WaitingInputRegistry()
+    session_id = "test-bot:private:user-1"
+    waiter_scope = WaitingInputScope.from_routing_identity(
+        legacy_session_id=session_id,
+        bot_id="other-bot",
+        bot_session_id="other-bot:private:user-1",
+    )
+    lease = waiting_registry.acquire(waiter_scope, track_owner=False)
+    table = RouteTable()
+    add_message_route(table)
+    targets = RouteTargetRegistry()
+    target_calls: list[str] = []
+    targets.register("recorder", lambda _context, _rule: target_calls.append("called"))
+    ingress, database, adapter = build_ingress(
+        tmp_path,
+        route_table=table,
+        route_targets=targets,
+        waiting_registry=waiting_registry,
+    )
+
+    async with ingress._session_manager.session_lock(session_id):
+        result = await asyncio.wait_for(ingress.process_event(make_event("answer"), adapter), 0.5)
+
+    assert result.message_log_id is not None
+    assert result.matched_rules == []
+    assert result.skipped_reason == ROUTING_SKIP_WAIT_FOR_INPUT_SCOPE_MISMATCH
+    assert not lease.future.done()
+    assert target_calls == []
+    row = database.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["routing_skip_reason"] == ROUTING_SKIP_WAIT_FOR_INPUT_SCOPE_MISMATCH
+    assert waiting_registry.release(lease)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["message-updated", "message-deleted"])
+async def test_non_created_message_event_does_not_resolve_waiting_input(
+    tmp_path,
+    event_type: str,
+) -> None:
+    waiting_registry = WaitingInputRegistry()
+    future = waiting_registry.register("test-bot:private:user-1")
+    ingress, database, adapter = build_ingress(
+        tmp_path,
+        waiting_registry=waiting_registry,
+    )
+
+    result = await ingress.process_event(
+        make_event("changed", event_type=event_type),
+        adapter,
+    )
+
+    assert result.message_log_id is not None
+    assert not future.done()
+    assert waiting_registry.is_waiting("test-bot:private:user-1")
+    row = database.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["raw_text"] == "changed"
+    waiting_registry.cancel("test-bot:private:user-1")
+
+
+@pytest.mark.asyncio
+async def test_timed_out_waiter_does_not_consume_the_next_routed_message(tmp_path) -> None:
+    """A cancelled interactive Future cannot leave a stale ingress fast path."""
+
+    waiting_registry = WaitingInputRegistry()
+    table = RouteTable()
+    rule = add_message_route(table)
+    targets = RouteTargetRegistry()
+    timed_out = asyncio.Event()
+    routed_messages: list[str] = []
+    second_message_routed = asyncio.Event()
+
+    async def handler(context: RouteDispatchContext, _rule: RouteRule) -> None:
+        if context.require_message_context().text == "start":
+            with pytest.raises(TimeoutError):
+                await context.require_message_context().wait_for_input(timeout=0.001)
+            timed_out.set()
+            return
+        routed_messages.append(context.require_message_context().text)
+        second_message_routed.set()
+
+    targets.register("recorder", handler)
+    ingress, _database, adapter = build_ingress(
+        tmp_path,
+        route_table=table,
+        route_targets=targets,
+        waiting_registry=waiting_registry,
+    )
+
+    await ingress.process_event(make_event("start"), adapter)
+    await asyncio.wait_for(timed_out.wait(), timeout=1.0)
+    result = await ingress.process_event(make_event("next"), adapter)
+    await asyncio.wait_for(second_message_routed.wait(), timeout=1.0)
+
+    assert result.matched_rules == [rule]
+    assert result.skipped_reason is None
+    assert routed_messages == ["next"]
 
 
 @pytest.mark.asyncio

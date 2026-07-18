@@ -1512,6 +1512,8 @@ async def test_review_cancellation_completion_releases_stamped_active_reply_effe
         "source_event_id": review_setup.event_id,
         "effect_id": review_effect_id,
         "effect_kind": review_contract.effect_kind,
+        "contract_version": review_contract.version,
+        "contract_signature": review_contract.signature,
         "idempotency_key": review_effect_id,
         "completion_event_id": "review-completed:cancel-test",
         "failure_event_id": "review-failed:cancel-test",

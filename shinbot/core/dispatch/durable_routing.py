@@ -255,6 +255,8 @@ class IngressRoutingPayload:
         self,
         *,
         ownership_generation: int,
+        admission_fence_id: str = "",
+        admission_fence_generation: int = 0,
         available_at: float = 0.0,
     ) -> MessageRoutingJobEnvelope:
         """Build the durable routing job envelope for this payload."""
@@ -266,6 +268,8 @@ class IngressRoutingPayload:
             profile_id=key.profile_id,
             session_id=key.session_id,
             ownership_generation=ownership_generation,
+            admission_fence_id=admission_fence_id,
+            admission_fence_generation=admission_fence_generation,
             trace_id=self.trace_id,
             correlation_id=self.routing_job_id,
             causation_id=self._platform_event_id(),
@@ -356,6 +360,8 @@ class MessageRoutingJobEnvelope:
     profile_id: str = ""
     session_id: str = ""
     ownership_generation: int = 0
+    admission_fence_id: str = ""
+    admission_fence_generation: int = 0
     correlation_id: str = ""
     causation_id: str = ""
     occurred_at: float = 0.0
@@ -373,6 +379,7 @@ class MessageRoutingJobEnvelope:
             "trace_id",
             "profile_id",
             "session_id",
+            "admission_fence_id",
             "correlation_id",
             "causation_id",
         ):
@@ -392,14 +399,33 @@ class MessageRoutingJobEnvelope:
         generation = self.ownership_generation
         if isinstance(generation, bool) or not isinstance(generation, int):
             raise ValueError("ownership_generation must be an integer")
-        if self.profile_id or self.session_id or generation:
-            if not self.profile_id or not self.session_id or generation < 1:
+        admission_generation = self.admission_fence_generation
+        if isinstance(admission_generation, bool) or not isinstance(admission_generation, int):
+            raise ValueError("admission_fence_generation must be an integer")
+        if generation < 0:
+            raise ValueError("ownership_generation must not be negative")
+        if admission_generation < 0:
+            raise ValueError("admission_fence_generation must not be negative")
+        has_admission_fence = bool(self.admission_fence_id)
+        if has_admission_fence != bool(admission_generation):
+            raise ValueError(
+                "admission_fence_id and positive admission_fence_generation "
+                "must be provided together"
+            )
+        if has_admission_fence and admission_generation < 1:
+            raise ValueError("admission_fence_generation must be positive")
+        if self.profile_id or self.session_id or generation or has_admission_fence:
+            if not self.profile_id or not self.session_id:
+                raise ValueError(
+                    "profile_id and session_id must be provided together"
+                )
+            if generation == 0 and not has_admission_fence:
                 raise ValueError(
                     "profile_id, session_id, and positive ownership_generation "
                     "must be provided together"
                 )
-        elif generation != 0:
-            raise ValueError("unscoped routing jobs require ownership_generation zero")
+        elif admission_generation != 0:
+            raise ValueError("unscoped routing jobs require admission fence generation zero")
         if not isinstance(self.payload, Mapping):
             raise TypeError("payload must be a mapping")
         object.__setattr__(self, "payload", _freeze_json(self.payload))
@@ -411,6 +437,18 @@ class MessageRoutingJobEnvelope:
             if not math.isfinite(numeric) or numeric < 0:
                 raise ValueError(f"{field_name} must be a finite non-negative number")
             object.__setattr__(self, field_name, numeric)
+
+    @property
+    def has_admission_fence(self) -> bool:
+        """Return whether this job is bound to a durable admission fence."""
+
+        return bool(self.admission_fence_id)
+
+    @property
+    def is_reserved_admission(self) -> bool:
+        """Return whether this job awaits atomic Actor v2 ownership commitment."""
+
+        return self.has_admission_fence and self.ownership_generation == 0
 
 
 def _canonical_json_object(value: Mapping[str, Any]) -> str:

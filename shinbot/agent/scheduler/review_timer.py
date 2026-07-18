@@ -10,6 +10,11 @@ from shinbot.agent.runtime.service_health import (
     RuntimeServiceHealthSnapshot,
     supervised_backoff_seconds,
 )
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskQuiescence,
+    cancel_and_wait_for_tasks,
+)
+from shinbot.agent.scheduler.models import ReviewPlan
 from shinbot.agent.signals import (
     AgentSignal,
     AgentSignalKind,
@@ -49,6 +54,7 @@ class ReviewDueTimerService:
         self._bot_id = ""
         self._task: asyncio.Task[None] | None = None
         self._in_flight: set[str] = set()
+        self._in_flight_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_scope: AgentTaskScope | None = None
         self._health = RuntimeServiceHealth("review_due_timer")
 
@@ -104,11 +110,58 @@ class ReviewDueTimerService:
         """
         task = self._task
         self._task = None
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        tasks = list(self._in_flight_tasks.values())
+        self._in_flight_tasks.clear()
+        current_task = asyncio.current_task()
+        for pending_task in [task, *tasks]:
+            if (
+                pending_task is not None
+                and pending_task is not current_task
+                and not pending_task.done()
+            ):
+                pending_task.cancel()
+        awaitables = [
+            pending_task
+            for pending_task in [task, *tasks]
+            if pending_task is not None and pending_task is not current_task
+        ]
+        if awaitables:
+            await asyncio.gather(*awaitables, return_exceptions=True)
+        self._in_flight.clear()
         self._health.stop()
         logger.debug(format_log_event("agent.review_timer.stopped", bot_id=self._bot_id))
+
+    def pending_session_tasks(self, session_id: str) -> list[asyncio.Task[None]]:
+        """Return the in-flight due-review dispatch task for one session.
+
+        The global polling loop is intentionally not returned: it may be
+        serving other sessions. This method observes only the child dispatch
+        task currently owned by the requested session in this process.
+        """
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id must not be empty")
+        task = self._in_flight_tasks.get(normalized_session_id)
+        return [] if task is None or task.done() else [task]
+
+    async def quiesce_session_tasks(
+        self,
+        session_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> AgentTaskQuiescence:
+        """Cancel and observe one local due-review dispatch child task.
+
+        This cannot stop the shared poller, other process instances, or a
+        future timer tick. It only drains the currently tracked task for this
+        exact session.
+        """
+
+        return await cancel_and_wait_for_tasks(
+            self.pending_session_tasks(session_id),
+            timeout_seconds=timeout_seconds,
+        )
 
     def health_snapshot(self) -> RuntimeServiceHealthSnapshot:
         """Return current review timer supervision health."""
@@ -133,6 +186,11 @@ class ReviewDueTimerService:
             )
         )
         pause_session = getattr(runtime, "should_pause_session", None)
+        signal_admission_frozen = getattr(
+            runtime,
+            "is_legacy_session_signal_admission_frozen",
+            None,
+        )
         dispatch_failures: list[tuple[str, Exception]] = []
         for plan in due_plans:
             if plan.session_id in self._in_flight:
@@ -155,7 +213,22 @@ class ReviewDueTimerService:
                     )
                 )
                 continue
+            if (
+                callable(signal_admission_frozen)
+                and signal_admission_frozen(plan.session_id)
+            ):
+                logger.debug(
+                    format_log_event(
+                        "agent.review_timer.skip",
+                        bot_id=self._bot_id,
+                        session_id=plan.session_id,
+                        reason="legacy_signal_admission_frozen",
+                    )
+                )
+                continue
             self._in_flight.add(plan.session_id)
+            dispatch_task = self._create_dispatch_task(runtime, plan)
+            self._in_flight_tasks[plan.session_id] = dispatch_task
             try:
                 logger.debug(
                     format_log_event(
@@ -166,20 +239,17 @@ class ReviewDueTimerService:
                         reason=plan.reason,
                     )
                 )
-                await runtime.handle_agent_signal(
-                    AgentSignal(
-                        signal_id=f"review-due:{plan.session_id}:{int(plan.next_review_at)}",
-                        kind=AgentSignalKind.REVIEW_DUE,
-                        source=AgentSignalSource.TIMER,
-                        session_id=plan.session_id,
-                        occurred_at=plan.next_review_at,
+                await dispatch_task
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                logger.debug(
+                    format_log_event(
+                        "agent.review_timer.dispatch.cancelled",
                         bot_id=self._bot_id,
-                        timer=AgentTimerSignal(
-                            trigger=AgentSignalKind.REVIEW_DUE.value,
-                            due_at=plan.next_review_at,
-                            plan_id=f"{plan.session_id}:{int(plan.next_review_at)}",
-                        ),
-                        meta={"review_plan": plan.reason},
+                        session_id=plan.session_id,
+                        reason="local_session_quiesce",
                     )
                 )
             except Exception as exc:
@@ -190,6 +260,8 @@ class ReviewDueTimerService:
                 )
             finally:
                 self._in_flight.discard(plan.session_id)
+                if self._in_flight_tasks.get(plan.session_id) is dispatch_task:
+                    self._in_flight_tasks.pop(plan.session_id, None)
         if dispatch_failures:
             error = ReviewDueDispatchError(
                 tuple(session_id for session_id, _exc in dispatch_failures)
@@ -229,6 +301,41 @@ class ReviewDueTimerService:
                 delay = max(0.01, self._tick_interval_seconds)
         finally:
             self._health.stop()
+
+    def _create_dispatch_task(
+        self,
+        runtime: AgentRuntime,
+        plan: ReviewPlan,
+    ) -> asyncio.Task[None]:
+        """Create one explicitly awaited child task without changing polling order.
+
+        The polling loop owns and classifies this task's exceptions, so it must
+        not enter ``AgentTaskManager`` as an independent background failure.
+        """
+
+        signal = AgentSignal(
+            signal_id=f"review-due:{plan.session_id}:{int(plan.next_review_at)}",
+            kind=AgentSignalKind.REVIEW_DUE,
+            source=AgentSignalSource.TIMER,
+            session_id=plan.session_id,
+            occurred_at=plan.next_review_at,
+            bot_id=self._bot_id,
+            timer=AgentTimerSignal(
+                trigger=AgentSignalKind.REVIEW_DUE.value,
+                due_at=plan.next_review_at,
+                plan_id=f"{plan.session_id}:{int(plan.next_review_at)}",
+            ),
+            meta={"review_plan": plan.reason},
+        )
+        coroutine = self._dispatch_signal(runtime, signal)
+        task_name = f"review-due-dispatch:{plan.session_id}"
+        return asyncio.create_task(coroutine, name=task_name)
+
+    @staticmethod
+    async def _dispatch_signal(runtime: AgentRuntime, signal: AgentSignal) -> None:
+        """Await one runtime signal through a coroutine accepted by task scopes."""
+
+        await runtime.handle_agent_signal(signal)
 
 
 __all__ = ["ReviewDueDispatchError", "ReviewDueTimerService"]

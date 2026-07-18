@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, TypeVar
 
 from shinbot.utils.logger import format_log_event, get_logger
@@ -23,6 +25,102 @@ class AgentTaskSnapshot:
     done: bool
     cancelled: bool
     error: str | None = None
+
+
+class AgentTaskQuiescenceStatus(StrEnum):
+    """Outcome of one local asyncio-task drain observation."""
+
+    NO_LOCAL_TASKS = "no_local_tasks"
+    QUIESCENT = "quiescent"
+    TIMED_OUT = "timed_out"
+    CURRENT_TASK_ACTIVE = "current_task_active"
+
+
+@dataclass(slots=True, frozen=True)
+class AgentTaskQuiescence:
+    """Process-local result of cancelling and waiting for known tasks.
+
+    The result describes only the exact task objects supplied by the caller.
+    It cannot prove that another process, an untracked coroutine, or an
+    external model/tool invocation has stopped.
+    """
+
+    status: AgentTaskQuiescenceStatus
+    matched_task_names: tuple[str, ...] = ()
+    cancelled_task_names: tuple[str, ...] = ()
+    remaining_task_names: tuple[str, ...] = ()
+
+    @property
+    def locally_confirmed_quiescent(self) -> bool:
+        """Return whether at least one observed local task ended."""
+
+        return self.status is AgentTaskQuiescenceStatus.QUIESCENT
+
+
+async def cancel_and_wait_for_tasks(
+    tasks: list[asyncio.Task[Any]] | tuple[asyncio.Task[Any], ...],
+    *,
+    timeout_seconds: float | None = None,
+    cancel: bool = True,
+) -> AgentTaskQuiescence:
+    """Cancel and await a fixed set of local tasks without hiding timeouts.
+
+    A task owned by the caller is never cancelled or awaited because doing so
+    would deadlock the control path. Empty observations deliberately remain
+    distinct from a positive local quiescence confirmation.
+    """
+
+    timeout = _normalize_quiescence_timeout(timeout_seconds)
+    unique_tasks = tuple(
+        dict.fromkeys(task for task in tasks if not task.done())
+    )
+    if not unique_tasks:
+        return AgentTaskQuiescence(AgentTaskQuiescenceStatus.NO_LOCAL_TASKS)
+
+    current_task = asyncio.current_task()
+    current_matches = tuple(task for task in unique_tasks if task is current_task)
+    observed_tasks = tuple(task for task in unique_tasks if task is not current_task)
+    matched_names = tuple(sorted(task.get_name() for task in unique_tasks))
+    cancelled_names: list[str] = []
+    if cancel:
+        for task in observed_tasks:
+            task.cancel()
+            cancelled_names.append(task.get_name())
+    if current_matches:
+        remaining_names = tuple(sorted(task.get_name() for task in unique_tasks if not task.done()))
+        return AgentTaskQuiescence(
+            status=AgentTaskQuiescenceStatus.CURRENT_TASK_ACTIVE,
+            matched_task_names=matched_names,
+            cancelled_task_names=tuple(sorted(cancelled_names)),
+            remaining_task_names=remaining_names,
+        )
+    if observed_tasks:
+        _done, pending = await asyncio.wait(observed_tasks, timeout=timeout)
+    else:
+        pending = set()
+    if pending:
+        return AgentTaskQuiescence(
+            status=AgentTaskQuiescenceStatus.TIMED_OUT,
+            matched_task_names=matched_names,
+            cancelled_task_names=tuple(sorted(cancelled_names)),
+            remaining_task_names=tuple(sorted(task.get_name() for task in pending)),
+        )
+    return AgentTaskQuiescence(
+        status=AgentTaskQuiescenceStatus.QUIESCENT,
+        matched_task_names=matched_names,
+        cancelled_task_names=tuple(sorted(cancelled_names)),
+    )
+
+
+def _normalize_quiescence_timeout(timeout_seconds: float | None) -> float | None:
+    """Validate an optional task-drain timeout."""
+
+    if timeout_seconds is None:
+        return None
+    timeout = float(timeout_seconds)
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("timeout_seconds must be finite and non-negative")
+    return timeout
 
 
 class AgentTaskManager:
@@ -289,4 +387,11 @@ class AgentTaskScope:
         await self.manager.shutdown(prefix=self.namespace)
 
 
-__all__ = ["AgentTaskManager", "AgentTaskScope", "AgentTaskSnapshot"]
+__all__ = [
+    "AgentTaskManager",
+    "AgentTaskQuiescence",
+    "AgentTaskQuiescenceStatus",
+    "AgentTaskScope",
+    "AgentTaskSnapshot",
+    "cancel_and_wait_for_tasks",
+]

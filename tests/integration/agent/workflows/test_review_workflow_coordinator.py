@@ -35,7 +35,10 @@ from review_workflow_support import (
 )
 
 from shinbot.agent.runners.review_models import ReplyDecisionStageOutput, ReviewScanStageOutput
-from shinbot.agent.runtime.task_manager import AgentTaskManager
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskManager,
+    AgentTaskQuiescenceStatus,
+)
 from shinbot.agent.workflows.chat_actions.tool_registration import SendReplyIdempotencyStore
 
 
@@ -55,6 +58,38 @@ class _InterruptingReviewScanRunner:
             candidate_message_ids=[],
             reason=f"scanned_{len(message_ids)}",
         )
+
+
+class _BlockingReviewScanRunner:
+    """Keep a scan stage active until the parent review is cancelled."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def run(self, _stage_input) -> ReviewScanStageOutput:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
+class _BlockingBlockDigestRunner:
+    """Expose whether cancellation reaches a parallel digest child task."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def run(self, _stage_input):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
 
 
 class _CommitBlockingReplyRunner:
@@ -410,6 +445,16 @@ async def test_review_cancellation_detaches_stuck_reply_tail_without_consuming(
         f"review-reply-commit:{session_id}"
     ]
 
+    quiescence = await workflow.quiesce_session_tasks(
+        session_id,
+        timeout_seconds=0.0,
+    )
+    assert quiescence.status is AgentTaskQuiescenceStatus.TIMED_OUT
+    assert quiescence.locally_confirmed_quiescent is False
+    assert quiescence.remaining_task_names == (
+        f"review-reply-commit:{session_id}",
+    )
+
     shutdown_started_at = asyncio.get_running_loop().time()
     await workflow.shutdown()
     assert asyncio.get_running_loop().time() - shutdown_started_at < 0.4
@@ -420,6 +465,60 @@ async def test_review_cancellation_detaches_stuck_reply_tail_without_consuming(
     await asyncio.sleep(0)
     assert workflow.pending_reply_commit_tasks() == []
     assert scheduler.unread_messages(session_id) != []
+
+
+@pytest.mark.asyncio
+async def test_review_cancellation_drains_parallel_block_digest_tasks(tmp_path) -> None:
+    """Cancelling a scan cannot leave its digest model work behind."""
+
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "bot:group:room"
+    message_id = _insert_message(db, raw_text="pending digest", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id=session_id,
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review(session_id, now=10.0)
+    scan_runner = _BlockingReviewScanRunner()
+    digest_runner = _BlockingBlockDigestRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(review_scan_batch_size=1),
+        message_store=DatabaseReviewMessageStore(db),
+        scan_runner=scan_runner,
+        block_digest_runner=digest_runner,
+        now=lambda: 10.0,
+    )
+    review_task = asyncio.create_task(
+        workflow.run(
+            scheduler=scheduler,
+            session_id=session_id,
+            review_plan=review_plan,
+            unread_messages=scheduler.unread_messages(session_id),
+        )
+    )
+    await scan_runner.started.wait()
+    await digest_runner.started.wait()
+
+    review_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(review_task, timeout=0.5)
+
+    assert scan_runner.cancelled.is_set()
+    assert digest_runner.cancelled.is_set()
 
 
 @pytest.mark.asyncio

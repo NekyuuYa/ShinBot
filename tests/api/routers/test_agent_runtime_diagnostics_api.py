@@ -6,9 +6,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from shinbot.agent.runtime.services import install_agent_runtime
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
-from shinbot.core.dispatch.agent_identity import SessionKey
+from shinbot.core.dispatch.agent_identity import (
+    DEFAULT_SESSION_ACTOR_PROFILE_ID,
+    SessionKey,
+)
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 
 
@@ -80,6 +84,67 @@ def test_agent_runtime_session_diagnostics_requires_auth_and_returns_envelope(
     }
 
 
+def test_actor_v2_readiness_exposes_only_diagnostic_activation_state(
+    tmp_path: Path,
+) -> None:
+    """Operators can distinguish incomplete Actor v2 wiring from live ownership."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    install_agent_runtime(bot)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    path = "/api/v1/agent-runtime/actor-v2/readiness"
+
+    with TestClient(app) as client:
+        unauthorized = client.get(path)
+        response = client.get(path, headers=_auth_headers(app))
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["runtimeMode"] == "diagnostic_only"
+    assert payload["activationPermitted"] is False
+    assert payload["activationBlockers"] == [
+        "actor_v2_complete_history_handler_graph_incomplete",
+        "actor_v2_diagnostic_assembly_unmounted",
+        "actor_v2_durable_isolation_lease_unavailable",
+        "actor_v2_ownership_ingress_cutover_controller_unavailable",
+        "actor_v2_legacy_state_handoff_manifest_unavailable",
+        "actor_v2_base_session_migration_scope_unresolved",
+        "actor_v2_wake_target_unpublished",
+        "actor_v2_recovery_and_timer_supervision_unmounted",
+        "actor_v2_management_mailbox_admission_unavailable",
+    ]
+    assert payload["handlerGraphComplete"] is False
+    assert payload["cleanSessionHandlerGraphComplete"] is True
+    assert payload["cleanSessionHandlerFailures"] == []
+    assert payload["effectsRunning"] is False
+    assert payload["actorWakeTargetAvailable"] is False
+    assert payload["closed"] is False
+    assert payload["shutdownComplete"] is False
+    assert payload["profileIds"] == [DEFAULT_SESSION_ACTOR_PROFILE_ID]
+    assert payload["recoveryMaterializationStates"] == [
+        "active_chat",
+        "active_chat_settling",
+        "active_reply",
+        "review",
+    ]
+    assert [service["serviceName"] for service in payload["backgroundServices"]] == [
+        "durable_recovery_scanner",
+        "durable_review_due_scanner",
+    ]
+    assert [service["status"] for service in payload["backgroundServices"]] == [
+        "stopped",
+        "stopped",
+    ]
+    missing = {
+        (failure["effectKind"], failure["contractVersion"])
+        for failure in payload["handlerFailures"]
+    }
+    assert ("cancel_model_execution", 3) not in missing
+    assert ("cancel_review_workflow", 1) in missing
+    assert len(missing) == 13
+
+
 def test_agent_runtime_diagnostics_highlights_redacted_unknown_actions(
     tmp_path: Path,
 ) -> None:
@@ -133,8 +198,7 @@ def test_agent_runtime_diagnostics_highlights_redacted_unknown_actions(
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/agent-runtime/profiles/bot-main/"
-            "sessions/bot-main:group:room",
+            "/api/v1/agent-runtime/profiles/bot-main/sessions/bot-main:group:room",
             headers=_auth_headers(app),
         )
 
@@ -190,8 +254,7 @@ def test_agent_runtime_diagnostics_exposes_abandoned_pre_dispatch_actions(
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/agent-runtime/profiles/bot-main/"
-            "sessions/bot-main:group:room",
+            "/api/v1/agent-runtime/profiles/bot-main/sessions/bot-main:group:room",
             headers=_auth_headers(app),
         )
 
@@ -244,8 +307,7 @@ def test_agent_runtime_diagnostics_projects_safe_actor_outbound_blocker(
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/agent-runtime/profiles/bot-main/"
-            "sessions/bot-main:group:room",
+            "/api/v1/agent-runtime/profiles/bot-main/sessions/bot-main:group:room",
             headers=_auth_headers(app),
         )
 
@@ -280,9 +342,7 @@ def test_agent_runtime_session_diagnostics_uses_explicit_404_and_strict_paths(
             headers=headers,
         )
         overlong = client.get(
-            "/api/v1/agent-runtime/profiles/"
-            + ("a" * 129)
-            + "/sessions/valid:group:room",
+            "/api/v1/agent-runtime/profiles/" + ("a" * 129) + "/sessions/valid:group:room",
             headers=headers,
         )
         encoded_slash = client.get(
@@ -324,8 +384,7 @@ def test_agent_runtime_session_diagnostics_projects_legacy_only_state(
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/agent-runtime/profiles/bot-legacy/"
-            "sessions/bot-legacy:group:room",
+            "/api/v1/agent-runtime/profiles/bot-legacy/sessions/bot-legacy:group:room",
             headers=_auth_headers(app),
         )
 

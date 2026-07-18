@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path
@@ -26,6 +27,16 @@ router = APIRouter(
     tags=["agent-runtime"],
     dependencies=AuthRequired,
 )
+
+_IDLE_REVIEW_PLANNING_MODEL_RESULT_EVENT = "agent.idle_review_planning.model_result"
+_IDLE_REVIEW_PLANNING_APPLICATION_EVENT = "agent.idle_review_planning.application"
+_IDLE_REVIEW_PLANNING_AUDIT_EVENTS = (
+    _IDLE_REVIEW_PLANNING_MODEL_RESULT_EVENT,
+    _IDLE_REVIEW_PLANNING_APPLICATION_EVENT,
+)
+_IDLE_REVIEW_PLANNING_AUDIT_EVENT_LIMIT = 48
+_IDLE_REVIEW_PLANNING_DECISION_LIMIT = 12
+_MAX_AUDIT_TEXT_LENGTH = 256
 
 
 class AgentRuntimeBinding(BaseModel):
@@ -70,6 +81,61 @@ class AgentRuntimeTimerHealth(BaseModel):
     activeChatTimers: list[AgentRuntimeServiceHealth] = Field(default_factory=list)
 
 
+class AgentRuntimeIdleReviewPlanningModelResult(BaseModel):
+    """Sanitized result returned by the external idle-review planner."""
+
+    auditId: int = 0
+    recordedAt: str = ""
+    outcome: str = ""
+    reason: str = ""
+    failureCode: str = ""
+    modelExecutionId: str = ""
+    promptSignature: str = ""
+    requestedNextReviewAfterSeconds: float | None = None
+    appliedNextReviewAfterSeconds: float | None = None
+    proposedNextReviewAt: float | None = None
+    proposedPlanReason: str = ""
+
+
+class AgentRuntimeIdleReviewPlanningApplication(BaseModel):
+    """Terminal application outcome for one fenced idle-review plan."""
+
+    auditId: int = 0
+    recordedAt: str = ""
+    outcome: str = ""
+    reason: str = ""
+    modelPlanSupplied: bool = False
+    modelPlanReason: str = ""
+    modelPlanNextReviewAt: float | None = None
+    decisionSkippedReason: str = ""
+    appliedPlanReason: str = ""
+    appliedNextReviewAt: float | None = None
+    schedulerState: str = ""
+
+
+class AgentRuntimeIdleReviewPlanningDecision(BaseModel):
+    """Bounded, paired audit evidence for one idle-review planning intent."""
+
+    signalId: str = ""
+    trigger: str = ""
+    activeEpoch: int = 0
+    checkedAt: float = 0.0
+    latestAt: str = ""
+    modelResult: AgentRuntimeIdleReviewPlanningModelResult | None = None
+    application: AgentRuntimeIdleReviewPlanningApplication | None = None
+
+
+class AgentRuntimeAuditSummary(BaseModel):
+    """Non-sensitive summary of the latest audit row for a runtime session."""
+
+    id: int = 0
+    timestamp: str = ""
+    entryType: str = ""
+    commandName: str = ""
+    pluginId: str = ""
+    success: bool = False
+
+
 class AgentRuntimeSession(BaseModel):
     sessionId: str = ""
     adapterInstanceId: str = ""
@@ -83,7 +149,10 @@ class AgentRuntimeSession(BaseModel):
     highPriorityCount: int = 0
     latestReviewRun: dict[str, Any] | None = None
     latestReviewSummary: dict[str, Any] | None = None
-    latestAudit: dict[str, Any] | None = None
+    latestAudit: AgentRuntimeAuditSummary | None = None
+    idleReviewPlanningDecisions: list[AgentRuntimeIdleReviewPlanningDecision] = Field(
+        default_factory=list
+    )
 
 
 class AgentRuntimeProfile(BaseModel):
@@ -98,6 +167,36 @@ class AgentRuntimeProfile(BaseModel):
     taskFailures: list[AgentRuntimeTask] = Field(default_factory=list)
     timerHealth: AgentRuntimeTimerHealth = Field(default_factory=AgentRuntimeTimerHealth)
     sessions: list[AgentRuntimeSession] = Field(default_factory=list)
+
+
+class AgentRuntimeActorV2HandlerFailure(BaseModel):
+    """One immutable Actor v2 effect contract that blocks activation."""
+
+    effectKind: str
+    contractVersion: int
+    lane: str
+    reason: str
+
+
+class AgentRuntimeActorV2Readiness(BaseModel):
+    """Read-only lifecycle and handler status for the inactive Actor v2 graph."""
+
+    runtimeMode: Literal["not_installed", "diagnostic_only"]
+    activationPermitted: bool = False
+    activationBlockers: list[str] = Field(default_factory=list)
+    handlerGraphComplete: bool = False
+    handlerFailures: list[AgentRuntimeActorV2HandlerFailure] = Field(default_factory=list)
+    cleanSessionHandlerGraphComplete: bool = False
+    cleanSessionHandlerFailures: list[AgentRuntimeActorV2HandlerFailure] = Field(
+        default_factory=list
+    )
+    effectsRunning: bool = False
+    actorWakeTargetAvailable: bool = False
+    closed: bool = False
+    shutdownComplete: bool = False
+    recoveryMaterializationStates: list[str] = Field(default_factory=list)
+    backgroundServices: list[AgentRuntimeServiceHealth] = Field(default_factory=list)
+    profileIds: list[str] = Field(default_factory=list)
 
 
 class AgentRuntimeDiagnosticCollection(BaseModel):
@@ -254,6 +353,151 @@ def _review_run_payload(row: Any) -> dict[str, Any] | None:
     }
 
 
+def _audit_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    """Return structured metadata only when an audit row has an object payload."""
+
+    metadata = row.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _audit_text(value: Any) -> str:
+    """Project an audit text scalar into a bounded response value."""
+
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:_MAX_AUDIT_TEXT_LENGTH]
+
+
+def _audit_float(value: Any) -> float | None:
+    """Project a finite numeric audit scalar without coercing arbitrary text."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    result = float(value)
+    return result if isfinite(result) else None
+
+
+def _audit_int(value: Any) -> int:
+    """Project a non-boolean integer audit scalar, defaulting to zero."""
+
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _idle_review_planning_model_result_payload(
+    row: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Project allowlisted model-stage fields without exposing model content."""
+
+    return {
+        "auditId": _audit_int(row.get("id")),
+        "recordedAt": _audit_text(row.get("timestamp")),
+        "outcome": _audit_text(metadata.get("outcome")),
+        "reason": _audit_text(metadata.get("reason")),
+        "failureCode": _audit_text(metadata.get("failure_code")),
+        "modelExecutionId": _audit_text(metadata.get("model_execution_id")),
+        "promptSignature": _audit_text(metadata.get("prompt_signature")),
+        "requestedNextReviewAfterSeconds": _audit_float(
+            metadata.get("requested_next_review_after_seconds")
+        ),
+        "appliedNextReviewAfterSeconds": _audit_float(
+            metadata.get("applied_next_review_after_seconds")
+        ),
+        "proposedNextReviewAt": _audit_float(metadata.get("proposed_next_review_at")),
+        "proposedPlanReason": _audit_text(metadata.get("proposed_plan_reason")),
+    }
+
+
+def _idle_review_planning_application_payload(
+    row: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Project allowlisted application-stage fields without raw audit metadata."""
+
+    return {
+        "auditId": _audit_int(row.get("id")),
+        "recordedAt": _audit_text(row.get("timestamp")),
+        "outcome": _audit_text(metadata.get("outcome")),
+        "reason": _audit_text(metadata.get("reason")),
+        "modelPlanSupplied": bool(metadata.get("model_plan_supplied")),
+        "modelPlanReason": _audit_text(metadata.get("model_plan_reason")),
+        "modelPlanNextReviewAt": _audit_float(metadata.get("model_plan_next_review_at")),
+        "decisionSkippedReason": _audit_text(metadata.get("decision_skipped_reason")),
+        "appliedPlanReason": _audit_text(metadata.get("applied_plan_reason")),
+        "appliedNextReviewAt": _audit_float(metadata.get("applied_next_review_at")),
+        "schedulerState": _audit_text(metadata.get("scheduler_state")),
+    }
+
+
+def _idle_review_planning_decisions(
+    database: Any,
+    *,
+    profile_id: str,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Pair bounded idle-review audit phases by their frozen signal identifier.
+
+    This deliberately consumes only the two internal audit event types and an
+    explicit metadata allowlist. Existing command audits, prompt text, and
+    message content therefore cannot enter the runtime overview response.
+    """
+
+    rows = database.audit.list_by_session_and_command_names(
+        session_id,
+        _IDLE_REVIEW_PLANNING_AUDIT_EVENTS,
+        limit=_IDLE_REVIEW_PLANNING_AUDIT_EVENT_LIMIT,
+    )
+    decisions: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        metadata = _audit_metadata(row)
+        if _audit_text(metadata.get("profile_id")) != profile_id:
+            continue
+        signal_id = _audit_text(metadata.get("signal_id"))
+        if not signal_id:
+            continue
+        decision = decisions.setdefault(
+            signal_id,
+            {
+                "signalId": signal_id,
+                "trigger": _audit_text(metadata.get("trigger")),
+                "activeEpoch": _audit_int(metadata.get("active_epoch")),
+                "checkedAt": _audit_float(metadata.get("checked_at")) or 0.0,
+                "latestAt": _audit_text(row.get("timestamp")),
+                "modelResult": None,
+                "application": None,
+            },
+        )
+        event_name = _audit_text(row.get("command_name"))
+        if event_name == _IDLE_REVIEW_PLANNING_MODEL_RESULT_EVENT:
+            if decision["modelResult"] is None:
+                decision["modelResult"] = _idle_review_planning_model_result_payload(
+                    row,
+                    metadata,
+                )
+        elif event_name == _IDLE_REVIEW_PLANNING_APPLICATION_EVENT:
+            if decision["application"] is None:
+                decision["application"] = _idle_review_planning_application_payload(
+                    row,
+                    metadata,
+                )
+    return list(decisions.values())[:_IDLE_REVIEW_PLANNING_DECISION_LIMIT]
+
+
+def _latest_audit_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return the small latest-audit summary needed by the runtime overview."""
+
+    if row is None:
+        return None
+    return {
+        "id": _audit_int(row.get("id")),
+        "timestamp": _audit_text(row.get("timestamp")),
+        "entryType": _audit_text(row.get("entry_type")),
+        "commandName": _audit_text(row.get("command_name")),
+        "pluginId": _audit_text(row.get("plugin_id")),
+        "success": bool(row.get("success")),
+    }
+
+
 def _platform_state_payload(bot: Any, instance_id: str) -> dict[str, bool]:
     """Build runtime availability flags for an adapter instance.
 
@@ -280,7 +524,8 @@ def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
     if agent_runtime is None or database is None:
         return []
 
-    scheduler = agent_runtime.agent_profile_for_bot(bot_id).agent_scheduler
+    profile = agent_runtime.agent_profile_for_bot(bot_id)
+    scheduler = profile.agent_scheduler
     # The scheduler is already isolated per bot profile, while session ids are
     # anchored to adapter instance ids. Filtering again by bot id would hide
     # valid sessions for the selected profile.
@@ -315,7 +560,12 @@ def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
                 "highPriorityCount": len(scheduler.high_priority_events(session_id)),
                 "latestReviewRun": _review_run_payload(run_row),
                 "latestReviewSummary": _summary_payload(latest_review_summary),
-                "latestAudit": latest_audit,
+                "latestAudit": _latest_audit_payload(latest_audit),
+                "idleReviewPlanningDecisions": _idle_review_planning_decisions(
+                    database,
+                    profile_id=profile.profile_id,
+                    session_id=session_id,
+                ),
             }
         )
     return result
@@ -341,8 +591,7 @@ def _task_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
         return []
     namespace = f"agent:{profile.bot_id or profile.profile_id}:"
     return [
-        _task_snapshot_payload(snapshot)
-        for snapshot in task_manager.snapshots(prefix=namespace)
+        _task_snapshot_payload(snapshot) for snapshot in task_manager.snapshots(prefix=namespace)
     ]
 
 
@@ -356,8 +605,7 @@ def _task_failure_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
         return []
     namespace = f"agent:{profile.bot_id or profile.profile_id}:"
     return [
-        _task_snapshot_payload(snapshot)
-        for snapshot in task_manager.failures(prefix=namespace)
+        _task_snapshot_payload(snapshot) for snapshot in task_manager.failures(prefix=namespace)
     ]
 
 
@@ -404,16 +652,74 @@ def _timer_health_overview(bot: Any, bot_id: str) -> dict[str, Any]:
     for snapshot in active_snapshots:
         service_name = str(snapshot.service_name)
         session_id = service_name.removeprefix(prefix) if service_name.startswith(prefix) else ""
-        active_payloads.append(
-            _service_health_payload(snapshot, session_id=session_id)
-        )
+        active_payloads.append(_service_health_payload(snapshot, session_id=session_id))
     return {
         "reviewDueTimer": (
-            _service_health_payload(review_snapshot)
-            if review_snapshot is not None
-            else None
+            _service_health_payload(review_snapshot) if review_snapshot is not None else None
         ),
         "activeChatTimers": active_payloads,
+    }
+
+
+def _actor_v2_readiness_payload(bot: Any) -> dict[str, Any]:
+    """Project the inactive Actor v2 assembly without exposing mutable ports."""
+
+    agent_runtime = getattr(bot, "agent_runtime", None)
+    diagnostics = (
+        getattr(agent_runtime, "actor_v2_diagnostics", None) if agent_runtime is not None else None
+    )
+    if diagnostics is None:
+        return {
+            "runtimeMode": "not_installed",
+            "activationPermitted": False,
+            "activationBlockers": ["actor_v2_runtime_not_installed"],
+            "handlerGraphComplete": False,
+            "handlerFailures": [],
+            "cleanSessionHandlerGraphComplete": False,
+            "cleanSessionHandlerFailures": [],
+            "effectsRunning": False,
+            "actorWakeTargetAvailable": False,
+            "closed": False,
+            "shutdownComplete": False,
+            "recoveryMaterializationStates": [],
+            "backgroundServices": [],
+            "profileIds": [],
+        }
+    readiness = diagnostics.readiness
+    handler_graph = getattr(agent_runtime, "actor_v2_handler_graph", None)
+    return {
+        "runtimeMode": "diagnostic_only",
+        "activationPermitted": readiness.activation_permitted,
+        "activationBlockers": list(readiness.activation_blockers),
+        "handlerGraphComplete": readiness.handler_graph_complete,
+        "handlerFailures": [
+            {
+                "effectKind": failure.contract.effect_kind,
+                "contractVersion": failure.contract.version,
+                "lane": failure.contract.lane.value,
+                "reason": failure.reason,
+            }
+            for failure in readiness.handler_failures
+        ],
+        "cleanSessionHandlerGraphComplete": (readiness.clean_session_handler_graph_complete),
+        "cleanSessionHandlerFailures": [
+            {
+                "effectKind": failure.contract.effect_kind,
+                "contractVersion": failure.contract.version,
+                "lane": failure.contract.lane.value,
+                "reason": failure.reason,
+            }
+            for failure in readiness.clean_session_handler_failures
+        ],
+        "effectsRunning": diagnostics.effects_running,
+        "actorWakeTargetAvailable": diagnostics.actor_wake_target_available,
+        "closed": diagnostics.closed,
+        "shutdownComplete": diagnostics.shutdown_complete,
+        "recoveryMaterializationStates": list(diagnostics.recovery_materialization_states),
+        "backgroundServices": [
+            _service_health_payload(snapshot) for snapshot in diagnostics.background_service_health
+        ],
+        "profileIds": (list(handler_graph.profile_ids) if handler_graph is not None else []),
     }
 
 
@@ -448,6 +754,21 @@ def get_agent_runtime_overview(bot: Any = BotDep, boot: Any = BootDep) -> dict[s
             )
         )
     return ok([profile.model_dump() for profile in profiles])
+
+
+@router.get(
+    "/actor-v2/readiness",
+    response_model=Envelope[AgentRuntimeActorV2Readiness],
+)
+def get_actor_v2_readiness(bot: Any = BotDep) -> dict[str, Any]:
+    """Return the safe Actor v2 preflight snapshot for operators.
+
+    This endpoint deliberately does not activate or otherwise mutate Actor v2.
+    A diagnostic-only assembly remains unable to receive production traffic even
+    when all currently registered handlers are healthy.
+    """
+
+    return ok(_actor_v2_readiness_payload(bot))
 
 
 @router.get(
@@ -503,7 +824,9 @@ class _ManualActionData(BaseModel):
     "/sessions/{session_id:path}/trigger-review",
     response_model=Envelope[_ManualActionData],
 )
-async def trigger_session_review(session_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
+async def trigger_session_review(
+    session_id: str, bot: Any = BotDep, boot: Any = BootDep
+) -> dict[str, Any]:
     """Manually trigger a review for a session by bringing the review plan forward to now."""
     agent_runtime = getattr(bot, "agent_runtime", None)
     if agent_runtime is None:
@@ -516,7 +839,9 @@ async def trigger_session_review(session_id: str, bot: Any = BotDep, boot: Any =
     "/sessions/{session_id:path}/force-idle",
     response_model=Envelope[_ManualActionData],
 )
-async def force_session_idle(session_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
+async def force_session_idle(
+    session_id: str, bot: Any = BotDep, boot: Any = BootDep
+) -> dict[str, Any]:
     """Force a session back to IDLE from any active state."""
     agent_runtime = getattr(bot, "agent_runtime", None)
     if agent_runtime is None:

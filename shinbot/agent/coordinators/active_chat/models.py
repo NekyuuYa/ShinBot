@@ -123,6 +123,33 @@ class ActiveChatRoundResult:
 
 
 @dataclass(slots=True, frozen=True)
+class ActiveChatRoundCommitIntent:
+    """One validated round outcome awaiting scheduler-owned state mutation.
+
+    The coordinator owns batching and in-memory conversation trace state.  The
+    runtime owns scheduler mutation, so it receives only this immutable intent
+    after a round result has passed coordinator-local validation.
+    """
+
+    session_id: str
+    active_epoch: int
+    consumed_message_log_ids: tuple[int, ...]
+    interest_delta: float
+    force_exit: bool
+    reason: str
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatRoundCommitDecision:
+    """Terminal result of applying an active-chat round commit intent."""
+
+    session_id: str
+    accepted: bool
+    returned_to_idle: bool = False
+    skipped_reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class ActiveChatNotifyResult:
     """Observable result of accepting one active chat message notification."""
 
@@ -175,6 +202,8 @@ __all__ = [
     "ActiveChatNotifyResult",
     "ActiveChatNoReplyIntensity",
     "ActiveChatReplyIntensity",
+    "ActiveChatRoundCommitDecision",
+    "ActiveChatRoundCommitIntent",
     "ActiveChatRoundResult",
     "ActiveChatStartResult",
     "ActiveChatSummarySnapshot",

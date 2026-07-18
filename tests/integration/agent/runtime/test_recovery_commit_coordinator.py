@@ -14,6 +14,9 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
+from shinbot.agent.runtime.session_actor.effect_contracts import (
+    builtin_effect_contract,
+)
 from shinbot.agent.runtime.session_actor.events import (
     ClaimedSessionEvent,
     SessionTransition,
@@ -42,13 +45,18 @@ from shinbot.agent.runtime.session_actor.recovery_scanner import (
     RecoveryScanDisposition,
     SQLiteRecoveryGraphScanner,
 )
+from shinbot.agent.runtime.session_actor.recovery_scanner_service import (
+    DurableRecoveryScannerService,
+)
 from shinbot.agent.runtime.session_actor.reducer import AgentSessionReducer
+from shinbot.agent.runtime.session_actor.registry import AgentSessionActorRegistry
 from shinbot.agent.runtime.session_actor.store import (
     DurableRecordConflict,
     SQLiteSessionActorStore,
 )
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 from shinbot.persistence import DatabaseManager
+from tests.agent_runtime_helpers import wait_for_session_actor_idle
 
 
 def _make_database(tmp_path: Path) -> DatabaseManager:
@@ -60,14 +68,29 @@ def _make_database(tmp_path: Path) -> DatabaseManager:
 
 
 def _review_operation_fence_data(generation: int) -> str:
-    """Return the minimum aggregate fence used by an orphaned review operation."""
+    """Return the full aggregate fence used by an orphaned review operation."""
 
+    contract = builtin_effect_contract("run_review_workflow")
     return json.dumps(
         {
             "operation_fences": {
                 "review-operation": {
                     "operation_id": "review-operation",
+                    "operation_kind": "review",
+                    "source_event_id": "review-launch",
+                    "effect_id": "review-effect",
+                    "effect_kind": "run_review_workflow",
+                    "idempotency_key": "review-effect",
+                    "completion_event_id": "review-completed",
+                    "failure_event_id": "review-failed",
                     "ownership_generation": generation,
+                    "plan_id": "",
+                    "active_epoch": 0,
+                    "activity_generation": 0,
+                    "input_watermark": 0,
+                    "input_ledger_sequence": 0,
+                    "contract_version": contract.version,
+                    "contract_signature": contract.signature,
                 }
             }
         },
@@ -93,6 +116,7 @@ async def _seed_orphaned_review(
         ownership_generation=generation,
     )
     with database.connect() as conn:
+        contract = builtin_effect_contract("run_review_workflow")
         updated = conn.execute(
             """
             UPDATE agent_session_aggregates
@@ -115,14 +139,171 @@ async def _seed_orphaned_review(
             INSERT INTO agent_session_operations (
                 operation_id, profile_id, session_id, ownership_generation,
                 kind, status, launched_by_event_id, state_revision,
-                active_epoch, activity_generation, started_at, metadata_json
+                active_epoch, activity_generation, input_watermark,
+                input_ledger_sequence, started_at, metadata_json
             ) VALUES ('review-operation', ?, ?, ?, 'review', 'pending',
-                      'review-launch', 1, 0, 0, 10, '{}')
+                      'review-launch', 1, 0, 0, 0, 0, 10, '{}')
             """,
             (key.profile_id, key.session_id, generation),
         )
+        conn.execute(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner, lease_until,
+                created_at, updated_at, completed_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, 'review-launch', 'review-operation', ?,
+                      ?, ?, ?, 'failed', 1, 10, '', '', NULL, 10, 10, 10,
+                      'worker_lost_before_completion_delivery')
+            """,
+            (
+                "review-effect",
+                "review-effect",
+                key.profile_id,
+                key.session_id,
+                generation,
+                contract.effect_kind,
+                contract.version,
+                contract.signature,
+                _review_operation_fence_data(generation),
+            ),
+        )
     assert updated.rowcount == 1
     return generation
+
+
+def _insert_cancelled_review_with_running_execution_witness(
+    database: DatabaseManager,
+    *,
+    key: SessionKey,
+    ownership_generation: int,
+) -> None:
+    """Insert valid old-review cancellation evidence after scanner delivery.
+
+    The target outbox is terminally cancelled, but its task-start witness
+    remains running. This state must prevent stale recovery materialization.
+    """
+
+    review_contract = builtin_effect_contract("run_review_workflow")
+    cancellation_contract = builtin_effect_contract(
+        "cancel_review_workflow",
+        version=2,
+    )
+    cancellation_payload = json.dumps(
+        {
+            "operation_id": "old-review-operation",
+            "cancelled_operation_fence": {
+                "operation_id": "old-review-operation",
+                "effect_id": "old-review-effect",
+                "effect_kind": "run_review_workflow",
+                "contract_version": review_contract.version,
+                "contract_signature": review_contract.signature,
+                "ownership_generation": ownership_generation,
+            },
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_session_operations (
+                operation_id, profile_id, session_id, ownership_generation,
+                kind, status, launched_by_event_id, state_revision,
+                active_epoch, activity_generation, input_watermark,
+                input_ledger_sequence, started_at, superseded_at, metadata_json
+            ) VALUES ('old-review-operation', ?, ?, ?, 'review', 'superseded',
+                      'old-review-launch', 1, 0, 0, 0, 0, 10, 15, '{}')
+            """,
+            (key.profile_id, key.session_id, ownership_generation),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner, lease_until,
+                created_at, updated_at, completed_at, last_error
+            ) VALUES ('old-review-effect', 'old-review-effect', ?, ?, ?,
+                      'old-review-launch', 'old-review-operation',
+                      'run_review_workflow', ?, ?, '{}', 'cancelled',
+                      1, 10, '', '', NULL, 10, 20, 20, '')
+            """,
+            (
+                key.profile_id,
+                key.session_id,
+                ownership_generation,
+                review_contract.version,
+                review_contract.signature,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner, lease_until,
+                created_at, updated_at, completed_at, last_error
+            ) VALUES ('cancel-old-review', 'cancel-old-review', ?, ?, ?,
+                      'interrupt-event', 'old-review-operation',
+                      'cancel_review_workflow', ?, ?, ?, 'completed',
+                      1, 15, '', '', NULL, 15, 20, 20, '')
+            """,
+            (
+                key.profile_id,
+                key.session_id,
+                ownership_generation,
+                cancellation_contract.version,
+                cancellation_contract.signature,
+                cancellation_payload,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_review_cancellation_gates (
+                profile_id, session_id, ownership_generation,
+                cancellation_effect_id, request_event_id,
+                review_operation_id, review_effect_id, review_effect_kind,
+                review_contract_version, review_contract_signature,
+                gate_status, target_effect_status, target_effect_claim_id,
+                target_effect_attempt_count, target_effect_terminal_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, 'cancel-old-review', 'interrupt-event',
+                      'old-review-operation', 'old-review-effect',
+                      'run_review_workflow', ?, ?, 'cancelled', 'cancelled',
+                      'old-review-claim', 1, 20, 15, 20)
+            """,
+            (
+                key.profile_id,
+                key.session_id,
+                ownership_generation,
+                review_contract.version,
+                review_contract.signature,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_review_execution_runs (
+                profile_id, session_id, ownership_generation,
+                review_effect_id, review_operation_id, review_effect_kind,
+                review_contract_version, review_contract_signature,
+                claim_id, worker_id, execution_status, started_at
+            ) VALUES (?, ?, ?, 'old-review-effect', 'old-review-operation',
+                      'run_review_workflow', ?, ?, 'old-review-claim',
+                      'old-review-worker', 'running', 10)
+            """,
+            (
+                key.profile_id,
+                key.session_id,
+                ownership_generation,
+                review_contract.version,
+                review_contract.signature,
+            ),
+        )
 
 
 class _ApplyingMaterializer:
@@ -425,6 +606,51 @@ def _recovery_state(
     return tuple(aggregate), tuple(mailbox), tuple(case)
 
 
+@pytest.mark.asyncio
+async def test_recovery_service_wakes_registry_after_typed_delivery(
+    tmp_path: Path,
+) -> None:
+    """The supervised scan reaches the normal fenced actor commit boundary."""
+
+    database = _make_database(tmp_path)
+    key = SessionKey("profile-a", "bot:group:recovery-service")
+    await _seed_orphaned_review(database, key=key)
+    materializer = _ApplyingMaterializer()
+    store = _coordinated_store(database, materializers={"review": materializer})
+    registry = AgentSessionActorRegistry(
+        store=store,
+        handler=AgentSessionReducer().reduce,
+    )
+    service = DurableRecoveryScannerService(
+        SQLiteRecoveryGraphScanner(database, clock=lambda: 100.0),
+        wake_target=registry,
+    )
+
+    try:
+        summary = await service.run_once()
+
+        assert summary.delivered_count == 1
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="durable recovery scanner service",
+        )
+        aggregate = await store.load(key)
+        assert aggregate.state == "idle"
+        assert aggregate.data == {"recovered_operation": "review-operation"}
+        assert materializer.calls == 1
+        with database.connect() as conn:
+            case = conn.execute(
+                "SELECT status FROM agent_session_recovery_cases"
+            ).fetchone()
+        assert case is not None
+        assert str(case["status"]) == "applied"
+    finally:
+        await service.shutdown()
+        await registry.shutdown()
+
+
 def _append_intervening_no_op_transition(
     database: DatabaseManager,
     *,
@@ -656,6 +882,71 @@ async def test_coordinator_supersedes_changed_graph_without_materializing(
         ).fetchone()
     assert disposition is not None
     assert str(disposition[0]) == "recovery_superseded"
+
+
+async def test_coordinator_supersedes_stale_delivery_when_cancelled_review_is_running(
+    tmp_path: Path,
+) -> None:
+    """A post-scan running witness prevents stale review recovery from applying.
+
+    Scanner delivery is intentionally created before the old review's durable
+    cancellation evidence arrives. Commit-time graph reconstruction must see
+    that evidence and settle the stale delivery without materializing idle.
+    """
+
+    database = _make_database(tmp_path)
+    key = SessionKey("profile-a", "bot:group:room")
+    generation = await _seed_orphaned_review(database, key=key)
+    assert SQLiteRecoveryGraphScanner(database, clock=lambda: 100.0).scan().delivered_count == 1
+    materializer = _ApplyingMaterializer()
+    store = _coordinated_store(database, materializers={"review": materializer})
+    claim, aggregate, transition = await _claim_and_reduce(store, key=key)
+
+    _insert_cancelled_review_with_running_execution_witness(
+        database,
+        key=key,
+        ownership_generation=generation,
+    )
+
+    committed = await store.commit(
+        claim,
+        transition,
+        expected_revision=aggregate.state_revision,
+    )
+
+    assert materializer.calls == 0
+    assert (committed.state, committed.state_revision, committed.event_sequence) == (
+        "review",
+        1,
+        1,
+    )
+    aggregate_row, mailbox_row, case_row = _recovery_state(
+        database,
+        key=key,
+        event_id=claim.envelope.event_id,
+    )
+    assert aggregate_row == ("review", 1, 1)
+    assert mailbox_row[0] == "completed"
+    assert case_row == (
+        "superseded",
+        1,
+        1,
+        "recovery_semantic_graph_changed",
+    )
+    with database.connect() as conn:
+        journal = conn.execute(
+            """
+            SELECT disposition, metadata_json
+            FROM agent_state_transitions
+            WHERE event_id = ?
+            """,
+            (claim.envelope.event_id,),
+        ).fetchone()
+    assert journal is not None
+    assert str(journal["disposition"]) == "recovery_superseded"
+    recovery_result = json.loads(str(journal["metadata_json"]))["result"]["recovery"]
+    assert recovery_result["outcome"] == "superseded"
+    assert recovery_result["reason_code"] == "recovery_semantic_graph_changed"
 
 
 async def test_coordinator_blocks_missing_or_explicit_materialization(
@@ -1196,14 +1487,7 @@ async def test_materializer_cannot_leak_recovery_authority_through_aggregate_sta
         1,
         1,
     )
-    assert committed.data == {
-        "operation_fences": {
-            "review-operation": {
-                "operation_id": "review-operation",
-                "ownership_generation": 1,
-            }
-        }
-    }
+    assert committed.data == json.loads(_review_operation_fence_data(1))
     aggregate_row, mailbox_row, case_row = _recovery_state(
         database,
         key=key,

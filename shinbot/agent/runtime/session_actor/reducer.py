@@ -36,6 +36,9 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionReviewScheduleEvent,
     SessionTransition,
 )
+from shinbot.agent.runtime.session_actor.execution_control import (
+    ReviewCancellationGateRequest,
+)
 from shinbot.agent.runtime.session_actor.external_actions import (
     ExternalActionIntent,
     ExternalActionKind,
@@ -46,6 +49,11 @@ from shinbot.agent.runtime.session_actor.external_actions import (
 from shinbot.agent.runtime.session_actor.idle_review_planning import (
     IdleReviewPlanningInput,
 )
+from shinbot.agent.runtime.session_actor.manual_review import (
+    MANUAL_REVIEW_EVENT_SOURCE,
+    ManualReviewRequest,
+    ManualReviewRequestError,
+)
 from shinbot.agent.runtime.session_actor.message_ledger import (
     AppendMessageLedgerEntry,
     ConsumeMessageLedgerEntries,
@@ -54,6 +62,17 @@ from shinbot.agent.runtime.session_actor.message_ledger import (
     MessageWatermarkDisposition,
     append_message_ledger_entry_from_payload,
     classify_message_watermark,
+)
+from shinbot.agent.runtime.session_actor.model_execution_cancellation_gate import (
+    MODEL_EXECUTION_CANCELLATION_EFFECT_KIND,
+    ModelExecutionCancellationGateObservation,
+    ModelExecutionCancellationGateRequest,
+    ModelExecutionCancellationGateStatus,
+    is_model_execution_cancellation_target,
+)
+from shinbot.agent.runtime.session_actor.model_execution_witness import (
+    MODEL_EXECUTION_UNKNOWN_EVENT_SOURCE,
+    ModelExecutionUnknownNotice,
 )
 from shinbot.agent.runtime.session_actor.recovery import (
     RECOVERY_DELIVERY_EVENT_SOURCE,
@@ -64,6 +83,10 @@ from shinbot.agent.runtime.session_actor.recovery_commit import RecoveryCommitIn
 from shinbot.agent.runtime.session_actor.review_due_identity import (
     REVIEW_DUE_EVENT_SOURCE,
     review_due_event_id,
+)
+from shinbot.agent.runtime.session_actor.review_execution_gate import (
+    REVIEW_EXECUTION_UNKNOWN_EVENT_SOURCE,
+    ReviewExecutionUnknownNotice,
 )
 from shinbot.agent.runtime.session_actor.workflow_completion import (
     ActiveChatBootstrapCompletionResult,
@@ -93,15 +116,15 @@ class AgentSessionEventKind(StrEnum):
 
     EXIT_REQUESTED = "ExitRequested"
     IDLE_REVIEW_PLANNING_COMPLETED = "IdleReviewPlanningCompleted"
-    IDLE_REVIEW_PLANNING_DEADLINE_REACHED = (
-        "IdleReviewPlanningDeadlineReached"
-    )
+    IDLE_REVIEW_PLANNING_DEADLINE_REACHED = "IdleReviewPlanningDeadlineReached"
     MESSAGE_RECEIVED = "MessageReceived"
     RECOVERY_REQUESTED = "RecoveryRequested"
     REVIEW_DUE = "ReviewDue"
     MANUAL_REVIEW_REQUESTED = "ManualReviewRequested"
     ACTIVE_REPLY_COMPLETED = "ActiveReplyCompleted"
     REVIEW_CANCELLATION_COMPLETED = "ReviewCancellationCompleted"
+    REVIEW_EXECUTION_UNKNOWN = "ReviewExecutionUnknown"
+    MODEL_EXECUTION_UNKNOWN = "ModelExecutionUnknown"
     REVIEW_COMPLETED = "ReviewCompleted"
     ACTIVE_CHAT_BOOTSTRAP_COMPLETED = "ActiveChatBootstrapCompleted"
     ACTIVE_CHAT_ROUND_DUE = "ActiveChatRoundDue"
@@ -111,23 +134,19 @@ class AgentSessionEventKind(StrEnum):
     EFFECT_FAILED = "EffectFailed"
     EFFECT_QUARANTINED = "EffectQuarantined"
     ACTIVE_CHAT_RUNTIME_STOPPED = "ActiveChatRuntimeStopped"
-    IDLE_REVIEW_PLANNING_CANCELLATION_COMPLETED = (
-        "IdleReviewPlanningCancellationCompleted"
-    )
+    IDLE_REVIEW_PLANNING_CANCELLATION_COMPLETED = "IdleReviewPlanningCancellationCompleted"
+    MODEL_EXECUTION_CANCELLATION_COMPLETED = "ModelExecutionCancellationCompleted"
     ACTIVE_CHAT_RUNTIME_RECONCILED = "ActiveChatRuntimeReconciled"
-    IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILED = (
-        "IdleReviewPlanningCancellationReconciled"
-    )
+    IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILED = "IdleReviewPlanningCancellationReconciled"
 
 
 class AgentSessionEffectKind(StrEnum):
     """Durable effect kinds emitted by active-chat exit reduction."""
 
     RUN_IDLE_REVIEW_PLANNING = "run_idle_review_planning"
-    ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE = (
-        "enqueue_idle_review_planning_deadline"
-    )
+    ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE = "enqueue_idle_review_planning_deadline"
     CANCEL_IDLE_REVIEW_PLANNING = "cancel_idle_review_planning"
+    CANCEL_MODEL_EXECUTION = MODEL_EXECUTION_CANCELLATION_EFFECT_KIND
     STOP_ACTIVE_CHAT_RUNTIME = "stop_active_chat_runtime"
     RUN_REVIEW_WORKFLOW = "run_review_workflow"
     RUN_ACTIVE_REPLY_WORKFLOW = "run_active_reply_workflow"
@@ -149,15 +168,14 @@ _PENDING_OUTBOUND_DATA_KEY = "pending_outbound_actions"
 _OUTBOUND_BLOCKED_DATA_KEY = "outbound_blocked"
 _OUTBOUND_CONTINUATION_DATA_KEY = "outbound_continuation"
 _REVIEW_CANCELLATION_BLOCKER_DATA_KEY = "review_cancellation_blocked"
+_MODEL_EXECUTION_BLOCKER_DATA_KEY = "model_execution_blocked"
 _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION = 3
 _ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY = "actor_workflow_contract_version"
 _ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY = "round_retry_chain"
 _ACTIVE_CHAT_ROUND_RETRY_BLOCKER_STATE_KEY = "round_retry_blocker"
 _EFFECT_QUARANTINE_EVENT_SOURCE = "effect_store"
 _ACTIVE_CHAT_HANDOFF_CERTIFICATE_VERSION = 1
-_ACTOR_NATIVE_BOOTSTRAP_PRESETS: dict[
-    ActiveChatBootstrapDisposition, tuple[float, float]
-] = {
+_ACTOR_NATIVE_BOOTSTRAP_PRESETS: dict[ActiveChatBootstrapDisposition, tuple[float, float]] = {
     ActiveChatBootstrapDisposition.EXIT_SOON: (15.0, 10.0),
     ActiveChatBootstrapDisposition.WATCH: (20.0, 20.0),
     ActiveChatBootstrapDisposition.CASUAL: (30.0, 25.0),
@@ -220,9 +238,7 @@ class _SettledScheduleOutcome:
 class Planned(_SettledScheduleOutcome):
     """A planner supplied a usable delay which the policy accepted."""
 
-    kind: ClassVar[IdleReviewScheduleOutcomeKind] = (
-        IdleReviewScheduleOutcomeKind.PLANNED
-    )
+    kind: ClassVar[IdleReviewScheduleOutcomeKind] = IdleReviewScheduleOutcomeKind.PLANNED
 
     def __post_init__(self) -> None:
         """Require the model-requested delay for a planned outcome."""
@@ -236,9 +252,7 @@ class Planned(_SettledScheduleOutcome):
 class Defaulted(_SettledScheduleOutcome):
     """The planner requested the configured default review delay."""
 
-    kind: ClassVar[IdleReviewScheduleOutcomeKind] = (
-        IdleReviewScheduleOutcomeKind.DEFAULTED
-    )
+    kind: ClassVar[IdleReviewScheduleOutcomeKind] = IdleReviewScheduleOutcomeKind.DEFAULTED
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -254,9 +268,7 @@ class Failed(_SettledScheduleOutcome):
 class Bypassed(_SettledScheduleOutcome):
     """The caller intentionally bypassed model planning."""
 
-    kind: ClassVar[IdleReviewScheduleOutcomeKind] = (
-        IdleReviewScheduleOutcomeKind.BYPASSED
-    )
+    kind: ClassVar[IdleReviewScheduleOutcomeKind] = IdleReviewScheduleOutcomeKind.BYPASSED
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -272,9 +284,7 @@ class Superseded:
     actual_activity_generation: int
     actual_state: str
     active_operation_id: str
-    kind: ClassVar[IdleReviewScheduleOutcomeKind] = (
-        IdleReviewScheduleOutcomeKind.SUPERSEDED
-    )
+    kind: ClassVar[IdleReviewScheduleOutcomeKind] = IdleReviewScheduleOutcomeKind.SUPERSEDED
 
     def to_payload(self) -> dict[str, Any]:
         """Return a JSON-compatible representation for the stale journal."""
@@ -353,21 +363,13 @@ class IdleExitReducerConfig:
             "maximum_review_delay_seconds": self.maximum_review_delay_seconds,
             "planning_deadline_seconds": self.planning_deadline_seconds,
             "busy_review_retry_seconds": self.busy_review_retry_seconds,
-            "provisional_active_chat_interest": (
-                self.provisional_active_chat_interest
-            ),
+            "provisional_active_chat_interest": (self.provisional_active_chat_interest),
             "provisional_active_chat_half_life_seconds": (
                 self.provisional_active_chat_half_life_seconds
             ),
-            "active_chat_semantic_wait_seconds": (
-                self.active_chat_semantic_wait_seconds
-            ),
-            "active_chat_tick_interval_seconds": (
-                self.active_chat_tick_interval_seconds
-            ),
-            "active_chat_idle_interest_threshold": (
-                self.active_chat_idle_interest_threshold
-            ),
+            "active_chat_semantic_wait_seconds": (self.active_chat_semantic_wait_seconds),
+            "active_chat_tick_interval_seconds": (self.active_chat_tick_interval_seconds),
+            "active_chat_idle_interest_threshold": (self.active_chat_idle_interest_threshold),
             "active_chat_max_interest": self.active_chat_max_interest,
         }
         for name, value in values.items():
@@ -390,9 +392,7 @@ class IdleExitReducerConfig:
         if self.planning_deadline_seconds <= 0:
             raise ValueError("planning_deadline_seconds must be positive")
         if self.provisional_active_chat_half_life_seconds <= 0:
-            raise ValueError(
-                "provisional_active_chat_half_life_seconds must be positive"
-            )
+            raise ValueError("provisional_active_chat_half_life_seconds must be positive")
         if self.active_chat_tick_interval_seconds <= 0:
             raise ValueError("active_chat_tick_interval_seconds must be positive")
         if self.active_chat_max_interest <= 0:
@@ -456,6 +456,22 @@ class AgentSessionReducer:
 
         if aggregate.key != event.key:
             raise ValueError("session event key does not match aggregate ownership")
+        if (
+            _model_execution_unknown_reason(aggregate.data)
+            and event.kind
+            in {
+                AgentSessionEventKind.ACTIVE_REPLY_COMPLETED,
+                AgentSessionEventKind.ACTIVE_CHAT_BOOTSTRAP_COMPLETED,
+                AgentSessionEventKind.ACTIVE_CHAT_ROUND_COMPLETED,
+                AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED,
+            }
+        ):
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_completion_execution_unknown_blocked",
+                reason=_model_execution_unknown_reason(aggregate.data),
+            )
         if event.kind == AgentSessionEventKind.RECOVERY_REQUESTED:
             return self._recovery_requested(aggregate, event)
         if event.kind == AgentSessionEventKind.EXIT_REQUESTED:
@@ -464,10 +480,16 @@ class AgentSessionReducer:
             return self._receive_message(aggregate, event)
         if event.kind == AgentSessionEventKind.REVIEW_DUE:
             return self._review_due(aggregate, event)
+        if event.kind == AgentSessionEventKind.MANUAL_REVIEW_REQUESTED:
+            return self._manual_review_requested(aggregate, event)
         if event.kind == AgentSessionEventKind.ACTIVE_REPLY_COMPLETED:
             return self._active_reply_completed(aggregate, event)
         if event.kind == AgentSessionEventKind.REVIEW_CANCELLATION_COMPLETED:
             return self._review_cancellation_completed(aggregate, event)
+        if event.kind == AgentSessionEventKind.REVIEW_EXECUTION_UNKNOWN:
+            return self._review_execution_unknown(aggregate, event)
+        if event.kind == AgentSessionEventKind.MODEL_EXECUTION_UNKNOWN:
+            return self._model_execution_unknown(aggregate, event)
         if event.kind == AgentSessionEventKind.REVIEW_COMPLETED:
             return self._review_completed(aggregate, event)
         if event.kind == AgentSessionEventKind.ACTIVE_CHAT_BOOTSTRAP_COMPLETED:
@@ -490,6 +512,8 @@ class AgentSessionReducer:
             AgentSessionEventKind.IDLE_REVIEW_PLANNING_CANCELLATION_COMPLETED,
         }:
             return self._control_completed(aggregate, event)
+        if event.kind == AgentSessionEventKind.MODEL_EXECUTION_CANCELLATION_COMPLETED:
+            return self._model_execution_cancellation_completed(aggregate, event)
         if event.kind in {
             AgentSessionEventKind.ACTIVE_CHAT_RUNTIME_RECONCILED,
             AgentSessionEventKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILED,
@@ -613,12 +637,8 @@ class AgentSessionReducer:
             "requested_delay_seconds": requested,
             "reason": _text(values.get("reason")) or f"idle_review_{kind.value}",
             "fallback_reason": "",
-            "mention_sensitivity": (
-                _text(values.get("mention_sensitivity")) or "normal"
-            ),
-            "active_reply_threshold": _mapping(
-                values.get("active_reply_threshold")
-            ),
+            "mention_sensitivity": (_text(values.get("mention_sensitivity")) or "normal"),
+            "active_reply_threshold": _mapping(values.get("active_reply_threshold")),
             "model_execution_id": model_execution_id,
             "prompt_signature": prompt_signature,
             "source": source,
@@ -626,26 +646,19 @@ class AgentSessionReducer:
         if kind is IdleReviewScheduleOutcomeKind.PLANNED:
             return Planned(**common)
         if kind is IdleReviewScheduleOutcomeKind.DEFAULTED:
-            common["fallback_reason"] = (
-                common["fallback_reason"] or "planner_requested_default"
-            )
+            common["fallback_reason"] = common["fallback_reason"] or "planner_requested_default"
             return Defaulted(**common)
         if kind is IdleReviewScheduleOutcomeKind.FAILED:
-            common["fallback_reason"] = (
-                common["fallback_reason"] or "idle_review_planning_failed"
-            )
+            common["fallback_reason"] = common["fallback_reason"] or "idle_review_planning_failed"
             return Failed(
                 **common,
                 failure_code=(
-                    _text(event.payload.get("failure_code"))
-                    or "idle_review_planning_failed"
+                    _text(event.payload.get("failure_code")) or "idle_review_planning_failed"
                 ),
                 failure_message=_text(event.payload.get("failure_message")),
             )
         if kind is IdleReviewScheduleOutcomeKind.BYPASSED:
-            common["fallback_reason"] = (
-                common["fallback_reason"] or "idle_review_planning_bypassed"
-            )
+            common["fallback_reason"] = common["fallback_reason"] or "idle_review_planning_bypassed"
             return Bypassed(**common)
         return self._invalid_outcome(
             event,
@@ -682,6 +695,13 @@ class AgentSessionReducer:
                 event,
                 disposition="ignored_exit_outside_active_chat",
                 reason=f"exit_requested_from:{aggregate.state}",
+            )
+        if blocker_reason := _model_execution_unknown_reason(aggregate.data):
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="active_chat_exit_model_execution_blocked",
+                reason=blocker_reason,
             )
 
         event_time = _event_time(aggregate, event)
@@ -731,8 +751,7 @@ class AgentSessionReducer:
             purpose="run-idle-planning-failure-event",
         )
         planner_idempotency_key = (
-            _text(event.payload.get("planner_idempotency_key"))
-            or planner_effect_id
+            _text(event.payload.get("planner_idempotency_key")) or planner_effect_id
         )
         deadline_effect_id = self._payload_or_generated_id(
             event,
@@ -747,8 +766,7 @@ class AgentSessionReducer:
             purpose="idle-planning-deadline-failure-event",
         )
         deadline_idempotency_key = (
-            _text(event.payload.get("deadline_idempotency_key"))
-            or deadline_effect_id
+            _text(event.payload.get("deadline_idempotency_key")) or deadline_effect_id
         )
         deadline_delay_seconds = self._config.planning_deadline_seconds
         input_watermark = _message_watermark(aggregate.data)
@@ -915,23 +933,15 @@ class AgentSessionReducer:
         ):
             mismatch.append("message_watermark_changed")
         if event.kind != AgentSessionEventKind.EFFECT_QUARANTINED:
-            supplied_watermark_valid, supplied_watermark = (
-                _strict_optional_nonnegative_int(
-                    event.payload.get("expected_message_watermark")
-                )
+            supplied_watermark_valid, supplied_watermark = _strict_optional_nonnegative_int(
+                event.payload.get("expected_message_watermark")
             )
-            if (
-                not supplied_watermark_valid
-                or supplied_watermark != expected_watermark
-            ):
+            if not supplied_watermark_valid or supplied_watermark != expected_watermark:
                 mismatch.append("expected_message_watermark_changed")
         epoch_valid, expected_epoch = _strict_optional_nonnegative_int(
             intent.get("expected_active_epoch")
         )
-        if (
-            not epoch_valid
-            or expected_epoch is None
-        ):
+        if not epoch_valid or expected_epoch is None:
             mismatch.append("expected_active_epoch_changed")
         elif event.kind != AgentSessionEventKind.EFFECT_QUARANTINED:
             supplied_epoch_valid, supplied_epoch = _strict_optional_nonnegative_int(
@@ -981,10 +991,31 @@ class AgentSessionReducer:
             aggregate,
             event,
         )
-        if aggregate.state in {
-            AgentSessionState.IDLE,
-            AgentSessionState.REVIEW,
-        } and append.priority.should_wake_active_reply:
+        if (
+            (blocker_reason := _model_execution_unknown_reason(data))
+            and not _review_cancellation_blocks_active_reply(data)
+        ):
+            return self._attach_initial_review_plan(
+                self._message_recorded(
+                    aggregate,
+                    event,
+                    append=append,
+                    data=data,
+                    disposition="message_recorded_model_execution_blocked",
+                    reason=blocker_reason,
+                    force_state_changed=initial_outcome is not None,
+                ),
+                event,
+                outcome=initial_outcome,
+            )
+        if (
+            aggregate.state
+            in {
+                AgentSessionState.IDLE,
+                AgentSessionState.REVIEW,
+            }
+            and append.priority.should_wake_active_reply
+        ):
             if _review_cancellation_blocks_active_reply(data):
                 return self._attach_initial_review_plan(
                     self._message_recorded(
@@ -1053,9 +1084,7 @@ class AgentSessionReducer:
         plan_id = self._pending_plan_id(aggregate, operation_id)
         pending = _mapping(aggregate.data.get("idle_exit"))
         operation_fence = _operation_fence(aggregate.data, operation_id)
-        input_watermark = _optional_nonnegative_int(
-            operation_fence.get("input_watermark")
-        )
+        input_watermark = _optional_nonnegative_int(operation_fence.get("input_watermark"))
         input_ledger_sequence = _optional_nonnegative_int(
             operation_fence.get("input_ledger_sequence")
         )
@@ -1087,6 +1116,11 @@ class AgentSessionReducer:
         cancel_idempotency_key = ""
         cancel_completion_event_id = ""
         cancel_failure_event_id = ""
+        cancel_effect_kind = AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
+        model_execution_cancellation_gate_requests: list[
+            ModelExecutionCancellationGateRequest
+        ] = []
+        cancelled_model_effect_fence: dict[str, Any] = {}
         if operation_id:
             cancel_effect_id = self._payload_or_generated_id(
                 event,
@@ -1095,8 +1129,7 @@ class AgentSessionReducer:
                 purpose="cancel-idle-planning-effect",
             )
             cancel_idempotency_key = (
-                _text(event.payload.get("cancel_idempotency_key"))
-                or cancel_effect_id
+                _text(event.payload.get("cancel_idempotency_key")) or cancel_effect_id
             )
             cancel_completion_event_id = self._payload_or_generated_id(
                 event,
@@ -1110,20 +1143,40 @@ class AgentSessionReducer:
                 seed=cancel_effect_id,
                 purpose="cancel-idle-planning-failure-event",
             )
+            if is_model_execution_cancellation_target(
+                effect_kind=_text(operation_fence.get("effect_kind")),
+                contract_version=_optional_nonnegative_int(
+                    operation_fence.get("contract_version")
+                )
+                or 0,
+            ):
+                cancel_effect_kind = AgentSessionEffectKind.CANCEL_MODEL_EXECUTION
+                cancelled_model_effect_fence = dict(operation_fence)
+                model_execution_cancellation_gate_requests.append(
+                    ModelExecutionCancellationGateRequest(
+                        key=event.key,
+                        ownership_generation=aggregate.ownership_generation,
+                        cancellation_effect_id=cancel_effect_id,
+                        request_event_id=event.event_id,
+                        target_operation_id=operation_id,
+                        target_effect_id=operation_fence.get("effect_id"),
+                        target_effect_kind=operation_fence.get("effect_kind"),
+                        target_contract_version=operation_fence.get("contract_version"),
+                        target_contract_signature=operation_fence.get(
+                            "contract_signature"
+                        ),
+                    )
+                )
             data = _with_control_intent(
                 data,
-                effect_kind=AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+                effect_kind=cancel_effect_kind,
                 intent={
                     "desired_state": "cancelled",
                     "status": "requested",
                     "effect_id": cancel_effect_id,
-                    "effect_kind": (
-                        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
-                    ),
+                    "effect_kind": cancel_effect_kind,
                     "idempotency_key": cancel_idempotency_key,
-                    **_effect_contract_snapshot(
-                        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
-                    ),
+                    **_effect_contract_snapshot(cancel_effect_kind),
                     "completion_event_id": cancel_completion_event_id,
                     "failure_event_id": cancel_failure_event_id,
                     "operation_id": operation_id,
@@ -1136,8 +1189,15 @@ class AgentSessionReducer:
                     "causation_id": event.event_id,
                     "expected_state": AgentSessionState.ACTIVE_CHAT.value,
                     "expected_active_epoch": aggregate.active_epoch,
-                    "expected_activity_generation": (
-                        aggregate.activity_generation + 1
+                    "expected_activity_generation": (aggregate.activity_generation + 1),
+                    **(
+                        {
+                            "cancelled_model_effect_fence": (
+                                cancelled_model_effect_fence
+                            )
+                        }
+                        if cancelled_model_effect_fence
+                        else {}
                     ),
                 },
             )
@@ -1171,7 +1231,7 @@ class AgentSessionReducer:
             effects = (
                 _durable_effect(
                     effect_id=cancel_effect_id,
-                    kind=AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+                    kind=cancel_effect_kind,
                     idempotency_key=cancel_idempotency_key,
                     operation_id=operation_id,
                     payload={
@@ -1184,6 +1244,15 @@ class AgentSessionReducer:
                         "completion_event_id": cancel_completion_event_id,
                         "failure_event_id": cancel_failure_event_id,
                         "superseded_by_event_id": event.event_id,
+                        **(
+                            {
+                                "cancelled_model_effect_fence": (
+                                    cancelled_model_effect_fence
+                                )
+                            }
+                            if cancelled_model_effect_fence
+                            else {}
+                        ),
                     },
                 ),
             )
@@ -1214,12 +1283,18 @@ class AgentSessionReducer:
                 operations=operations,
                 message_ledger_mutations=(append,),
                 review_schedule_events=schedule_events,
+                model_execution_cancellation_gate_requests=tuple(
+                    model_execution_cancellation_gate_requests
+                ),
                 result={
                     "operation_id": operation_id,
                     "plan_id": plan_id,
                     "activity_generation": target.activity_generation,
                     "outcome": IdleReviewScheduleOutcomeKind.SUPERSEDED.value,
                     "deadline_effect_contract": "skip_when_operation_terminal",
+                    "model_execution_cancellation": bool(
+                        model_execution_cancellation_gate_requests
+                    ),
                 },
                 reason="message_received_while_settling",
             ),
@@ -1431,9 +1506,7 @@ class AgentSessionReducer:
             "source_event_id": cancel_completion_event_id or event.event_id,
             "effect_id": effect_id,
             "effect_kind": AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW,
-            **_effect_contract_snapshot(
-                AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW
-            ),
+            **_effect_contract_snapshot(AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW),
             "idempotency_key": effect_id,
             "completion_event_id": completion_event_id,
             "failure_event_id": failure_event_id,
@@ -1444,9 +1517,7 @@ class AgentSessionReducer:
             "input_watermark": input_watermark,
             "input_ledger_sequence": None,
             "instance_id": _text(delivery_context.get("instance_id")),
-            "target_session_id": _text(
-                delivery_context.get("target_session_id")
-            ),
+            "target_session_id": _text(delivery_context.get("target_session_id")),
             "message_log_ids": [append.message_log_id],
             "response_profile": append.response_profile,
             "sender_id": append.sender_id,
@@ -1454,6 +1525,7 @@ class AgentSessionReducer:
         next_data = _with_operation_fence(data, operation_id, operation_fence)
         operations: list[SessionOperation] = []
         effects: list[SessionEffect] = []
+        review_cancellation_gate_requests: list[ReviewCancellationGateRequest] = []
         resume: dict[str, Any] = {}
         awaiting_review_cancellation = False
         if aggregate.state == AgentSessionState.REVIEW:
@@ -1468,6 +1540,19 @@ class AgentSessionReducer:
                 review_fence = _operation_fence(
                     aggregate.data,
                     review_operation_id,
+                )
+                review_cancellation_gate_requests.append(
+                    ReviewCancellationGateRequest(
+                        key=event.key,
+                        ownership_generation=aggregate.ownership_generation,
+                        cancellation_effect_id=cancel_effect_id,
+                        request_event_id=event.event_id,
+                        review_operation_id=review_operation_id,
+                        review_effect_id=review_fence.get("effect_id"),
+                        review_effect_kind=review_fence.get("effect_kind"),
+                        review_contract_version=review_fence.get("contract_version"),
+                        review_contract_signature=review_fence.get("contract_signature"),
+                    )
                 )
                 cancel_contract = builtin_effect_contract(
                     AgentSessionEffectKind.CANCEL_REVIEW_WORKFLOW
@@ -1501,9 +1586,7 @@ class AgentSessionReducer:
                         "desired_state": "cancelled",
                         "status": "requested",
                         "effect_id": cancel_effect_id,
-                        "effect_kind": (
-                            AgentSessionEffectKind.CANCEL_REVIEW_WORKFLOW
-                        ),
+                        "effect_kind": (AgentSessionEffectKind.CANCEL_REVIEW_WORKFLOW),
                         "idempotency_key": cancel_effect_id,
                         "contract_version": cancel_contract.version,
                         "contract_signature": cancel_contract.signature,
@@ -1525,13 +1608,9 @@ class AgentSessionReducer:
                         "pending_active_reply": {
                             "operation_id": operation_id,
                             "effect_id": effect_id,
-                            "effect_kind": (
-                                AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW
-                            ),
+                            "effect_kind": (AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW),
                             "idempotency_key": effect_id,
-                            "source_event_id": (
-                                cancel_completion_event_id or event.event_id
-                            ),
+                            "source_event_id": (cancel_completion_event_id or event.event_id),
                             "completion_event_id": completion_event_id,
                             "failure_event_id": failure_event_id,
                             "message_log_ids": [append.message_log_id],
@@ -1587,9 +1666,7 @@ class AgentSessionReducer:
                 "priority": append.priority.to_record(),
                 "resume": resume,
                 "launch_status": (
-                    "awaiting_review_cancellation"
-                    if awaiting_review_cancellation
-                    else "ready"
+                    "awaiting_review_cancellation" if awaiting_review_cancellation else "ready"
                 ),
             },
         )
@@ -1615,6 +1692,7 @@ class AgentSessionReducer:
             effects=tuple(effects),
             operations=tuple(operations),
             message_ledger_mutations=(append,),
+            review_cancellation_gate_requests=tuple(review_cancellation_gate_requests),
             result={
                 "message_log_id": append.message_log_id,
                 "operation_id": operation_id,
@@ -1689,18 +1767,14 @@ class AgentSessionReducer:
         )
         activity_generation = aggregate.activity_generation + 1
         input_watermark = _message_watermark(data)
-        delivery_context = _mapping(
-            data.get(_DELIVERY_CONTEXT_DATA_KEY)
-        )
+        delivery_context = _mapping(data.get(_DELIVERY_CONTEXT_DATA_KEY))
         operation_fence = {
             "operation_id": operation_id,
             "operation_kind": "active_reply",
             "source_event_id": event.event_id,
             "effect_id": effect_id,
             "effect_kind": AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW,
-            **_effect_contract_snapshot(
-                AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW
-            ),
+            **_effect_contract_snapshot(AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW),
             "idempotency_key": effect_id,
             "completion_event_id": completion_event_id,
             "failure_event_id": failure_event_id,
@@ -1711,9 +1785,7 @@ class AgentSessionReducer:
             "input_watermark": input_watermark,
             "input_ledger_sequence": None,
             "instance_id": _text(delivery_context.get("instance_id")),
-            "target_session_id": _text(
-                delivery_context.get("target_session_id")
-            ),
+            "target_session_id": _text(delivery_context.get("target_session_id")),
             "message_log_ids": list(pending_message_log_ids),
         }
         next_data = _with_operation_fence(
@@ -1823,11 +1895,11 @@ class AgentSessionReducer:
         ):
             active_chat_state, scheduled_effect, round_intent = (
                 self._schedule_active_chat_round_due(
-                aggregate,
-                event,
-                active_chat_state=active_chat_state,
-                input_watermark=_message_watermark(data),
-                delay_seconds=self._config.active_chat_semantic_wait_seconds,
+                    aggregate,
+                    event,
+                    active_chat_state=active_chat_state,
+                    input_watermark=_message_watermark(data),
+                    delay_seconds=self._config.active_chat_semantic_wait_seconds,
                 )
             )
             data = _with_control_intent(
@@ -1848,9 +1920,7 @@ class AgentSessionReducer:
             message_ledger_mutations=(append,),
             result={
                 "message_log_id": append.message_log_id,
-                "round_schedule_id": _text(
-                    active_chat_state.get("round_schedule_id")
-                ),
+                "round_schedule_id": _text(active_chat_state.get("round_schedule_id")),
             },
             reason="message_received_in_active_chat",
         )
@@ -1868,14 +1938,9 @@ class AgentSessionReducer:
         """Debounce buffered active-chat input through a durable control effect."""
 
         revision = (
-            _optional_nonnegative_int(
-                active_chat_state.get("round_schedule_revision")
-            )
-            or 0
+            _optional_nonnegative_int(active_chat_state.get("round_schedule_revision")) or 0
         ) + 1
-        active_epoch = _optional_nonnegative_int(
-            active_chat_state.get("active_epoch")
-        )
+        active_epoch = _optional_nonnegative_int(active_chat_state.get("active_epoch"))
         if active_epoch is None or active_epoch != aggregate.active_epoch:
             raise ValueError("active-chat schedule has an invalid active epoch")
         if retry_cycle < 0:
@@ -1900,9 +1965,7 @@ class AgentSessionReducer:
             seed=effect_id,
             purpose="active-chat-round-due-failure-event",
         )
-        contract = builtin_effect_contract(
-            AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE
-        )
+        contract = builtin_effect_contract(AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE)
         pending_message_log_ids = list(
             _positive_int_tuple(
                 active_chat_state.get("pending_message_log_ids"),
@@ -2023,11 +2086,7 @@ class AgentSessionReducer:
                 disposition=result.disposition,
                 config=self._config,
             )
-        status = (
-            SessionOperationStatus.FAILED
-            if failure_code
-            else SessionOperationStatus.COMPLETED
-        )
+        status = SessionOperationStatus.FAILED if failure_code else SessionOperationStatus.COMPLETED
         operation = SessionOperation(
             operation_id=operation_id,
             kind="active_chat_bootstrap",
@@ -2045,11 +2104,7 @@ class AgentSessionReducer:
                 "reason": result.reason,
                 "model_execution_id": _text(event.payload.get("model_execution_id")),
                 "prompt_signature": _text(event.payload.get("prompt_signature")),
-                **(
-                    {"bootstrap_correction": bootstrap_correction}
-                    if bootstrap_correction
-                    else {}
-                ),
+                **({"bootstrap_correction": bootstrap_correction} if bootstrap_correction else {}),
             },
         )
         data = _without_operation_fence(aggregate.data, operation_id)
@@ -2066,12 +2121,8 @@ class AgentSessionReducer:
             next_state.update(
                 {
                     "interest_value": bootstrap_correction["interest_value"],
-                    "decay_half_life_seconds": bootstrap_correction[
-                        "decay_half_life_seconds"
-                    ],
-                    "bootstrap_interest_correction": bootstrap_correction[
-                        "interest_correction"
-                    ],
+                    "decay_half_life_seconds": bootstrap_correction["decay_half_life_seconds"],
+                    "bootstrap_interest_correction": bootstrap_correction["interest_correction"],
                 }
             )
         next_state[_ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY] = (
@@ -2104,14 +2155,12 @@ class AgentSessionReducer:
             )
             and not aggregate.active_chat_round_operation_id
         ):
-            next_state, scheduled_effect, round_intent = (
-                self._schedule_active_chat_round_due(
+            next_state, scheduled_effect, round_intent = self._schedule_active_chat_round_due(
                 aggregate,
                 event,
                 active_chat_state=next_state,
                 input_watermark=_message_watermark(data),
                 delay_seconds=self._config.active_chat_semantic_wait_seconds,
-                )
             )
             data = _with_control_intent(
                 data,
@@ -2171,9 +2220,7 @@ class AgentSessionReducer:
             seed=effect_id,
             purpose="active-chat-exit-request-failure-event",
         )
-        contract = builtin_effect_contract(
-            AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
-        )
+        contract = builtin_effect_contract(AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST)
         effect = _durable_effect(
             effect_id=effect_id,
             kind=AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST,
@@ -2251,6 +2298,13 @@ class AgentSessionReducer:
                 disposition="active_chat_round_due_stale",
                 mismatch=mismatch,
             )
+        if blocker_reason := _model_execution_unknown_reason(aggregate.data):
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="active_chat_round_model_execution_blocked",
+                reason=blocker_reason,
+            )
         pending_ids = _positive_int_tuple(
             active_state.get("pending_message_log_ids"),
             field_name="active_chat_state.pending_message_log_ids",
@@ -2303,9 +2357,7 @@ class AgentSessionReducer:
             purpose="active-chat-round-failure-event",
         )
         input_watermark = _message_watermark(aggregate.data)
-        delivery_context = _mapping(
-            aggregate.data.get(_DELIVERY_CONTEXT_DATA_KEY)
-        )
+        delivery_context = _mapping(aggregate.data.get(_DELIVERY_CONTEXT_DATA_KEY))
         active_chat_interest_value = _finite_nonnegative_float(
             active_state.get("interest_value"),
             field_name="active_chat_state.interest_value",
@@ -2315,9 +2367,7 @@ class AgentSessionReducer:
             _text(active_state.get("bootstrap_disposition"))
             or ActiveChatBootstrapDisposition.WATCH.value
         )
-        workflow_contract_version = _active_chat_workflow_contract_version(
-            active_state
-        )
+        workflow_contract_version = _active_chat_workflow_contract_version(active_state)
         operation_fence = {
             "operation_id": operation_id,
             "operation_kind": "active_chat_round",
@@ -2334,9 +2384,7 @@ class AgentSessionReducer:
             "input_watermark": input_watermark,
             "input_ledger_sequence": None,
             "instance_id": _text(delivery_context.get("instance_id")),
-            "target_session_id": _text(
-                delivery_context.get("target_session_id")
-            ),
+            "target_session_id": _text(delivery_context.get("target_session_id")),
             "round_schedule_id": schedule_id,
             "message_log_ids": list(pending_ids),
         }
@@ -2458,10 +2506,7 @@ class AgentSessionReducer:
         }
         for field_name, raw_expected in expected_text.items():
             expected = _exact_json_text(raw_expected)
-            if (
-                not expected
-                or _exact_json_text(active_state.get(field_name)) != expected
-            ):
+            if not expected or _exact_json_text(active_state.get(field_name)) != expected:
                 mismatch.append(f"{field_name}_changed")
 
         revision_valid, expected_revision = _strict_optional_nonnegative_int(
@@ -2477,13 +2522,11 @@ class AgentSessionReducer:
             or state_revision != expected_revision
         ):
             mismatch.append("round_schedule_revision_changed")
-        state_contract_valid, state_contract_version = (
-            _strict_optional_nonnegative_int(
+        state_contract_valid, state_contract_version = _strict_optional_nonnegative_int(
             active_state.get("round_schedule_contract_version")
-            )
         )
-        intent_contract_valid, intent_contract_version = (
-            _strict_optional_nonnegative_int(intent.get("contract_version"))
+        intent_contract_valid, intent_contract_version = _strict_optional_nonnegative_int(
+            intent.get("contract_version")
         )
         if (
             not state_contract_valid
@@ -2513,10 +2556,8 @@ class AgentSessionReducer:
                 intent.get("schedule_id")
             ):
                 mismatch.append("schedule_id_changed")
-            supplied_revision_valid, supplied_revision = (
-                _strict_optional_nonnegative_int(
-                    event.payload.get("schedule_revision")
-                )
+            supplied_revision_valid, supplied_revision = _strict_optional_nonnegative_int(
+                event.payload.get("schedule_revision")
             )
             if not supplied_revision_valid or supplied_revision != expected_revision:
                 mismatch.append("schedule_revision_changed")
@@ -2633,8 +2674,7 @@ class AgentSessionReducer:
                     failure_code=failure_code or "active_chat_round_retry",
                 )
                 retry_exhausted = (
-                    int(retry_chain["attempt_count"])
-                    >= self._config.active_chat_round_max_attempts
+                    int(retry_chain["attempt_count"]) >= self._config.active_chat_round_max_attempts
                 )
             elif not selected_message_log_ids:
                 retry_chain = {
@@ -2643,8 +2683,7 @@ class AgentSessionReducer:
                     "attempt_count": self._config.active_chat_round_max_attempts,
                     "last_event_id": event.event_id,
                     "last_reason": "active_chat_round_selection_invalid",
-                    "last_failure_code": failure_code
-                    or "active_chat_round_selection_invalid",
+                    "last_failure_code": failure_code or "active_chat_round_selection_invalid",
                 }
                 retry_exhausted = True
         consumptions: tuple[ConsumeMessageLedgerEntries, ...] = ()
@@ -2688,9 +2727,7 @@ class AgentSessionReducer:
                 "outcome": result.outcome.value,
                 "reason": result.reason,
                 "consumed_message_log_ids": list(consumed_ids),
-                "external_action_effect_ids": [
-                    effect.effect_id for effect in action_effects
-                ],
+                "external_action_effect_ids": [effect.effect_id for effect in action_effects],
                 "model_execution_id": _text(event.payload.get("model_execution_id")),
                 "prompt_signature": _text(event.payload.get("prompt_signature")),
                 **(
@@ -2785,14 +2822,12 @@ class AgentSessionReducer:
                 if retry_chain is not None
                 else self._config.active_chat_semantic_wait_seconds
             )
-            next_state, scheduled_effect, round_intent = (
-                self._schedule_active_chat_round_due(
+            next_state, scheduled_effect, round_intent = self._schedule_active_chat_round_due(
                 aggregate,
                 event,
                 active_chat_state=next_state,
                 input_watermark=_message_watermark(data),
                 delay_seconds=delay,
-                )
             )
             if retry_chain is not None:
                 next_state[_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY] = {
@@ -2826,9 +2861,7 @@ class AgentSessionReducer:
                 "remaining_message_log_ids": remaining_ids,
                 "round_schedule_id": _text(next_state.get("round_schedule_id")),
                 "round_retry_attempt_count": (
-                    int(retry_chain["attempt_count"])
-                    if retry_chain is not None
-                    else 0
+                    int(retry_chain["attempt_count"]) if retry_chain is not None else 0
                 ),
             },
             reason=failure_code or result.reason,
@@ -2876,10 +2909,7 @@ class AgentSessionReducer:
             **active_state,
             "interest_value": interest_value,
             "updated_at": event_time,
-            "tick_count": (
-                _optional_nonnegative_int(active_state.get("tick_count")) or 0
-            )
-            + 1,
+            "tick_count": (_optional_nonnegative_int(active_state.get("tick_count")) or 0) + 1,
         }
         data = dict(aggregate.data)
         effects: tuple[SessionEffect, ...] = ()
@@ -2935,9 +2965,7 @@ class AgentSessionReducer:
             return self._stale_workflow_completion(
                 aggregate,
                 event,
-                operation_id=(
-                    _exact_json_text(event.payload.get("operation_id")) or ""
-                ),
+                operation_id=(_exact_json_text(event.payload.get("operation_id")) or ""),
                 disposition="external_action_completion_stale",
                 mismatch=("pending_external_actions_invalid",),
             )
@@ -3016,10 +3044,22 @@ class AgentSessionReducer:
         data.pop(_PENDING_OUTBOUND_DATA_KEY, None)
         data.pop("outbound_blocked_reason", None)
         data.pop(_OUTBOUND_BLOCKED_DATA_KEY, None)
+        if blocker_reason := _model_execution_unknown_reason(data):
+            target = aggregate.advance(
+                data=data,
+                updated_at=_event_time(aggregate, event),
+            )
+            return SessionTransition(
+                aggregate=target,
+                disposition="external_action_completed_model_execution_blocked",
+                caused_operation_id=_text(expected.get("operation_id")),
+                caused_plan_id=aggregate.current_plan_id,
+                result={"effect_id": effect_id, "receipt_status": receipt_status.value},
+                reason=blocker_reason,
+            )
         if (
             aggregate.state == AgentSessionState.ACTIVE_CHAT
-            and _text(aggregate.active_chat_state.get("bootstrap_status"))
-            == "waiting_outbound"
+            and _text(aggregate.active_chat_state.get("bootstrap_status")) == "waiting_outbound"
         ):
             return self._start_active_chat_bootstrap_after_outbound(
                 aggregate,
@@ -3183,14 +3223,12 @@ class AgentSessionReducer:
                 if outcome is ActiveChatRoundOutcome.RETRY
                 else self._config.active_chat_semantic_wait_seconds
             )
-            active_state, scheduled_effect, round_intent = (
-                self._schedule_active_chat_round_due(
+            active_state, scheduled_effect, round_intent = self._schedule_active_chat_round_due(
                 aggregate,
                 event,
                 active_chat_state=active_state,
                 input_watermark=_message_watermark(next_data),
                 delay_seconds=delay,
-                )
             )
             next_data = _with_control_intent(
                 next_data,
@@ -3235,8 +3273,7 @@ class AgentSessionReducer:
         active_state = dict(aggregate.active_chat_state)
         active_epoch = aggregate.active_epoch
         handoff_operation_id = (
-            _exact_json_text(active_state.get("bootstrap_handoff_operation_id"))
-            or ""
+            _exact_json_text(active_state.get("bootstrap_handoff_operation_id")) or ""
         )
         handoff_message_log_ids: tuple[int, ...] = ()
         handoff_message_log_ids_valid = False
@@ -3251,15 +3288,11 @@ class AgentSessionReducer:
                 pass
             else:
                 handoff_message_log_ids_valid = True
-        handoff_boundary_valid, handoff_input_watermark = (
-            _strict_optional_nonnegative_int(
-                active_state.get("bootstrap_handoff_input_watermark")
-            )
+        handoff_boundary_valid, handoff_input_watermark = _strict_optional_nonnegative_int(
+            active_state.get("bootstrap_handoff_input_watermark")
         )
-        handoff_sequence_valid, handoff_input_ledger_sequence = (
-            _strict_optional_nonnegative_int(
-                active_state.get("bootstrap_handoff_input_ledger_sequence")
-            )
+        handoff_sequence_valid, handoff_input_ledger_sequence = _strict_optional_nonnegative_int(
+            active_state.get("bootstrap_handoff_input_ledger_sequence")
         )
         handoff_certificate: dict[str, Any] | None = None
         try:
@@ -3283,11 +3316,9 @@ class AgentSessionReducer:
             and handoff_input_ledger_sequence is not None
             and handoff_certificate is not None
             and handoff_certificate["review_operation_id"] == handoff_operation_id
-            and tuple(handoff_certificate["message_log_ids"])
-            == handoff_message_log_ids
+            and tuple(handoff_certificate["message_log_ids"]) == handoff_message_log_ids
             and handoff_certificate["input_watermark"] == handoff_input_watermark
-            and handoff_certificate["input_ledger_sequence"]
-            == handoff_input_ledger_sequence
+            and handoff_certificate["input_ledger_sequence"] == handoff_input_ledger_sequence
         )
         contract_version = None if actor_native_handoff else 2
         operation_id = self._ids.create(
@@ -3311,13 +3342,9 @@ class AgentSessionReducer:
             purpose="active-chat-bootstrap-failure-event",
         )
         input_watermark = (
-            handoff_input_watermark
-            if actor_native_handoff
-            else _message_watermark(data)
+            handoff_input_watermark if actor_native_handoff else _message_watermark(data)
         )
-        input_ledger_sequence = (
-            handoff_input_ledger_sequence if actor_native_handoff else None
-        )
+        input_ledger_sequence = handoff_input_ledger_sequence if actor_native_handoff else None
         delivery_context = _mapping(data.get(_DELIVERY_CONTEXT_DATA_KEY))
         fence = {
             "operation_id": operation_id,
@@ -3347,9 +3374,7 @@ class AgentSessionReducer:
                 else {}
             ),
             "instance_id": _text(delivery_context.get("instance_id")),
-            "target_session_id": _text(
-                delivery_context.get("target_session_id")
-            ),
+            "target_session_id": _text(delivery_context.get("target_session_id")),
         }
         next_data = _with_operation_fence(data, operation_id, fence)
         active_state.update(
@@ -3358,9 +3383,7 @@ class AgentSessionReducer:
                 "bootstrap_operation_id": operation_id,
                 "outbound_gate_completed_effect_id": completed_effect_id,
                 _ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY: (
-                    _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
-                    if actor_native_handoff
-                    else 2
+                    _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION if actor_native_handoff else 2
                 ),
             }
         )
@@ -3419,7 +3442,45 @@ class AgentSessionReducer:
         aggregate: AgentSessionAggregate,
         event: SessionEventEnvelope,
     ) -> SessionTransition:
-        mismatch = _review_due_mismatch(aggregate, event)
+        """Apply a scanner-authorized review trigger."""
+
+        return self._apply_admitted_review_trigger(
+            aggregate,
+            event,
+            mismatch=_review_due_mismatch(aggregate, event),
+            trigger="review_due",
+            stale_disposition="review_due_superseded",
+            stale_schedule_event_type="due_superseded",
+        )
+
+    def _manual_review_requested(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        """Apply an operator request admitted against one exact schedule fence."""
+
+        return self._apply_admitted_review_trigger(
+            aggregate,
+            event,
+            mismatch=_manual_review_mismatch(aggregate, event),
+            trigger="manual_review",
+            stale_disposition="manual_review_superseded",
+            stale_schedule_event_type="manual_review_superseded",
+        )
+
+    def _apply_admitted_review_trigger(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+        *,
+        mismatch: tuple[str, ...],
+        trigger: str,
+        stale_disposition: str,
+        stale_schedule_event_type: str,
+    ) -> SessionTransition:
+        """Run the shared post-admission state machine for one review trigger."""
+
         if mismatch:
             target = aggregate.advance(
                 state_changed=False,
@@ -3428,19 +3489,19 @@ class AgentSessionReducer:
             plan_id = _exact_json_text(event.payload.get("plan_id")) or ""
             return SessionTransition(
                 aggregate=target,
-                disposition="review_due_superseded",
+                disposition=stale_disposition,
                 caused_plan_id=plan_id,
                 review_schedule_events=(
                     SessionReviewScheduleEvent(
                         schedule_event_id=self._ids.create(
                             key=event.key,
                             seed=event.event_id,
-                            purpose="review-due-superseded-event",
+                            purpose=f"{trigger}-superseded-event",
                         ),
-                        event_type="due_superseded",
+                        event_type=stale_schedule_event_type,
                         plan_id=plan_id,
                         previous_plan_id=aggregate.current_plan_id,
-                        trigger="review_due",
+                        trigger=trigger,
                         outcome="superseded",
                         source=_exact_json_text(event.source) or "",
                         reason=",".join(mismatch),
@@ -3456,14 +3517,23 @@ class AgentSessionReducer:
             field_name=_PENDING_HIGH_PRIORITY_DATA_KEY,
             allow_empty=True,
         )
+        if blocker_reason := _model_execution_unknown_reason(aggregate.data):
+            return self._ignored(
+                aggregate,
+                event,
+                disposition=f"{trigger}_execution_unknown_blocked",
+                reason=blocker_reason,
+            )
         if _has_unsettled_pending_outbound(aggregate.data):
             return self._defer_review_due(
                 aggregate,
                 event,
-                blocking_reason="outbound_actions_pending",
-                blocking_operation_id=_pending_outbound_operation_id(
-                    aggregate.data
+                blocking_reason=(
+                    "outbound_actions_pending"
+                    if trigger == "review_due"
+                    else f"{trigger}:outbound_actions_pending"
                 ),
+                blocking_operation_id=_pending_outbound_operation_id(aggregate.data),
             )
         if aggregate.state == AgentSessionState.IDLE and pending_priority_ids:
             if _review_cancellation_blocks_active_reply(aggregate.data):
@@ -3475,10 +3545,7 @@ class AgentSessionReducer:
             )
         if aggregate.state == AgentSessionState.IDLE:
             return self._start_review(aggregate, event)
-        if (
-            aggregate.state == AgentSessionState.REVIEW
-            and aggregate.review_operation_id
-        ):
+        if aggregate.state == AgentSessionState.REVIEW and aggregate.review_operation_id:
             return self._ignored(
                 aggregate,
                 event,
@@ -3548,18 +3615,14 @@ class AgentSessionReducer:
             purpose="review-failure-event",
         )
         input_watermark = _message_watermark(data)
-        delivery_context = _mapping(
-            data.get(_DELIVERY_CONTEXT_DATA_KEY)
-        )
+        delivery_context = _mapping(data.get(_DELIVERY_CONTEXT_DATA_KEY))
         operation_fence = {
             "operation_id": operation_id,
             "operation_kind": "review",
             "source_event_id": event.event_id,
             "effect_id": effect_id,
             "effect_kind": AgentSessionEffectKind.RUN_REVIEW_WORKFLOW,
-            **_effect_contract_snapshot(
-                AgentSessionEffectKind.RUN_REVIEW_WORKFLOW
-            ),
+            **_effect_contract_snapshot(AgentSessionEffectKind.RUN_REVIEW_WORKFLOW),
             "idempotency_key": effect_id,
             "completion_event_id": completion_event_id,
             "failure_event_id": failure_event_id,
@@ -3571,9 +3634,7 @@ class AgentSessionReducer:
             "input_watermark": input_watermark,
             "input_ledger_sequence": None,
             "instance_id": _text(delivery_context.get("instance_id")),
-            "target_session_id": _text(
-                delivery_context.get("target_session_id")
-            ),
+            "target_session_id": _text(delivery_context.get("target_session_id")),
         }
         next_data = _with_operation_fence(
             data,
@@ -3617,9 +3678,7 @@ class AgentSessionReducer:
     ) -> SessionTransition:
         """Reschedule a due review without treating it as consumed work."""
 
-        normalized_reason = _text(blocking_reason) or (
-            f"session_busy:{aggregate.state}"
-        )
+        normalized_reason = _text(blocking_reason) or (f"session_busy:{aggregate.state}")
         normalized_operation_id = _text(blocking_operation_id)
         plan = dict(aggregate.review_plan)
         retry_at = _event_time(aggregate, event) + self._config.busy_review_retry_seconds
@@ -3635,18 +3694,14 @@ class AgentSessionReducer:
             trigger=_text(plan.get("trigger")) or "review_due",
             outcome=_text(plan.get("kind") or plan.get("outcome")) or "planned",
             source=_text(plan.get("source")) or event.source,
-            requested_delay_seconds=_optional_delay(
-                plan.get("requested_delay_seconds")
-            ),
+            requested_delay_seconds=_optional_delay(plan.get("requested_delay_seconds")),
             reason=_text(plan.get("reason")),
             fallback_reason=_text(plan.get("fallback_reason")),
             mention_sensitivity=_text(plan.get("mention_sensitivity")) or "normal",
             active_reply_threshold=_mapping(plan.get("active_reply_threshold")),
             model_execution_id=_text(plan.get("model_execution_id")),
             prompt_signature=_text(plan.get("prompt_signature")),
-            expected_active_epoch=_optional_nonnegative_int(
-                plan.get("expected_active_epoch")
-            ),
+            expected_active_epoch=_optional_nonnegative_int(plan.get("expected_active_epoch")),
             expected_activity_generation=_optional_nonnegative_int(
                 plan.get("expected_activity_generation")
             ),
@@ -3698,6 +3753,205 @@ class AgentSessionReducer:
             reason=normalized_reason,
         )
 
+    def _review_execution_unknown(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        """Persist the actor-side fence for an unrecoverable review execution."""
+
+        if event.source != REVIEW_EXECUTION_UNKNOWN_EVENT_SOURCE:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="review_execution_unknown_stale",
+                reason="review_execution_unknown_source_changed",
+            )
+        try:
+            notice = ReviewExecutionUnknownNotice.from_payload(
+                event.payload,
+                event_id=event.event_id,
+                key=event.key,
+                ownership_generation=event.ownership_generation,
+            )
+        except (TypeError, ValueError) as exc:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="review_execution_unknown_stale",
+                reason=str(exc),
+            )
+        claim = notice.claim
+        if (
+            aggregate.state != AgentSessionState.REVIEW
+            or aggregate.ownership_generation != claim.ownership_generation
+            or aggregate.review_operation_id != claim.review_operation_id
+        ):
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="review_execution_unknown_stale",
+                reason="review_execution_unknown_operation_changed",
+            )
+        try:
+            fence = _operation_fence(aggregate.data, claim.review_operation_id)
+        except ValueError as exc:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="review_execution_unknown_stale",
+                reason=str(exc),
+            )
+        expected = {
+            "effect_id": claim.review_effect_id,
+            "effect_kind": claim.review_effect_kind,
+            "contract_version": claim.review_contract_version,
+            "contract_signature": claim.review_contract_signature,
+            "ownership_generation": claim.ownership_generation,
+            "operation_id": claim.review_operation_id,
+        }
+        mismatches = tuple(
+            f"{field_name}_changed"
+            for field_name, expected_value in expected.items()
+            if fence.get(field_name) != expected_value
+        )
+        if mismatches:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="review_execution_unknown_stale",
+                reason=",".join(mismatches),
+            )
+        data = dict(aggregate.data)
+        data[_REVIEW_CANCELLATION_BLOCKER_DATA_KEY] = {
+            "kind": "execution_unknown",
+            "event_id": event.event_id,
+            "effect_id": claim.review_effect_id,
+            "operation_id": claim.review_operation_id,
+            "claim_id": claim.claim_id,
+            "worker_id": claim.worker_id,
+            "attempt_count": notice.attempt_count,
+            "unknown_at": notice.unknown_at,
+            "unknown_reason": notice.unknown_reason,
+        }
+        target = aggregate.advance(
+            data=data,
+            updated_at=_event_time(aggregate, event),
+        )
+        return SessionTransition(
+            aggregate=target,
+            disposition="review_execution_unknown_blocked",
+            caused_operation_id=claim.review_operation_id,
+            result={
+                "review_effect_id": claim.review_effect_id,
+                "claim_id": claim.claim_id,
+                "unknown_reason": notice.unknown_reason,
+            },
+            reason=notice.unknown_reason,
+        )
+
+    def _model_execution_unknown(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        """Persist a global fence for an unrecoverable non-review model task."""
+
+        if event.source != MODEL_EXECUTION_UNKNOWN_EVENT_SOURCE:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_execution_unknown_stale",
+                reason="model_execution_unknown_source_changed",
+            )
+        try:
+            notice = ModelExecutionUnknownNotice.from_payload(
+                event.payload,
+                event_id=event.event_id,
+                key=event.key,
+                ownership_generation=event.ownership_generation,
+            )
+        except (TypeError, ValueError) as exc:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_execution_unknown_stale",
+                reason=str(exc),
+            )
+        claim = notice.claim
+        if aggregate.ownership_generation != claim.ownership_generation:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_execution_unknown_stale",
+                reason="model_execution_unknown_ownership_changed",
+            )
+        try:
+            fence = _operation_fence(aggregate.data, claim.operation_id)
+        except ValueError as exc:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_execution_unknown_stale",
+                reason=str(exc),
+            )
+        expected_operation_kind = {
+            AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW.value: "active_reply",
+            AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP.value: "active_chat_bootstrap",
+            AgentSessionEffectKind.RUN_ACTIVE_CHAT_ROUND.value: "active_chat_round",
+            AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING.value: "idle_review_planning",
+        }.get(claim.effect_kind)
+        expected = {
+            "effect_id": claim.effect_id,
+            "effect_kind": claim.effect_kind,
+            "contract_version": claim.contract_version,
+            "contract_signature": claim.contract_signature,
+            "ownership_generation": claim.ownership_generation,
+            "operation_id": claim.operation_id,
+            "operation_kind": expected_operation_kind,
+        }
+        mismatches = tuple(
+            f"{field_name}_changed"
+            for field_name, expected_value in expected.items()
+            if fence.get(field_name) != expected_value
+        )
+        if mismatches:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_execution_unknown_stale",
+                reason=",".join(mismatches),
+            )
+        data = dict(aggregate.data)
+        data[_MODEL_EXECUTION_BLOCKER_DATA_KEY] = {
+            "kind": "execution_unknown",
+            "event_id": event.event_id,
+            "effect_id": claim.effect_id,
+            "effect_kind": claim.effect_kind,
+            "operation_id": claim.operation_id,
+            "claim_id": claim.claim_id,
+            "worker_id": claim.worker_id,
+            "attempt_count": notice.attempt_count,
+            "unknown_at": notice.unknown_at,
+            "unknown_reason": notice.unknown_reason,
+        }
+        target = aggregate.advance(
+            data=data,
+            updated_at=_event_time(aggregate, event),
+        )
+        return SessionTransition(
+            aggregate=target,
+            disposition="model_execution_unknown_blocked",
+            caused_operation_id=claim.operation_id,
+            result={
+                "effect_id": claim.effect_id,
+                "effect_kind": claim.effect_kind,
+                "claim_id": claim.claim_id,
+                "unknown_reason": notice.unknown_reason,
+            },
+            reason=notice.unknown_reason,
+        )
+
     def _review_cancellation_completed(
         self,
         aggregate: AgentSessionAggregate,
@@ -3726,6 +3980,15 @@ class AgentSessionReducer:
                 event,
                 disposition="review_cancellation_completion_stale",
                 reason=",".join(mismatch),
+            )
+
+        cancellation = _mapping(event.payload.get("review_cancellation"))
+        if _text(cancellation.get("status")) == "blocked":
+            return self._block_unknown_review_execution(
+                aggregate,
+                event,
+                intent=intent,
+                observation=cancellation,
             )
 
         effect, pending_mismatch = self._pending_active_reply_effect(
@@ -3818,9 +4081,7 @@ class AgentSessionReducer:
         if aggregate.state != AgentSessionState.ACTIVE_REPLY:
             mismatch.append("pending_active_reply_state_changed")
 
-        fence = _mapping(
-            _mapping(aggregate.data.get("operation_fences")).get(operation_id)
-        )
+        fence = _mapping(_mapping(aggregate.data.get("operation_fences")).get(operation_id))
         if not fence:
             mismatch.append("pending_active_reply_fence_missing")
 
@@ -3907,9 +4168,7 @@ class AgentSessionReducer:
         if has_contract_version != has_contract_signature:
             mismatch.append("pending_active_reply_contract_snapshot_incomplete")
         elif has_contract_version:
-            contract_version = _strict_nonnegative_int(
-                fence.get("contract_version")
-            )
+            contract_version = _strict_nonnegative_int(fence.get("contract_version"))
             contract_signature = _exact_json_text(fence.get("contract_signature"))
             if contract_version is None or contract_version < 1 or not contract_signature:
                 mismatch.append("pending_active_reply_contract_snapshot_invalid")
@@ -3923,13 +4182,9 @@ class AgentSessionReducer:
                     mismatch.append("pending_active_reply_contract_version_unknown")
                 else:
                     if contract_signature != contract.signature:
-                        mismatch.append(
-                            "pending_active_reply_contract_signature_changed"
-                        )
+                        mismatch.append("pending_active_reply_contract_signature_changed")
         else:
-            contract = builtin_effect_contract(
-                AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW
-            )
+            contract = builtin_effect_contract(AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW)
 
         if mismatch:
             return None, tuple(dict.fromkeys(mismatch))
@@ -3964,22 +4219,21 @@ class AgentSessionReducer:
         intent: Mapping[str, Any],
         failure: Mapping[str, Any],
         disposition: str,
+        retry_review: bool = True,
+        intent_status: str = "failed",
+        blocker_kind: str = "effect_failed",
+        outbound_blocked_reason: str = "review_cancellation_effect_failed",
     ) -> SessionTransition:
         """Terminalize the held reply and retain unread input for a later review."""
 
         pending = _mapping(intent.get("pending_active_reply"))
-        active_reply_operation_id = (
-            aggregate.active_reply_operation_id
-            or _text(pending.get("operation_id"))
+        active_reply_operation_id = aggregate.active_reply_operation_id or _text(
+            pending.get("operation_id")
         )
         active_reply_fence = _mapping(
-            _mapping(aggregate.data.get("operation_fences")).get(
-                active_reply_operation_id
-            )
+            _mapping(aggregate.data.get("operation_fences")).get(active_reply_operation_id)
         )
-        failure_code = _text(failure.get("failure_code")) or (
-            "review_cancellation_effect_failed"
-        )
+        failure_code = _text(failure.get("failure_code")) or ("review_cancellation_effect_failed")
         failure_message = failure.get("failure_message")
         if not isinstance(failure_message, str):
             failure_message = ""
@@ -3988,12 +4242,12 @@ class AgentSessionReducer:
             "effect_id": _text(intent.get("effect_id")),
             "failure_code": failure_code,
             "failure_event_id": failure_event_id,
-            "kind": "effect_failed",
+            "kind": blocker_kind,
             "operation_id": active_reply_operation_id,
         }
         updated_intent = {
             **intent,
-            "status": "failed",
+            "status": intent_status,
             "last_failure": dict(failure),
             "pending_active_reply": {
                 **pending,
@@ -4011,7 +4265,7 @@ class AgentSessionReducer:
             **blocker,
             "review_operation_id": _text(intent.get("operation_id")),
         }
-        data["outbound_blocked_reason"] = "review_cancellation_effect_failed"
+        data["outbound_blocked_reason"] = outbound_blocked_reason
         data[_OUTBOUND_BLOCKED_DATA_KEY] = blocker
         deferred_resume = self._deferred_active_reply_resume(
             aggregate.active_reply_resume,
@@ -4033,9 +4287,7 @@ class AgentSessionReducer:
                     operation_id=active_reply_operation_id,
                     kind="active_reply",
                     status=SessionOperationStatus.FAILED,
-                    active_epoch=_optional_nonnegative_int(
-                        active_reply_fence.get("active_epoch")
-                    ),
+                    active_epoch=_optional_nonnegative_int(active_reply_fence.get("active_epoch")),
                     activity_generation=_optional_nonnegative_int(
                         active_reply_fence.get("activity_generation")
                     ),
@@ -4050,22 +4302,23 @@ class AgentSessionReducer:
                     failure_message=failure_message,
                     metadata={
                         "launch_status": "blocked_by_review_cancellation_failure",
-                        "review_cancellation_effect_id": _text(
-                            intent.get("effect_id")
-                        ),
+                        "review_cancellation_effect_id": _text(intent.get("effect_id")),
                         "review_cancellation_failure": dict(failure),
                         "resume": dict(aggregate.active_reply_resume),
                     },
                 ),
             )
-        review_schedules, review_schedule_events = self._defer_active_reply_resume(
-            aggregate,
-            event,
-            target=target,
-            operation_id=active_reply_operation_id,
-            resume=deferred_resume,
-            failure_code=failure_code,
-        )
+        review_schedules: tuple[SessionReviewSchedule, ...] = ()
+        review_schedule_events: tuple[SessionReviewScheduleEvent, ...] = ()
+        if retry_review:
+            review_schedules, review_schedule_events = self._defer_active_reply_resume(
+                aggregate,
+                event,
+                target=target,
+                operation_id=active_reply_operation_id,
+                resume=deferred_resume,
+                failure_code=failure_code,
+            )
         return SessionTransition(
             aggregate=target,
             disposition=disposition,
@@ -4081,6 +4334,38 @@ class AgentSessionReducer:
                 "review_retry_scheduled": bool(review_schedules),
             },
             reason=failure_code,
+        )
+
+    def _block_unknown_review_execution(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+        *,
+        intent: Mapping[str, Any],
+        observation: Mapping[str, Any],
+    ) -> SessionTransition:
+        """Fence future model work after an interrupted review becomes unknown."""
+
+        unknown_count = _optional_nonnegative_int(observation.get("durable_unknown_count"))
+        failure = {
+            "event_id": event.event_id,
+            "failure_code": "review_execution_unknown",
+            "failure_message": _text(observation.get("blocker_code"))
+            or "review execution lease expired without a terminal witness",
+            "source": event.source,
+            "review_cancellation": dict(observation),
+            "durable_unknown_count": unknown_count,
+        }
+        return self._block_review_cancellation(
+            aggregate,
+            event,
+            intent=intent,
+            failure=failure,
+            disposition="review_cancellation_execution_unknown_blocked",
+            retry_review=False,
+            intent_status="execution_unknown",
+            blocker_kind="execution_unknown",
+            outbound_blocked_reason="review_execution_unknown",
         )
 
     def _active_reply_completed(
@@ -4162,6 +4447,13 @@ class AgentSessionReducer:
         event: SessionEventEnvelope,
     ) -> SessionTransition:
         operation_id = aggregate.review_operation_id
+        if blocker_reason := _model_execution_unknown_reason(aggregate.data):
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="review_completion_execution_unknown_blocked",
+                reason=blocker_reason,
+            )
         mismatch = self._workflow_completion_mismatch(
             aggregate,
             event,
@@ -4215,9 +4507,7 @@ class AgentSessionReducer:
                 status=SessionOperationStatus.FAILED,
                 enter_active_chat=False,
                 next_outcome=Failed(
-                    applied_delay_seconds=(
-                        self._config.default_review_delay_seconds
-                    ),
+                    applied_delay_seconds=(self._config.default_review_delay_seconds),
                     reason="invalid_review_completion",
                     fallback_reason="invalid_review_completion",
                     failure_code="invalid_review_completion",
@@ -4285,9 +4575,7 @@ class AgentSessionReducer:
         operation_metadata: dict[str, Any] = {
             "completion_event_id": event.event_id,
             "consumed_message_log_ids": list(consumed_ids),
-            "external_action_effect_ids": [
-                effect.effect_id for effect in action_effects
-            ],
+            "external_action_effect_ids": [effect.effect_id for effect in action_effects],
             "enter_active_chat": enter_active_chat,
             "model_execution_id": _text(event.payload.get("model_execution_id")),
             "prompt_signature": _text(event.payload.get("prompt_signature")),
@@ -4351,9 +4639,7 @@ class AgentSessionReducer:
         handoff_message_log_ids = tuple(handoff_certificate["message_log_ids"])
         handoff_operation_id = str(handoff_certificate["review_operation_id"])
         handoff_input_watermark = int(handoff_certificate["input_watermark"])
-        handoff_input_ledger_sequence = int(
-            handoff_certificate["input_ledger_sequence"]
-        )
+        handoff_input_ledger_sequence = int(handoff_certificate["input_ledger_sequence"])
         if action_effects:
             pending_data = _with_pending_outbound_actions(
                 data,
@@ -4366,9 +4652,7 @@ class AgentSessionReducer:
                     _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
                 ),
                 "interest_value": self._config.provisional_active_chat_interest,
-                "decay_half_life_seconds": (
-                    self._config.provisional_active_chat_half_life_seconds
-                ),
+                "decay_half_life_seconds": (self._config.provisional_active_chat_half_life_seconds),
                 "entered_at": event_time,
                 "updated_at": event_time,
                 "tick_count": 0,
@@ -4428,9 +4712,7 @@ class AgentSessionReducer:
                 review_schedule_events=(schedule_event,),
                 result={
                     "active_epoch": active_epoch,
-                    "pending_outbound_effect_ids": [
-                        effect.effect_id for effect in action_effects
-                    ],
+                    "pending_outbound_effect_ids": [effect.effect_id for effect in action_effects],
                 },
                 reason="review_waiting_for_external_actions",
             )
@@ -4463,9 +4745,7 @@ class AgentSessionReducer:
             "source_event_id": event.event_id,
             "effect_id": bootstrap_effect_id,
             "effect_kind": AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP,
-            **_effect_contract_snapshot(
-                AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP
-            ),
+            **_effect_contract_snapshot(AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP),
             "idempotency_key": bootstrap_effect_id,
             "completion_event_id": bootstrap_completion_event_id,
             "failure_event_id": bootstrap_failure_event_id,
@@ -4478,9 +4758,7 @@ class AgentSessionReducer:
             "handoff_operation_id": handoff_operation_id,
             "handoff_message_log_ids": list(handoff_message_log_ids),
             "instance_id": _text(delivery_context.get("instance_id")),
-            "target_session_id": _text(
-                delivery_context.get("target_session_id")
-            ),
+            "target_session_id": _text(delivery_context.get("target_session_id")),
         }
         next_data = _with_operation_fence(
             data,
@@ -4493,9 +4771,7 @@ class AgentSessionReducer:
                 _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
             ),
             "interest_value": self._config.provisional_active_chat_interest,
-            "decay_half_life_seconds": (
-                self._config.provisional_active_chat_half_life_seconds
-            ),
+            "decay_half_life_seconds": (self._config.provisional_active_chat_half_life_seconds),
             "entered_at": event_time,
             "updated_at": event_time,
             "tick_count": 0,
@@ -4584,9 +4860,7 @@ class AgentSessionReducer:
             result={
                 "active_epoch": active_epoch,
                 "bootstrap_operation_id": bootstrap_operation_id,
-                "external_action_effect_ids": [
-                    effect.effect_id for effect in action_effects
-                ],
+                "external_action_effect_ids": [effect.effect_id for effect in action_effects],
             },
             reason="review_workflow_completed",
         )
@@ -4700,15 +4974,9 @@ class AgentSessionReducer:
             result={
                 "plan_id": plan_id,
                 "schedule_outcome": outcome_payload,
-                "external_action_effect_ids": [
-                    effect.effect_id for effect in action_effects
-                ],
+                "external_action_effect_ids": [effect.effect_id for effect in action_effects],
             },
-            reason=(
-                "review_waiting_for_external_actions"
-                if action_effects
-                else outcome.reason
-            ),
+            reason=("review_waiting_for_external_actions" if action_effects else outcome.reason),
         )
 
     def _review_next_schedule_outcome(
@@ -4717,29 +4985,21 @@ class AgentSessionReducer:
         wire_outcome: ReviewNextReviewOutcome | None,
     ) -> SettledScheduleOutcome:
         if wire_outcome is None:
-            raise TypeError(
-                "idle ReviewCompleted requires next_review_outcome"
-            )
+            raise TypeError("idle ReviewCompleted requires next_review_outcome")
         normalized_payload = {
             "outcome": {
                 "kind": wire_outcome.kind.value,
-                "requested_delay_seconds": (
-                    wire_outcome.requested_delay_seconds
-                ),
+                "requested_delay_seconds": (wire_outcome.requested_delay_seconds),
                 "reason": wire_outcome.reason,
             },
             "source": "review_workflow",
             "model_execution_id": event.payload.get("model_execution_id", ""),
             "prompt_signature": event.payload.get("prompt_signature", ""),
         }
-        outcome = self.resolve_schedule_outcome(
-            replace(event, payload=normalized_payload)
-        )
+        outcome = self.resolve_schedule_outcome(replace(event, payload=normalized_payload))
         if wire_outcome.kind is ReviewNextReviewOutcomeKind.BYPASSED:
             return Bypassed(
-                applied_delay_seconds=self._config.apply_delay(
-                    wire_outcome.applied_delay_seconds
-                ),
+                applied_delay_seconds=self._config.apply_delay(wire_outcome.applied_delay_seconds),
                 reason=wire_outcome.reason,
                 fallback_reason=wire_outcome.fallback_reason,
                 model_execution_id=_text(event.payload.get("model_execution_id")),
@@ -4767,22 +5027,14 @@ class AgentSessionReducer:
             trigger=_text(plan.get("trigger")),
             outcome=_text(plan.get("kind") or plan.get("outcome")),
             source=_text(plan.get("source")),
-            requested_delay_seconds=_optional_delay(
-                plan.get("requested_delay_seconds")
-            ),
+            requested_delay_seconds=_optional_delay(plan.get("requested_delay_seconds")),
             reason=_text(plan.get("reason")),
             fallback_reason=_text(plan.get("fallback_reason")),
-            mention_sensitivity=(
-                _text(plan.get("mention_sensitivity")) or "normal"
-            ),
-            active_reply_threshold=_mapping(
-                plan.get("active_reply_threshold")
-            ),
+            mention_sensitivity=(_text(plan.get("mention_sensitivity")) or "normal"),
+            active_reply_threshold=_mapping(plan.get("active_reply_threshold")),
             model_execution_id=_text(plan.get("model_execution_id")),
             prompt_signature=_text(plan.get("prompt_signature")),
-            expected_active_epoch=_optional_nonnegative_int(
-                plan.get("expected_active_epoch")
-            ),
+            expected_active_epoch=_optional_nonnegative_int(plan.get("expected_active_epoch")),
             expected_activity_generation=_optional_nonnegative_int(
                 plan.get("expected_activity_generation")
             ),
@@ -4809,10 +5061,7 @@ class AgentSessionReducer:
                 "failure_code": _text(failure.get("failure_code")),
                 "failure_message": _text(failure.get("failure_message")),
                 "defer_attempt_count": (
-                    _optional_nonnegative_int(
-                        resume.get("defer_attempt_count")
-                    )
-                    or 0
+                    _optional_nonnegative_int(resume.get("defer_attempt_count")) or 0
                 )
                 + 1,
             }
@@ -4848,10 +5097,7 @@ class AgentSessionReducer:
             reason="active_reply_effect_failed",
             fallback_reason="active_reply_effect_failed",
             available_at=retry_at,
-            attempt_count=(
-                _optional_nonnegative_int(resume.get("defer_attempt_count"))
-                or 1
-            ),
+            attempt_count=(_optional_nonnegative_int(resume.get("defer_attempt_count")) or 1),
             last_error=f"active_reply_effect_failed:{failure_code}",
         )
         schedule_event = SessionReviewScheduleEvent(
@@ -4923,9 +5169,7 @@ class AgentSessionReducer:
         operation_metadata: dict[str, Any] = {
             "completion_event_id": event.event_id,
             "consumed_message_log_ids": list(consumed_ids),
-            "external_action_effect_ids": [
-                effect.effect_id for effect in action_effects
-            ],
+            "external_action_effect_ids": [effect.effect_id for effect in action_effects],
             "model_execution_id": _text(event.payload.get("model_execution_id")),
             "prompt_signature": _text(event.payload.get("prompt_signature")),
         }
@@ -5006,9 +5250,7 @@ class AgentSessionReducer:
             message_ledger_mutations=consumptions,
             result={
                 "consumed_message_log_ids": list(consumed_ids),
-                "external_action_effect_ids": [
-                    effect.effect_id for effect in action_effects
-                ],
+                "external_action_effect_ids": [effect.effect_id for effect in action_effects],
                 "review_operation_id": review_operation_id,
                 "status": status.value,
             },
@@ -5200,10 +5442,7 @@ class AgentSessionReducer:
         mismatch = self._fence_mismatch(aggregate, event)
         if mismatch:
             return self._stale_completion(aggregate, event, mismatch)
-        deadline_reached = (
-            event.kind
-            == AgentSessionEventKind.IDLE_REVIEW_PLANNING_DEADLINE_REACHED
-        )
+        deadline_reached = event.kind == AgentSessionEventKind.IDLE_REVIEW_PLANNING_DEADLINE_REACHED
         outcome = self.resolve_schedule_outcome(
             event,
             deadline_reached=deadline_reached,
@@ -5228,6 +5467,8 @@ class AgentSessionReducer:
             )
         if effect_kind == AgentSessionEffectKind.CANCEL_REVIEW_WORKFLOW:
             return self._review_cancellation_effect_failed(aggregate, event)
+        if effect_kind == AgentSessionEffectKind.CANCEL_MODEL_EXECUTION:
+            return self._model_execution_cancellation_effect_failed(aggregate, event)
         if effect_kind == AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST:
             return self._active_chat_exit_request_effect_failed(aggregate, event)
         if effect_kind == AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE:
@@ -5302,6 +5543,62 @@ class AgentSessionReducer:
             intent=intent,
             failure=_effect_failure_record(event),
             disposition="review_cancellation_effect_failed_blocked",
+        )
+
+    def _model_execution_cancellation_effect_failed(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        """Fail closed when the v3 cancellation proof itself cannot execute."""
+
+        effect_kind = AgentSessionEffectKind.CANCEL_MODEL_EXECUTION
+        intent = _control_intent(aggregate.data, effect_kind)
+        mismatch = self._control_effect_failure_mismatch(
+            aggregate,
+            event,
+            intent=intent,
+            effect_kind=effect_kind,
+        )
+        if mismatch:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_execution_cancellation_effect_failure_stale",
+                reason=",".join(mismatch),
+            )
+        failure = _effect_failure_record(event)
+        target_fence = _mapping(intent.get("cancelled_model_effect_fence"))
+        data = _with_control_intent(
+            aggregate.data,
+            effect_kind=effect_kind,
+            intent={
+                **intent,
+                "status": "blocked",
+                "failure": failure,
+            },
+        )
+        data[_MODEL_EXECUTION_BLOCKER_DATA_KEY] = {
+            "kind": "cancellation_control_failed",
+            "source": "model_execution_cancellation_gate",
+            "event_id": event.event_id,
+            "effect_id": _text(target_fence.get("effect_id")),
+            "effect_kind": _text(target_fence.get("effect_kind")),
+            "operation_id": _text(target_fence.get("operation_id")),
+            "unknown_reason": _text(failure.get("failure_code"))
+            or "model_execution_cancellation_control_failed",
+        }
+        target = aggregate.advance(
+            data=data,
+            updated_at=_event_time(aggregate, event),
+        )
+        return SessionTransition(
+            aggregate=target,
+            disposition="model_execution_cancellation_effect_failed_blocked",
+            caused_operation_id=_text(target_fence.get("operation_id")),
+            caused_plan_id=_text(intent.get("plan_id")),
+            result={"failure": failure},
+            reason="model_execution_cancellation_control_failed",
         )
 
     def _active_chat_exit_request_effect_failed(
@@ -5437,23 +5734,18 @@ class AgentSessionReducer:
                 "input_ledger_sequence": intent.get("input_ledger_sequence"),
                 "attempt_count": max(
                     1,
-                    (_strict_nonnegative_int(intent.get("retry_cycle")) or 0)
-                    + 1,
+                    (_strict_nonnegative_int(intent.get("retry_cycle")) or 0) + 1,
                 ),
                 "contract_version": contract.version,
                 "contract_signature": contract.signature,
                 "trigger": intent.get("trigger"),
                 "expected_active_epoch": intent.get("expected_active_epoch"),
-                "expected_message_watermark": intent.get(
-                    "expected_message_watermark"
-                ),
+                "expected_message_watermark": intent.get("expected_message_watermark"),
             },
         )
         transition = self._request_exit(aggregate, completion_event)
         if transition.disposition != "active_chat_exit_settling":
-            raise RuntimeError(
-                "validated active chat exit failover did not enter idle planning"
-            )
+            raise RuntimeError("validated active chat exit failover did not enter idle planning")
         failover = {
             "effect_id": _text(intent.get("effect_id")),
             "failure_event_id": event.event_id,
@@ -5529,19 +5821,14 @@ class AgentSessionReducer:
             field_name="active_chat_state.pending_message_log_ids",
             allow_empty=True,
         )
-        if (
-            pending_ids
-            and cycle + 1 < self._config.control_reconciliation_max_cycles
-        ):
-            next_state, retry_effect, retry_intent = (
-                self._schedule_active_chat_round_due(
-                    aggregate,
-                    event,
-                    active_chat_state=active_state,
-                    input_watermark=_message_watermark(aggregate.data),
-                    delay_seconds=self._config.busy_review_retry_seconds,
-                    retry_cycle=cycle + 1,
-                )
+        if pending_ids and cycle + 1 < self._config.control_reconciliation_max_cycles:
+            next_state, retry_effect, retry_intent = self._schedule_active_chat_round_due(
+                aggregate,
+                event,
+                active_chat_state=active_state,
+                input_watermark=_message_watermark(aggregate.data),
+                delay_seconds=self._config.busy_review_retry_seconds,
+                retry_cycle=cycle + 1,
             )
             retry_intent["prior_failure"] = failure
             data = _with_control_intent(
@@ -5652,9 +5939,7 @@ class AgentSessionReducer:
 
         fence = _operation_fence(aggregate.data, operation_id)
         failure = _workflow_effect_failure_record(event)
-        failure_code = _text(failure.get("failure_code")) or (
-            "active_reply_workflow_effect_failed"
-        )
+        failure_code = _text(failure.get("failure_code")) or ("active_reply_workflow_effect_failed")
         failure_message = _text(failure.get("failure_message"))
         resume = self._deferred_active_reply_resume(
             aggregate.active_reply_resume,
@@ -5731,9 +6016,7 @@ class AgentSessionReducer:
 
         fence = _operation_fence(aggregate.data, operation_id)
         failure = _workflow_effect_failure_record(event)
-        failure_code = _text(failure.get("failure_code")) or (
-            "review_workflow_effect_failed"
-        )
+        failure_code = _text(failure.get("failure_code")) or ("review_workflow_effect_failed")
         failure_message = _text(failure.get("failure_message"))
         transition = self._finish_review(
             aggregate,
@@ -5795,9 +6078,7 @@ class AgentSessionReducer:
         fence = _operation_fence(aggregate.data, operation_id)
         input_watermark, input_ledger_sequence = _captured_input_boundary(fence)
         failure = _workflow_effect_failure_record(event)
-        failure_code = _text(failure.get("failure_code")) or (
-            "active_chat_bootstrap_effect_failed"
-        )
+        failure_code = _text(failure.get("failure_code")) or ("active_chat_bootstrap_effect_failed")
         failure_message = _text(failure.get("failure_message"))
         operation = SessionOperation(
             operation_id=operation_id,
@@ -5899,9 +6180,7 @@ class AgentSessionReducer:
             except (TypeError, ValueError):
                 selected_message_log_ids = ()
         failure = _workflow_effect_failure_record(event)
-        failure_code = _text(failure.get("failure_code")) or (
-            "active_chat_round_effect_failed"
-        )
+        failure_code = _text(failure.get("failure_code")) or ("active_chat_round_effect_failed")
         failure_message = _text(failure.get("failure_message"))
         active_state = dict(aggregate.active_chat_state)
         pending_ids = _positive_int_tuple(
@@ -5922,8 +6201,7 @@ class AgentSessionReducer:
                     failure_code=failure_code,
                 )
                 retry_exhausted = (
-                    int(retry_chain["attempt_count"])
-                    >= self._config.active_chat_round_max_attempts
+                    int(retry_chain["attempt_count"]) >= self._config.active_chat_round_max_attempts
                 )
             elif not selected_message_log_ids:
                 retry_chain = {
@@ -5996,14 +6274,12 @@ class AgentSessionReducer:
             effects = (exit_effect,)
             next_state["exit_requested"] = True
         elif pending_ids:
-            next_state, retry_effect, round_intent = (
-                self._schedule_active_chat_round_due(
+            next_state, retry_effect, round_intent = self._schedule_active_chat_round_due(
                 aggregate,
                 event,
                 active_chat_state=next_state,
                 input_watermark=_message_watermark(data),
-                    delay_seconds=self._config.busy_review_retry_seconds,
-                )
+                delay_seconds=self._config.busy_review_retry_seconds,
             )
             if retry_chain is not None:
                 next_state[_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY] = {
@@ -6043,9 +6319,7 @@ class AgentSessionReducer:
                 "remaining_message_log_ids": list(pending_ids),
                 "round_schedule_id": _text(next_state.get("round_schedule_id")),
                 "round_retry_attempt_count": (
-                    int(retry_chain["attempt_count"])
-                    if retry_chain is not None
-                    else 0
+                    int(retry_chain["attempt_count"]) if retry_chain is not None else 0
                 ),
             },
             reason=failure_code,
@@ -6075,9 +6349,7 @@ class AgentSessionReducer:
             return self._stale_workflow_completion(
                 aggregate,
                 event,
-                operation_id=(
-                    _exact_json_text(event.payload.get("operation_id")) or ""
-                ),
+                operation_id=(_exact_json_text(event.payload.get("operation_id")) or ""),
                 disposition="external_action_effect_failure_stale",
                 mismatch=("pending_external_actions_invalid",),
             )
@@ -6152,9 +6424,7 @@ class AgentSessionReducer:
             {
                 "operation_id": _text(pending.get("operation_id")),
                 "plan_id": _text(pending.get("plan_id")),
-                "active_epoch": _optional_nonnegative_int(
-                    pending.get("active_epoch")
-                ),
+                "active_epoch": _optional_nonnegative_int(pending.get("active_epoch")),
                 "activity_generation": _optional_nonnegative_int(
                     pending.get("activity_generation")
                 ),
@@ -6162,8 +6432,7 @@ class AgentSessionReducer:
         )
         normalized = replace(event, payload=normalized_payload)
         deadline_effect_failed = (
-            effect_kind
-            == AgentSessionEffectKind.ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE
+            effect_kind == AgentSessionEffectKind.ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE
         )
         failure_code = _text(event.payload.get("failure_code")) or (
             "planner_deadline_effect_failed"
@@ -6196,24 +6465,20 @@ class AgentSessionReducer:
         pending: Mapping[str, Any],
         effect_kind: str,
     ) -> tuple[str, ...]:
-        planner_failed = (
-            effect_kind == AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING
-        )
+        planner_failed = effect_kind == AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING
         effect_prefix = "planner" if planner_failed else "deadline"
         expected_effect_id = pending.get(f"{effect_prefix}_effect_id")
         expected_idempotency_key = pending.get(f"{effect_prefix}_idempotency_key")
         expected_operation_id = _exact_json_text(pending.get("operation_id")) or ""
         operation_fence = _mapping(
-            _mapping(aggregate.data.get("operation_fences")).get(
-                expected_operation_id
-            )
+            _mapping(aggregate.data.get("operation_fences")).get(expected_operation_id)
         )
         expected_plan_id = pending.get("plan_id")
-        active_epoch_valid, expected_active_epoch = (
-            _strict_optional_nonnegative_int(pending.get("active_epoch"))
+        active_epoch_valid, expected_active_epoch = _strict_optional_nonnegative_int(
+            pending.get("active_epoch")
         )
-        activity_generation_valid, expected_activity_generation = (
-            _strict_optional_nonnegative_int(pending.get("activity_generation"))
+        activity_generation_valid, expected_activity_generation = _strict_optional_nonnegative_int(
+            pending.get("activity_generation")
         )
         mismatch = list(
             _effect_event_provenance_mismatch(
@@ -6228,17 +6493,11 @@ class AgentSessionReducer:
                 expected_active_epoch=pending.get("active_epoch"),
                 expected_activity_generation=pending.get("activity_generation"),
                 expected_input_watermark=operation_fence.get("input_watermark"),
-                expected_input_ledger_sequence=operation_fence.get(
-                    "input_ledger_sequence"
-                ),
+                expected_input_ledger_sequence=operation_fence.get("input_ledger_sequence"),
                 expected_causation_id=pending.get("requested_by_event_id"),
                 expected_ownership_generation=pending.get("ownership_generation"),
-                expected_contract_version=pending.get(
-                    f"{effect_prefix}_contract_version"
-                ),
-                expected_contract_signature=pending.get(
-                    f"{effect_prefix}_contract_signature"
-                ),
+                expected_contract_version=pending.get(f"{effect_prefix}_contract_version"),
+                expected_contract_signature=pending.get(f"{effect_prefix}_contract_signature"),
             )
         )
         if aggregate.state != AgentSessionState.ACTIVE_CHAT_SETTLING:
@@ -6342,6 +6601,137 @@ class AgentSessionReducer:
             reason=f"control_effect_completed:{effect_kind}",
         )
 
+    def _model_execution_cancellation_completed(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        """Record a v3 model cancellation only after its exact gate responds.
+
+        A blocked observation is not a successful cancellation.  It records an
+        explicit actor-wide model-work fence because the superseded provider
+        call may still have side effects that cannot be reconstructed from a
+        lease or local task registry.
+        """
+
+        effect_kind = AgentSessionEffectKind.CANCEL_MODEL_EXECUTION
+        intent = _control_intent(aggregate.data, effect_kind)
+        mismatch = list(
+            self._control_effect_event_mismatch(
+                aggregate,
+                event,
+                intent=intent,
+                effect_kind=effect_kind,
+                expected_event_field="completion_event_id",
+            )
+        )
+        try:
+            observation = _model_execution_cancellation_observation(event.payload)
+        except (TypeError, ValueError) as exc:
+            mismatch.append("model_execution_cancellation_invalid:" + str(exc))
+            observation = None
+        target_fence = _mapping(intent.get("cancelled_model_effect_fence"))
+        if observation is not None:
+            expected_target = {
+                "cancellation_effect_id": _exact_json_text(intent.get("effect_id")) or "",
+                "target_effect_id": _exact_json_text(target_fence.get("effect_id")) or "",
+                "target_effect_kind": _exact_json_text(target_fence.get("effect_kind")) or "",
+                "target_operation_id": _exact_json_text(target_fence.get("operation_id"))
+                or "",
+            }
+            actual_target = {
+                "cancellation_effect_id": observation.cancellation_effect_id,
+                "target_effect_id": observation.target_effect_id,
+                "target_effect_kind": observation.target_effect_kind,
+                "target_operation_id": observation.target_operation_id,
+            }
+            mismatch.extend(
+                field_name + "_changed"
+                for field_name, expected_value in expected_target.items()
+                if not expected_value or actual_target[field_name] != expected_value
+            )
+            if (
+                target_fence.get("contract_version") != 3
+                or not is_model_execution_cancellation_target(
+                    effect_kind=_text(target_fence.get("effect_kind")),
+                    contract_version=_optional_nonnegative_int(
+                        target_fence.get("contract_version")
+                    )
+                    or 0,
+                )
+                or target_fence.get("ownership_generation")
+                != aggregate.ownership_generation
+            ):
+                mismatch.append("cancelled_model_effect_fence_changed")
+        if mismatch:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="model_execution_cancellation_completion_stale",
+                reason=",".join(dict.fromkeys(mismatch)),
+            )
+        assert observation is not None
+        completion = _effect_completion_record(event)
+        if observation.status is ModelExecutionCancellationGateStatus.BLOCKED:
+            data = _with_control_intent(
+                aggregate.data,
+                effect_kind=effect_kind,
+                intent={
+                    **intent,
+                    "status": "blocked",
+                    "completion": completion,
+                    "blocker": observation.to_payload(),
+                },
+            )
+            data[_MODEL_EXECUTION_BLOCKER_DATA_KEY] = {
+                "kind": "execution_unknown",
+                "source": "model_execution_cancellation_gate",
+                "event_id": event.event_id,
+                "effect_id": observation.target_effect_id,
+                "effect_kind": observation.target_effect_kind,
+                "operation_id": observation.target_operation_id,
+                "claim_id": observation.target_claim_id,
+                "worker_id": observation.target_worker_id,
+                "unknown_reason": observation.blocker_code,
+                "durable_unknown_count": observation.durable_unknown_count,
+            }
+            target = aggregate.advance(
+                data=data,
+                updated_at=_event_time(aggregate, event),
+            )
+            return SessionTransition(
+                aggregate=target,
+                disposition="model_execution_cancellation_blocked",
+                caused_operation_id=observation.target_operation_id,
+                caused_plan_id=_text(intent.get("plan_id")),
+                result={
+                    "completion": completion,
+                    "blocker": observation.to_payload(),
+                },
+                reason=observation.blocker_code,
+            )
+
+        target = aggregate.advance(
+            data=_with_control_intent(
+                aggregate.data,
+                effect_kind=effect_kind,
+                intent={
+                    **intent,
+                    "status": "completed",
+                    "completion": completion,
+                },
+            ),
+            updated_at=_event_time(aggregate, event),
+        )
+        return SessionTransition(
+            aggregate=target,
+            disposition="model_execution_cancellation_completed",
+            caused_operation_id=observation.target_operation_id,
+            caused_plan_id=_text(intent.get("plan_id")),
+            result={"completion": completion},
+            reason="model_execution_cancellation_completed",
+        )
+
     def _control_reconciled(
         self,
         aggregate: AgentSessionAggregate,
@@ -6393,8 +6783,7 @@ class AgentSessionReducer:
             aggregate=target,
             disposition=(
                 "active_chat_runtime_reconciled"
-                if control_effect_kind
-                == AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
+                if control_effect_kind == AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
                 else "idle_planning_cancellation_reconciled"
             ),
             caused_operation_id=operation_id,
@@ -6516,9 +6905,7 @@ class AgentSessionReducer:
         )
         desired_state = _text(intent.get("desired_state"))
         input_watermark = _optional_nonnegative_int(intent.get("input_watermark"))
-        input_ledger_sequence = _optional_nonnegative_int(
-            intent.get("input_ledger_sequence")
-        )
+        input_ledger_sequence = _optional_nonnegative_int(intent.get("input_ledger_sequence"))
         contract_snapshot = _effect_contract_snapshot(reconciliation_kind)
         updated_intent = {
             **intent,
@@ -6598,12 +6985,8 @@ class AgentSessionReducer:
                 "completion_event_id": completion_event_id,
                 "failure_event_id": failure_event_id,
                 "plan_id": _text(intent.get("plan_id")),
-                "active_epoch": _optional_nonnegative_int(
-                    intent.get("active_epoch")
-                ),
-                "activity_generation": _optional_nonnegative_int(
-                    intent.get("activity_generation")
-                ),
+                "active_epoch": _optional_nonnegative_int(intent.get("active_epoch")),
+                "activity_generation": _optional_nonnegative_int(intent.get("activity_generation")),
                 "input_watermark": input_watermark,
                 "input_ledger_sequence": input_ledger_sequence,
                 "desired_state": desired_state,
@@ -6706,9 +7089,7 @@ class AgentSessionReducer:
                 expected_event_id=intent.get(expected_event_field),
                 expected_effect_kind=reconciliation_kind,
                 expected_effect_id=intent.get("reconciliation_effect_id"),
-                expected_idempotency_key=intent.get(
-                    "reconciliation_idempotency_key"
-                ),
+                expected_idempotency_key=intent.get("reconciliation_idempotency_key"),
                 expected_operation_id=intent.get("reconciliation_operation_id"),
                 expected_plan_id=intent.get("plan_id"),
                 expected_active_epoch=intent.get("active_epoch"),
@@ -6717,12 +7098,8 @@ class AgentSessionReducer:
                 expected_input_ledger_sequence=intent.get("input_ledger_sequence"),
                 expected_causation_id=intent.get("reconciliation_causation_id"),
                 expected_ownership_generation=intent.get("ownership_generation"),
-                expected_contract_version=intent.get(
-                    "reconciliation_contract_version"
-                ),
-                expected_contract_signature=intent.get(
-                    "reconciliation_contract_signature"
-                ),
+                expected_contract_version=intent.get("reconciliation_contract_version"),
+                expected_contract_signature=intent.get("reconciliation_contract_signature"),
             )
         )
         mismatch.extend(_control_runtime_fence_mismatch(aggregate, intent))
@@ -6754,9 +7131,7 @@ class AgentSessionReducer:
             seed=operation_id,
             purpose="stop-active-chat-effect",
         )
-        stop_idempotency_key = (
-            _text(event.payload.get("stop_idempotency_key")) or stop_effect_id
-        )
+        stop_idempotency_key = _text(event.payload.get("stop_idempotency_key")) or stop_effect_id
         stop_completion_event_id = self._payload_or_generated_id(
             event,
             field_name="stop_completion_event_id",
@@ -6770,9 +7145,7 @@ class AgentSessionReducer:
             purpose="stop-active-chat-failure-event",
         )
         operation_fence = _operation_fence(aggregate.data, operation_id)
-        input_watermark = _optional_nonnegative_int(
-            operation_fence.get("input_watermark")
-        )
+        input_watermark = _optional_nonnegative_int(operation_fence.get("input_watermark"))
         input_ledger_sequence = _optional_nonnegative_int(
             operation_fence.get("input_ledger_sequence")
         )
@@ -6788,9 +7161,7 @@ class AgentSessionReducer:
                 "effect_id": stop_effect_id,
                 "effect_kind": AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME,
                 "idempotency_key": stop_idempotency_key,
-                **_effect_contract_snapshot(
-                    AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
-                ),
+                **_effect_contract_snapshot(AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME),
                 "completion_event_id": stop_completion_event_id,
                 "failure_event_id": stop_failure_event_id,
                 "operation_id": operation_id,
@@ -6833,9 +7204,7 @@ class AgentSessionReducer:
             activity_generation=aggregate.activity_generation,
             finished_at=event.occurred_at,
             failure_code=(outcome.failure_code if isinstance(outcome, Failed) else ""),
-            failure_message=(
-                outcome.failure_message if isinstance(outcome, Failed) else ""
-            ),
+            failure_message=(outcome.failure_message if isinstance(outcome, Failed) else ""),
             metadata={
                 "idle_exit": pending,
                 "schedule_outcome": outcome_payload,
@@ -6944,18 +7313,14 @@ class AgentSessionReducer:
         active_epoch_valid, expected_active_epoch = _strict_optional_nonnegative_int(
             event.payload.get("active_epoch")
         )
-        activity_generation_valid, expected_activity_generation = (
-            _strict_optional_nonnegative_int(
-                event.payload.get("activity_generation")
-            )
+        activity_generation_valid, expected_activity_generation = _strict_optional_nonnegative_int(
+            event.payload.get("activity_generation")
         )
         outcome = Superseded(
             reason=",".join(mismatch),
             operation_id=operation_id,
             plan_id=plan_id,
-            expected_active_epoch=(
-                expected_active_epoch if active_epoch_valid else None
-            ),
+            expected_active_epoch=(expected_active_epoch if active_epoch_valid else None),
             expected_activity_generation=(
                 expected_activity_generation if activity_generation_valid else None
             ),
@@ -6973,9 +7338,7 @@ class AgentSessionReducer:
             disposition="superseded",
             caused_operation_id=operation_id,
             caused_plan_id=plan_id,
-            review_schedule_events=(
-                self._superseded_schedule_event(aggregate, event, outcome),
-            ),
+            review_schedule_events=(self._superseded_schedule_event(aggregate, event, outcome),),
             result={"schedule_outcome": outcome.to_payload()},
             reason=outcome.reason,
         )
@@ -7014,25 +7377,21 @@ class AgentSessionReducer:
         event: SessionEventEnvelope,
     ) -> tuple[str, ...]:
         pending = _mapping(aggregate.data.get("idle_exit"))
-        completion = (
-            event.kind == AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED
-        )
+        completion = event.kind == AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED
         effect_prefix = "planner" if completion else "deadline"
         expected_event_id = pending.get(
             "completion_event_id" if completion else "deadline_event_id"
         )
         expected_operation_id = _exact_json_text(pending.get("operation_id")) or ""
         operation_fence = _mapping(
-            _mapping(aggregate.data.get("operation_fences")).get(
-                expected_operation_id
-            )
+            _mapping(aggregate.data.get("operation_fences")).get(expected_operation_id)
         )
         expected_plan_id = pending.get("plan_id")
-        active_epoch_valid, expected_active_epoch = (
-            _strict_optional_nonnegative_int(pending.get("active_epoch"))
+        active_epoch_valid, expected_active_epoch = _strict_optional_nonnegative_int(
+            pending.get("active_epoch")
         )
-        activity_generation_valid, expected_activity_generation = (
-            _strict_optional_nonnegative_int(pending.get("activity_generation"))
+        activity_generation_valid, expected_activity_generation = _strict_optional_nonnegative_int(
+            pending.get("activity_generation")
         )
         expected_effect_id = pending.get(f"{effect_prefix}_effect_id")
         expected_idempotency_key = pending.get(f"{effect_prefix}_idempotency_key")
@@ -7054,17 +7413,11 @@ class AgentSessionReducer:
                 expected_active_epoch=pending.get("active_epoch"),
                 expected_activity_generation=pending.get("activity_generation"),
                 expected_input_watermark=operation_fence.get("input_watermark"),
-                expected_input_ledger_sequence=operation_fence.get(
-                    "input_ledger_sequence"
-                ),
+                expected_input_ledger_sequence=operation_fence.get("input_ledger_sequence"),
                 expected_causation_id=pending.get("requested_by_event_id"),
                 expected_ownership_generation=pending.get("ownership_generation"),
-                expected_contract_version=pending.get(
-                    f"{effect_prefix}_contract_version"
-                ),
-                expected_contract_signature=pending.get(
-                    f"{effect_prefix}_contract_signature"
-                ),
+                expected_contract_version=pending.get(f"{effect_prefix}_contract_version"),
+                expected_contract_signature=pending.get(f"{effect_prefix}_contract_signature"),
             )
         )
         if aggregate.state != AgentSessionState.ACTIVE_CHAT_SETTLING:
@@ -7091,9 +7444,7 @@ class AgentSessionReducer:
         pending = _mapping(aggregate.data.get("idle_exit"))
         plan_id = _exact_json_text(pending.get("plan_id")) or ""
         pending_operation_id = _exact_json_text(pending.get("operation_id")) or ""
-        if plan_id and (
-            not pending_operation_id or pending_operation_id == operation_id
-        ):
+        if plan_id and (not pending_operation_id or pending_operation_id == operation_id):
             return plan_id
         return self._ids.create(
             key=aggregate.key,
@@ -7128,11 +7479,7 @@ class AgentSessionReducer:
             failure_message=failure_message,
             model_execution_id=_text(event.payload.get("model_execution_id")),
             prompt_signature=_text(event.payload.get("prompt_signature")),
-            source=(
-                _text(event.payload.get("source"))
-                or event.source
-                or "idle_review_planning"
-            ),
+            source=(_text(event.payload.get("source")) or event.source or "idle_review_planning"),
         )
 
     def _ignored(
@@ -7168,9 +7515,7 @@ def _reconciliation_effect_kind(control_effect_kind: str) -> AgentSessionEffectK
     if normalized == AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME:
         return AgentSessionEffectKind.ACTIVE_CHAT_RUNTIME_RECONCILIATION
     if normalized == AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING:
-        return (
-            AgentSessionEffectKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILIATION
-        )
+        return AgentSessionEffectKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILIATION
     raise ValueError(f"unsupported control effect kind: {normalized or '<empty>'}")
 
 
@@ -7181,8 +7526,7 @@ def _active_chat_exit_request_mismatch(
     """Fence control-lane exit requests against later active-chat activity."""
 
     actor_generated = event.source == "effect_executor" or any(
-        field in event.payload
-        for field in ("expected_active_epoch", "expected_message_watermark")
+        field in event.payload for field in ("expected_active_epoch", "expected_message_watermark")
     )
     if not actor_generated:
         return ()
@@ -7206,17 +7550,11 @@ def _active_chat_exit_request_mismatch(
     attempt_count = _strict_nonnegative_int(event.payload.get("attempt_count"))
     if attempt_count is None or attempt_count < 1:
         mismatch.append("attempt_count_invalid")
-    expected_epoch = _strict_nonnegative_int(
-        event.payload.get("expected_active_epoch")
-    )
+    expected_epoch = _strict_nonnegative_int(event.payload.get("expected_active_epoch"))
     if expected_epoch is None or expected_epoch != aggregate.active_epoch:
         mismatch.append("active_epoch_changed")
-    expected_watermark = _strict_nonnegative_int(
-        event.payload.get("expected_message_watermark")
-    )
-    if expected_watermark is None or expected_watermark != _message_watermark(
-        aggregate.data
-    ):
+    expected_watermark = _strict_nonnegative_int(event.payload.get("expected_message_watermark"))
+    if expected_watermark is None or expected_watermark != _message_watermark(aggregate.data):
         mismatch.append("message_watermark_changed")
     return tuple(dict.fromkeys(mismatch))
 
@@ -7263,8 +7601,7 @@ def _active_chat_round_due_mismatch(
     if (
         not revision_valid
         or expected_revision is None
-        or _strict_nonnegative_int(event.payload.get("schedule_revision"))
-        != expected_revision
+        or _strict_nonnegative_int(event.payload.get("schedule_revision")) != expected_revision
     ):
         mismatch.append("schedule_revision_changed")
     if _strict_nonnegative_int(event.payload.get("active_epoch")) != aggregate.active_epoch:
@@ -7275,8 +7612,7 @@ def _active_chat_round_due_mismatch(
     if (
         not watermark_valid
         or expected_watermark is None
-        or _strict_nonnegative_int(event.payload.get("input_watermark"))
-        != expected_watermark
+        or _strict_nonnegative_int(event.payload.get("input_watermark")) != expected_watermark
     ):
         mismatch.append("input_watermark_changed")
     if _strict_nonnegative_int(event.payload.get("contract_version")) != contract.version:
@@ -7284,9 +7620,7 @@ def _active_chat_round_due_mismatch(
     attempt_count = _strict_nonnegative_int(event.payload.get("attempt_count"))
     if attempt_count is None or attempt_count < 1:
         mismatch.append("attempt_count_invalid")
-    expected_causation = _exact_json_text(
-        active_state.get("round_schedule_source_event_id")
-    )
+    expected_causation = _exact_json_text(active_state.get("round_schedule_source_event_id"))
     if not expected_causation or event.causation_id != expected_causation:
         mismatch.append("causation_id_changed")
     if event.ownership_generation != aggregate.ownership_generation:
@@ -7375,10 +7709,7 @@ def _control_effect_kind_for_reconciliation(
     normalized = _text(reconciliation_kind)
     if normalized == AgentSessionEffectKind.ACTIVE_CHAT_RUNTIME_RECONCILIATION:
         return AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
-    if (
-        normalized
-        == AgentSessionEffectKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILIATION
-    ):
+    if normalized == AgentSessionEffectKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILIATION:
         return AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
     raise ValueError(f"unsupported reconciliation effect kind: {normalized or '<empty>'}")
 
@@ -7534,9 +7865,7 @@ def _review_due_mismatch(
             mismatch.append("profile_id_changed")
         if _exact_json_text(session_key.get("session_id")) != aggregate.key.session_id:
             mismatch.append("session_id_changed")
-    payload_generation = _strict_nonnegative_int(
-        event.payload.get("ownership_generation")
-    )
+    payload_generation = _strict_nonnegative_int(event.payload.get("ownership_generation"))
     if (
         payload_generation is None
         or payload_generation != event.ownership_generation
@@ -7590,6 +7919,34 @@ def _review_due_mismatch(
     return tuple(dict.fromkeys(mismatch))
 
 
+def _manual_review_mismatch(
+    aggregate: AgentSessionAggregate,
+    event: SessionEventEnvelope,
+) -> tuple[str, ...]:
+    """Validate an operator admission proof without accepting scanner identity."""
+
+    mismatch: list[str] = []
+    if event.source != MANUAL_REVIEW_EVENT_SOURCE:
+        mismatch.append("manual_request_source_changed")
+    try:
+        request = ManualReviewRequest.from_payload(
+            event.payload,
+            event_id=event.event_id,
+            key=aggregate.key,
+            ownership_generation=event.ownership_generation,
+        )
+    except ManualReviewRequestError as exc:
+        mismatch.append(f"manual_request_invalid:{exc}")
+        return tuple(mismatch)
+    if request.ownership_generation != aggregate.ownership_generation:
+        mismatch.append("ownership_generation_changed")
+    if request.plan_id != aggregate.current_plan_id:
+        mismatch.append("plan_id_changed")
+    if request.plan_revision != aggregate.review_plan_revision:
+        mismatch.append("plan_revision_changed")
+    return tuple(dict.fromkeys(mismatch))
+
+
 def _control_runtime_fence_mismatch(
     aggregate: AgentSessionAggregate,
     intent: Mapping[str, Any],
@@ -7601,8 +7958,7 @@ def _control_runtime_fence_mismatch(
     elif aggregate.state != expected_state:
         mismatch.append("state_changed")
     if "expected_current_plan_id" in intent and (
-        aggregate.current_plan_id
-        != _exact_json_text(intent.get("expected_current_plan_id"))
+        aggregate.current_plan_id != _exact_json_text(intent.get("expected_current_plan_id"))
     ):
         mismatch.append("current_plan_id_changed")
     active_epoch_valid, expected_active_epoch = _strict_optional_nonnegative_int(
@@ -7612,10 +7968,8 @@ def _control_runtime_fence_mismatch(
         mismatch.append("expected_active_epoch_missing")
     elif aggregate.active_epoch != expected_active_epoch:
         mismatch.append("active_epoch_changed")
-    activity_generation_valid, expected_activity_generation = (
-        _strict_optional_nonnegative_int(
+    activity_generation_valid, expected_activity_generation = _strict_optional_nonnegative_int(
         intent.get("expected_activity_generation")
-        )
     )
     if not activity_generation_valid or expected_activity_generation is None:
         mismatch.append("expected_activity_generation_missing")
@@ -7629,9 +7983,7 @@ def _effect_completion_record(event: SessionEventEnvelope) -> dict[str, Any]:
         "event_id": event.event_id,
         "effect_id": _exact_json_text(event.payload.get("effect_id")) or "",
         "effect_kind": _exact_json_text(event.payload.get("effect_kind")) or "",
-        "idempotency_key": (
-            _exact_json_text(event.payload.get("idempotency_key")) or ""
-        ),
+        "idempotency_key": (_exact_json_text(event.payload.get("idempotency_key")) or ""),
         "operation_id": _exact_json_text(event.payload.get("operation_id")) or "",
         "attempt_count": _strict_nonnegative_int(event.payload.get("attempt_count")),
         "causation_id": event.causation_id,
@@ -7649,9 +8001,7 @@ def _effect_failure_record(event: SessionEventEnvelope) -> dict[str, Any]:
             {
                 "terminal_event_kind": str(event.kind),
                 "quarantine_reason_code": _text(event.payload.get("reason_code")),
-                "quarantine_reason_message": _text(
-                    event.payload.get("reason_message")
-                ),
+                "quarantine_reason_message": _text(event.payload.get("reason_message")),
             }
             if event.kind == AgentSessionEventKind.EFFECT_QUARANTINED
             else {}
@@ -7666,23 +8016,13 @@ def _workflow_effect_failure_record(
 
     return {
         **_effect_failure_record(event),
-        "contract_signature": (
-            _exact_json_text(event.payload.get("contract_signature")) or ""
-        ),
-        "contract_version": _strict_nonnegative_int(
-            event.payload.get("contract_version")
-        ),
+        "contract_signature": (_exact_json_text(event.payload.get("contract_signature")) or ""),
+        "contract_version": _strict_nonnegative_int(event.payload.get("contract_version")),
         "ownership_generation": event.ownership_generation,
         "plan_id": _exact_json_text(event.payload.get("plan_id")) or "",
-        "active_epoch": _strict_nonnegative_int(
-            event.payload.get("active_epoch")
-        ),
-        "activity_generation": _strict_nonnegative_int(
-            event.payload.get("activity_generation")
-        ),
-        "input_watermark": _strict_nonnegative_int(
-            event.payload.get("input_watermark")
-        ),
+        "active_epoch": _strict_nonnegative_int(event.payload.get("active_epoch")),
+        "activity_generation": _strict_nonnegative_int(event.payload.get("activity_generation")),
+        "input_watermark": _strict_nonnegative_int(event.payload.get("input_watermark")),
         "input_ledger_sequence": _strict_nonnegative_int(
             event.payload.get("input_ledger_sequence")
         ),
@@ -7696,15 +8036,9 @@ def _external_action_effect_failure_record(
 
     return {
         **_effect_failure_record(event),
-        "action_ordinal": _strict_nonnegative_int(
-            event.payload.get("action_ordinal")
-        ),
-        "contract_signature": (
-            _exact_json_text(event.payload.get("contract_signature")) or ""
-        ),
-        "contract_version": _strict_nonnegative_int(
-            event.payload.get("contract_version")
-        ),
+        "action_ordinal": _strict_nonnegative_int(event.payload.get("action_ordinal")),
+        "contract_signature": (_exact_json_text(event.payload.get("contract_signature")) or ""),
+        "contract_version": _strict_nonnegative_int(event.payload.get("contract_version")),
         "ownership_generation": event.ownership_generation,
         "request_digest": _exact_json_text(event.payload.get("request_digest")) or "",
     }
@@ -7751,8 +8085,8 @@ def _effect_event_provenance_mismatch(
     if not effect_kind:
         return ("expected_effect_kind_invalid",)
 
-    contract_version_valid, declared_contract_version = (
-        _strict_optional_nonnegative_int(expected_contract_version)
+    contract_version_valid, declared_contract_version = _strict_optional_nonnegative_int(
+        expected_contract_version
     )
     if not contract_version_valid:
         mismatch.append("expected_contract_version_invalid")
@@ -7789,10 +8123,7 @@ def _effect_event_provenance_mismatch(
     except KeyError:
         mismatch.append("contract_version_unknown")
         return tuple(dict.fromkeys(mismatch))
-    if (
-        declared_contract_signature
-        and declared_contract_signature != contract.signature
-    ):
+    if declared_contract_signature and declared_contract_signature != contract.signature:
         mismatch.append("expected_contract_signature_changed")
     expected_signature = declared_contract_signature or contract.signature
 
@@ -7856,15 +8187,13 @@ def _effect_event_provenance_mismatch(
         elif _exact_json_text(event.payload.get(field_name)) != expected:
             mismatch.append(f"{field_name}_changed")
 
-    active_epoch_valid, active_epoch = _strict_optional_nonnegative_int(
-        expected_active_epoch
-    )
+    active_epoch_valid, active_epoch = _strict_optional_nonnegative_int(expected_active_epoch)
     if not active_epoch_valid:
         mismatch.append("expected_active_epoch_invalid")
     if active_epoch is None:
         mismatch.append("expected_active_epoch_missing")
-    activity_generation_valid, activity_generation = (
-        _strict_optional_nonnegative_int(expected_activity_generation)
+    activity_generation_valid, activity_generation = _strict_optional_nonnegative_int(
+        expected_activity_generation
     )
     if not activity_generation_valid:
         mismatch.append("expected_activity_generation_invalid")
@@ -7881,9 +8210,7 @@ def _effect_event_provenance_mismatch(
         elif _strict_nonnegative_int(event.payload.get(field_name)) != expected:
             mismatch.append(f"{field_name}_changed")
 
-    watermark_valid, input_watermark = _strict_optional_nonnegative_int(
-        expected_input_watermark
-    )
+    watermark_valid, input_watermark = _strict_optional_nonnegative_int(expected_input_watermark)
     if not watermark_valid:
         mismatch.append("expected_input_watermark_invalid")
     if "input_watermark" not in event.payload:
@@ -7896,8 +8223,8 @@ def _effect_event_provenance_mismatch(
         elif _strict_nonnegative_int(supplied_watermark) != input_watermark:
             mismatch.append("input_watermark_changed")
 
-    ledger_sequence_valid, input_ledger_sequence = (
-        _strict_optional_nonnegative_int(expected_input_ledger_sequence)
+    ledger_sequence_valid, input_ledger_sequence = _strict_optional_nonnegative_int(
+        expected_input_ledger_sequence
     )
     if not ledger_sequence_valid:
         mismatch.append("expected_input_ledger_sequence_invalid")
@@ -7908,10 +8235,7 @@ def _effect_event_provenance_mismatch(
         if input_ledger_sequence is None:
             if supplied_sequence is not None:
                 mismatch.append("input_ledger_sequence_changed")
-        elif (
-            _strict_nonnegative_int(supplied_sequence)
-            != input_ledger_sequence
-        ):
+        elif _strict_nonnegative_int(supplied_sequence) != input_ledger_sequence:
             mismatch.append("input_ledger_sequence_changed")
 
     if "attempt_count" not in event.payload:
@@ -7969,9 +8293,7 @@ def _effect_quarantine_provenance_mismatch(
     if not causation_id:
         mismatch.append("expected_causation_id_invalid")
 
-    version_valid, contract_version = _strict_optional_nonnegative_int(
-        expected_contract_version
-    )
+    version_valid, contract_version = _strict_optional_nonnegative_int(expected_contract_version)
     if not version_valid:
         mismatch.append("expected_contract_version_invalid")
     if contract_version is None:
@@ -8028,9 +8350,10 @@ def _effect_quarantine_provenance_mismatch(
             mismatch.append(f"{field_name}_changed")
     if _strict_nonnegative_int(event.payload.get("contract_version")) != contract_version:
         mismatch.append("contract_version_changed")
-    if "attempt_count" not in event.payload or _strict_nonnegative_int(
-        event.payload.get("attempt_count")
-    ) is None:
+    if (
+        "attempt_count" not in event.payload
+        or _strict_nonnegative_int(event.payload.get("attempt_count")) is None
+    ):
         mismatch.append("attempt_count_invalid")
     if not _text(event.payload.get("failure_code")):
         mismatch.append("failure_code_missing")
@@ -8079,9 +8402,7 @@ def _durable_effect(
     contract = builtin_effect_contract(kind, version=contract_version)
     declared_fields = contract.outcome_fence_fields
     if declared_fields is None and contract_version is None:
-        raise ValueError(
-            f"current effect contract has no outcome fence declaration: {kind}"
-        )
+        raise ValueError(f"current effect contract has no outcome fence declaration: {kind}")
     if declared_fields is not None:
         missing_fields = tuple(
             field_name for field_name in declared_fields if field_name not in payload
@@ -8089,8 +8410,7 @@ def _durable_effect(
         if missing_fields:
             missing = ", ".join(missing_fields)
             raise ValueError(
-                f"effect payload is missing declared outcome fence fields for {kind}: "
-                f"{missing}"
+                f"effect payload is missing declared outcome fence fields for {kind}: {missing}"
             )
     return SessionEffect(
         effect_id=effect_id,
@@ -8125,6 +8445,28 @@ def _mapping(value: object) -> dict[str, Any]:
     return {str(key): item for key, item in value.items()}
 
 
+def _model_execution_cancellation_observation(
+    payload: Mapping[str, Any],
+) -> ModelExecutionCancellationGateObservation:
+    """Decode one bounded v3 gate observation from a control completion."""
+
+    raw = payload.get("model_execution_cancellation")
+    if not isinstance(raw, Mapping):
+        raise ValueError("model_execution_cancellation must be an object")
+    return ModelExecutionCancellationGateObservation(
+        status=raw.get("status"),
+        cancellation_effect_id=raw.get("cancellation_effect_id"),
+        target_effect_id=raw.get("target_effect_id"),
+        target_effect_kind=raw.get("target_effect_kind"),
+        target_operation_id=raw.get("target_operation_id"),
+        target_claim_id=raw.get("target_claim_id", ""),
+        target_worker_id=raw.get("target_worker_id", ""),
+        durable_running_count=raw.get("durable_running_count", 0),
+        durable_unknown_count=raw.get("durable_unknown_count", 0),
+        blocker_code=raw.get("blocker_code", ""),
+    )
+
+
 def _active_chat_review_handoff_certificate(
     *,
     review_operation_id: str,
@@ -8150,9 +8492,7 @@ def _active_chat_review_handoff_certificate(
     )
     if consumption is None:
         if normalized_ids:
-            raise ValueError(
-                "non-empty active chat handoff requires review consumption"
-            )
+            raise ValueError("non-empty active chat handoff requires review consumption")
         consumption_id = ""
         consumption_idempotency_key = ""
         completion_event_id = ""
@@ -8245,9 +8585,7 @@ def _parse_active_chat_review_handoff_certificate(
         ),
         "review_consumption_idempotency_key": _optional_exact_handoff_text(
             value.get("review_consumption_idempotency_key"),
-            field_name=(
-                f"{field_name}.review_consumption_idempotency_key"
-            ),
+            field_name=(f"{field_name}.review_consumption_idempotency_key"),
         ),
         "review_completion_event_id": _optional_exact_handoff_text(
             value.get("review_completion_event_id"),
@@ -8313,25 +8651,19 @@ def _positive_int_tuple(
 def _active_reply_workflow_result(
     payload: Mapping[str, Any],
 ) -> ActiveReplyCompletionResult:
-    return ActiveReplyCompletionResult.from_payload(
-        _workflow_result_payload(payload)
-    )
+    return ActiveReplyCompletionResult.from_payload(_workflow_result_payload(payload))
 
 
 def _active_chat_bootstrap_workflow_result(
     payload: Mapping[str, Any],
 ) -> ActiveChatBootstrapCompletionResult:
-    return ActiveChatBootstrapCompletionResult.from_payload(
-        _workflow_result_payload(payload)
-    )
+    return ActiveChatBootstrapCompletionResult.from_payload(_workflow_result_payload(payload))
 
 
 def _active_chat_round_workflow_result(
     payload: Mapping[str, Any],
 ) -> ActiveChatRoundCompletionResult:
-    return ActiveChatRoundCompletionResult.from_payload(
-        _workflow_result_payload(payload)
-    )
+    return ActiveChatRoundCompletionResult.from_payload(_workflow_result_payload(payload))
 
 
 def _review_workflow_result(
@@ -8343,9 +8675,7 @@ def _review_workflow_result(
 def _workflow_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     raw = payload.get("workflow_result")
     if not isinstance(raw, Mapping):
-        raise WorkflowCompletionCodecError(
-            "effect completion omitted versioned workflow_result"
-        )
+        raise WorkflowCompletionCodecError("effect completion omitted versioned workflow_result")
     return {str(key): value for key, value in raw.items()}
 
 
@@ -8389,9 +8719,7 @@ def _active_reply_selected_message_log_ids(
         allow_empty=False,
     )
     if any(message_log_id > input_watermark for message_log_id in selected):
-        raise ValueError(
-            "active reply operation selection exceeds its captured watermark"
-        )
+        raise ValueError("active reply operation selection exceeds its captured watermark")
     return selected
 
 
@@ -8417,9 +8745,7 @@ def _active_chat_workflow_contract_version(active_state: Mapping[str, Any]) -> i
     to reinterpret an existing Active Chat session during recovery.
     """
 
-    version = _strict_nonnegative_int(
-        active_state.get(_ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY)
-    )
+    version = _strict_nonnegative_int(active_state.get(_ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY))
     if version == _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION:
         return version
     return 2
@@ -8455,9 +8781,7 @@ def _next_active_chat_round_retry_chain(
         and previous_message_log_ids == message_log_ids
     )
     base_attempt_count = (
-        previous_attempt_count
-        if same_chain and previous_attempt_count is not None
-        else 0
+        previous_attempt_count if same_chain and previous_attempt_count is not None else 0
     )
     attempt_count = base_attempt_count + 1
     return {
@@ -8543,9 +8867,7 @@ def _active_chat_round_selected_message_log_ids(
         allow_empty=False,
     )
     if any(message_log_id > input_watermark for message_log_id in selected):
-        raise ValueError(
-            "active chat round selection exceeds its captured watermark"
-        )
+        raise ValueError("active chat round selection exceeds its captured watermark")
     if not _exact_json_text(fence.get("round_schedule_id")):
         raise ValueError("active chat round omitted its durable schedule id")
     return selected
@@ -8561,9 +8883,7 @@ def _validate_actor_active_chat_round_completion(
     selected = set(selected_message_log_ids)
     if result.outcome is ActiveChatRoundOutcome.RETRY:
         if result.consumed_message_log_ids or result.external_action_intents:
-            raise ValueError(
-                "retry active chat round cannot consume messages or propose actions"
-            )
+            raise ValueError("retry active chat round cannot consume messages or propose actions")
         if result.interest_delta != 0.0:
             raise ValueError("retry active chat round must not adjust interest")
         return
@@ -8584,9 +8904,7 @@ def _validate_actor_active_chat_round_completion(
         raise ValueError("actor active chat v3 permits at most one visible action")
     if not intents:
         if result.interest_delta not in {-10.0, -5.0}:
-            raise ValueError(
-                "active chat no-reply round has an invalid interest adjustment"
-            )
+            raise ValueError("active chat no-reply round has an invalid interest adjustment")
         return
     intent = intents[0]
     if not isinstance(intent, ExternalActionIntent) or intent.action_ordinal != 0:
@@ -8640,8 +8958,7 @@ def _validate_active_chat_round_payload_fields(
     unknown = sorted(set(payload).difference(allowed))
     if unknown:
         raise ValueError(
-            f"active chat {action_name} intent has unsupported fields: "
-            + ", ".join(unknown)
+            f"active chat {action_name} intent has unsupported fields: " + ", ".join(unknown)
         )
 
 
@@ -8659,9 +8976,7 @@ def _validate_active_reply_external_action_intents(
         if intent.kind is ExternalActionKind.SEND_REPLY:
             reply_count += 1
             if reply_count > 1:
-                raise ValueError(
-                    "active reply v1 permits at most one send_reply intent"
-                )
+                raise ValueError("active reply v1 permits at most one send_reply intent")
             _validate_active_reply_payload_fields(
                 payload,
                 allowed={"text", "quote_message_log_id"},
@@ -8707,8 +9022,7 @@ def _validate_active_reply_payload_fields(
     unknown = sorted(set(payload).difference(allowed))
     if unknown:
         raise ValueError(
-            f"active reply {action_name} intent has unsupported fields: "
-            + ", ".join(unknown)
+            f"active reply {action_name} intent has unsupported fields: " + ", ".join(unknown)
         )
 
 
@@ -8720,14 +9034,9 @@ def _validate_active_reply_target_message_log_id(
 ) -> None:
     """Require an action target to be one exact selected durable message."""
 
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value not in selected
-    ):
+    if isinstance(value, bool) or not isinstance(value, int) or value not in selected:
         raise ValueError(
-            "active reply action targets a message outside its selected input: "
-            + field_name
+            "active reply action targets a message outside its selected input: " + field_name
         )
 
 
@@ -8773,24 +9082,16 @@ def _pending_outbound_actions(data: Mapping[str, Any]) -> dict[str, dict[str, An
     for raw_effect_id, raw_entry in raw.items():
         effect_id = _exact_json_text(raw_effect_id)
         if not effect_id:
-            raise ValueError(
-                "pending_outbound_actions contains an invalid effect id"
-            )
+            raise ValueError("pending_outbound_actions contains an invalid effect id")
         if not isinstance(raw_entry, Mapping):
             raise ValueError(f"pending outbound action {effect_id!r} must be an object")
         if any(not isinstance(key, str) for key in raw_entry):
-            raise ValueError(
-                f"pending outbound action {effect_id!r} has a non-text field name"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} has a non-text field name")
         entry = dict(raw_entry)
         if _exact_json_text(entry.get("effect_id")) != effect_id:
-            raise ValueError(
-                f"pending outbound action {effect_id!r} changed its effect id"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} changed its effect id")
         try:
-            action_kind = ExternalActionKind(
-                _exact_json_text(entry.get("effect_kind")) or ""
-            )
+            action_kind = ExternalActionKind(_exact_json_text(entry.get("effect_kind")) or "")
         except ValueError as exc:
             raise ValueError(
                 f"pending outbound action {effect_id!r} has an invalid effect kind"
@@ -8805,25 +9106,15 @@ def _pending_outbound_actions(data: Mapping[str, Any]) -> dict[str, dict[str, An
         if not operation_id:
             raise ValueError(f"pending outbound action {effect_id!r} has no operation")
         if not idempotency_key:
-            raise ValueError(
-                f"pending outbound action {effect_id!r} has no idempotency key"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} has no idempotency key")
         if not source_event_id:
-            raise ValueError(
-                f"pending outbound action {effect_id!r} has no source event"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} has no source event")
         if request_digest is None or not _is_sha256_digest(request_digest):
-            raise ValueError(
-                f"pending outbound action {effect_id!r} has an invalid request digest"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} has an invalid request digest")
         if action_ordinal is None:
-            raise ValueError(
-                f"pending outbound action {effect_id!r} has an invalid action ordinal"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} has an invalid action ordinal")
         if status not in allowed_statuses:
-            raise ValueError(
-                f"pending outbound action {effect_id!r} has an invalid receipt status"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} has an invalid receipt status")
         ordinal_key = (operation_id, action_ordinal)
         if ordinal_key in ordinals:
             raise ValueError(
@@ -8859,13 +9150,9 @@ def _validated_pending_action_effect_failure(
 
     raw = entry.get("effect_failure")
     if not isinstance(raw, Mapping):
-        raise ValueError(
-            f"pending outbound action {effect_id!r} has no effect failure evidence"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} has no effect failure evidence")
     if any(not isinstance(key, str) for key in raw):
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure has a non-text field name"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} failure has a non-text field name")
     failure = dict(raw)
     contract = _pending_external_action_contract(entry, action_kind=action_kind)
     expected_text: dict[str, object] = {
@@ -8881,44 +9168,25 @@ def _validated_pending_action_effect_failure(
     for field_name, raw_expected in expected_text.items():
         expected = _exact_json_text(raw_expected)
         if not expected or _exact_json_text(failure.get(field_name)) != expected:
-            raise ValueError(
-                f"pending outbound action {effect_id!r} failure changed "
-                f"{field_name}"
-            )
+            raise ValueError(f"pending outbound action {effect_id!r} failure changed {field_name}")
     if not _exact_json_text(failure.get("event_id")):
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure has no event id"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} failure has no event id")
     if _strict_nonnegative_int(failure.get("action_ordinal")) != _strict_nonnegative_int(
         entry.get("action_ordinal")
     ):
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure changed action ordinal"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} failure changed action ordinal")
     if _strict_nonnegative_int(failure.get("contract_version")) != contract.version:
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure changed contract version"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} failure changed contract version")
     attempt_count = _strict_nonnegative_int(failure.get("attempt_count"))
     if attempt_count is None or attempt_count < 1:
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure has an invalid attempt"
-        )
-    ownership_generation = _strict_nonnegative_int(
-        failure.get("ownership_generation")
-    )
+        raise ValueError(f"pending outbound action {effect_id!r} failure has an invalid attempt")
+    ownership_generation = _strict_nonnegative_int(failure.get("ownership_generation"))
     if ownership_generation is None or ownership_generation < 1:
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure has an invalid ownership"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} failure has an invalid ownership")
     if not _exact_json_text(failure.get("failure_code")):
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure has no failure code"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} failure has no failure code")
     if not isinstance(failure.get("failure_message"), str):
-        raise ValueError(
-            f"pending outbound action {effect_id!r} failure has an invalid message"
-        )
+        raise ValueError(f"pending outbound action {effect_id!r} failure has an invalid message")
     return failure
 
 
@@ -8958,14 +9226,10 @@ def _with_pending_outbound_actions(
         payload = _mapping(effect.payload)
         operation_id = _text(effect.operation_id)
         if not operation_id or _text(payload.get("operation_id")) != operation_id:
-            raise ValueError(
-                f"pending outbound effect {effect_id!r} changed its operation id"
-            )
+            raise ValueError(f"pending outbound effect {effect_id!r} changed its operation id")
         action_ordinal = _strict_nonnegative_int(payload.get("action_ordinal"))
         if action_ordinal is None:
-            raise ValueError(
-                f"pending outbound effect {effect_id!r} has an invalid action ordinal"
-            )
+            raise ValueError(f"pending outbound effect {effect_id!r} has an invalid action ordinal")
         ordinal_key = (operation_id, action_ordinal)
         if ordinal_key in ordinals:
             raise ValueError(
@@ -8975,14 +9239,10 @@ def _with_pending_outbound_actions(
         ordinals.add(ordinal_key)
         request_digest = _text(payload.get("request_digest"))
         if not _is_sha256_digest(request_digest):
-            raise ValueError(
-                f"pending outbound effect {effect_id!r} has an invalid request digest"
-            )
+            raise ValueError(f"pending outbound effect {effect_id!r} has an invalid request digest")
         idempotency_key = _text(effect.idempotency_key)
         if not idempotency_key:
-            raise ValueError(
-                f"pending outbound effect {effect_id!r} has no idempotency key"
-            )
+            raise ValueError(f"pending outbound effect {effect_id!r} has no idempotency key")
         contract = builtin_external_action_effect_contract(
             action_kind,
             version=effect.contract_version,
@@ -8991,9 +9251,7 @@ def _with_pending_outbound_actions(
             effect.contract_version != contract.version
             or effect.contract_signature != contract.signature
         ):
-            raise ValueError(
-                f"pending outbound effect {effect_id!r} changed its action contract"
-            )
+            raise ValueError(f"pending outbound effect {effect_id!r} changed its action contract")
         pending[effect_id] = {
             "action_ordinal": action_ordinal,
             "contract_signature": contract.signature,
@@ -9108,9 +9366,7 @@ def _external_action_effect_provenance_mismatch(
     if not effect_id:
         return ("pending_external_action_effect_id_invalid",)
     try:
-        action_kind = ExternalActionKind(
-            _exact_json_text(expected.get("effect_kind")) or ""
-        )
+        action_kind = ExternalActionKind(_exact_json_text(expected.get("effect_kind")) or "")
         contract = _pending_external_action_contract(
             expected,
             action_kind=action_kind,
@@ -9229,6 +9485,27 @@ def _review_cancellation_blocks_active_reply(data: Mapping[str, Any]) -> bool:
     """
 
     return _REVIEW_CANCELLATION_BLOCKER_DATA_KEY in data
+
+
+def _review_execution_unknown_blocks_model(data: Mapping[str, Any]) -> bool:
+    """Return whether any unresolved model result forbids new model work."""
+
+    return bool(_model_execution_unknown_reason(data))
+
+
+def _model_execution_unknown_reason(data: Mapping[str, Any]) -> str:
+    """Return the durable reason for the current global model-work fence."""
+
+    model_blocker = _mapping(data.get(_MODEL_EXECUTION_BLOCKER_DATA_KEY))
+    if _text(model_blocker.get("kind")) == "execution_unknown":
+        return "model_execution_unknown"
+    if _text(model_blocker.get("kind")):
+        return "model_execution_cancellation_blocked"
+
+    blocker = _mapping(data.get(_REVIEW_CANCELLATION_BLOCKER_DATA_KEY))
+    if _text(blocker.get("kind")) == "execution_unknown":
+        return "review_execution_unknown"
+    return ""
 
 
 def _pending_outbound_operation_id(data: Mapping[str, Any]) -> str:

@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
-from shinbot.agent.scheduler.models import ActiveChatDisposition, ReviewCompletionDecision
+from shinbot.agent.scheduler.models import (
+    ActiveChatDisposition,
+    ReviewCompletionDecision,
+    ReviewPlan,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -66,6 +71,43 @@ class ConsumedUnreadRange:
     end_msg_log_id: int
     message_count: int
     full_range: bool = False
+
+
+class ReviewSchedulerCommitKind(StrEnum):
+    """Scheduler-owned mutation requested by a completed review stage."""
+
+    CONSUME_RANGES = "consume_ranges"
+    COMPLETE_REVIEW = "complete_review"
+
+
+@dataclass(slots=True, frozen=True)
+class ReviewSchedulerCommitIntent:
+    """Immutable review mutation request for the runtime state owner.
+
+    Review stages can run model and tool work without holding the runtime
+    session mutex. Their durable unread consumption and terminal state
+    transition are submitted through this value after that external work ends.
+    """
+
+    kind: ReviewSchedulerCommitKind
+    session_id: str
+    review_run_id: str
+    expected_review_plan: ReviewPlan
+    consumed_ranges: tuple[ConsumedUnreadRange, ...] = ()
+    enter_active_chat: bool = False
+    active_chat_initial_interest: float | None = None
+    active_chat_decay_half_life_seconds: float | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ReviewSchedulerCommitDecision:
+    """Terminal result of a runtime-owned review scheduler mutation."""
+
+    session_id: str
+    accepted: bool
+    completion: ReviewCompletionDecision | None = None
+    consumed_ranges: tuple[ConsumedUnreadRange, ...] = ()
+    skipped_reason: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

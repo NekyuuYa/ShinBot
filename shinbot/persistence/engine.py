@@ -11,6 +11,16 @@ from shinbot.persistence.config import DatabaseConfig
 from shinbot.persistence.schema import apply_schema
 
 from .repositories import (
+    ActorV2AdmissionFenceRepository,
+    ActorV2CanaryIsolationLeaseRepository,
+    ActorV2CoreIngressDrainRepository,
+    ActorV2CutoverJournalRepository,
+    ActorV2FencedWakeTargetLeaseRepository,
+    ActorV2IngressDrainRepository,
+    ActorV2LegacyRecoveryGateRepository,
+    ActorV2LegacyStateHandoffRepository,
+    ActorV2MailboxHandoffRepository,
+    ActorV2MigrationBarrierRepository,
     AgentRuntimeDiagnosticsRepository,
     AgentRuntimeOwnershipRepository,
     AIInteractionRepository,
@@ -48,6 +58,16 @@ class DatabaseManager:
         self.durable_routing = DurableMessageRoutingRepository(self)
         self.ai_interactions = AIInteractionRepository(self)
         self.agent_runtime_diagnostics = AgentRuntimeDiagnosticsRepository(self)
+        self.actor_v2_legacy_recovery_gate = ActorV2LegacyRecoveryGateRepository(self)
+        self.actor_v2_canary_isolation_leases = ActorV2CanaryIsolationLeaseRepository(self)
+        self.actor_v2_cutover_journal = ActorV2CutoverJournalRepository(self)
+        self.actor_v2_admission_fences = ActorV2AdmissionFenceRepository(self)
+        self.actor_v2_migration_barriers = ActorV2MigrationBarrierRepository(self)
+        self.actor_v2_fenced_wake_target_leases = ActorV2FencedWakeTargetLeaseRepository(self)
+        self.actor_v2_ingress_drains = ActorV2IngressDrainRepository(self)
+        self.actor_v2_core_ingress_drains = ActorV2CoreIngressDrainRepository(self)
+        self.actor_v2_legacy_state_handoffs = ActorV2LegacyStateHandoffRepository(self)
+        self.actor_v2_mailbox_handoffs = ActorV2MailboxHandoffRepository(self)
         self.agent_runtime_ownership = AgentRuntimeOwnershipRepository(self)
         self.prompt_snapshots = PromptSnapshotRepository(self, snapshot_ttl=config.snapshot_ttl)
         self.media_assets = MediaAssetRepository(self)

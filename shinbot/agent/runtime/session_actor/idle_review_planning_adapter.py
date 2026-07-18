@@ -32,8 +32,13 @@ _IDLE_REVIEW_PLANNING_EFFECT_KIND = "run_idle_review_planning"
 _MAX_DIAGNOSTIC_TEXT_LENGTH = 512
 _LEGACY_BYPASS_CONTRACT_VERSION = 1
 _DESCRIPTOR_CONTRACT_VERSION = 2
+_ACTOR_NATIVE_CANCELLABLE_CONTRACT_VERSION = 3
 _SUPPORTED_EFFECT_CONTRACT_VERSIONS = frozenset(
-    {_LEGACY_BYPASS_CONTRACT_VERSION, _DESCRIPTOR_CONTRACT_VERSION}
+    {
+        _LEGACY_BYPASS_CONTRACT_VERSION,
+        _DESCRIPTOR_CONTRACT_VERSION,
+        _ACTOR_NATIVE_CANCELLABLE_CONTRACT_VERSION,
+    }
 )
 
 
@@ -430,7 +435,10 @@ class IdleReviewPlanningEffectHandler:
                     }
                 }
             )
-        if context.effect.contract_version != _DESCRIPTOR_CONTRACT_VERSION:
+        if context.effect.contract_version not in {
+            _DESCRIPTOR_CONTRACT_VERSION,
+            _ACTOR_NATIVE_CANCELLABLE_CONTRACT_VERSION,
+        }:
             raise IdleReviewPlanningAdapterError(
                 "unsupported idle review planning contract version: "
                 f"{context.effect.contract_version}"

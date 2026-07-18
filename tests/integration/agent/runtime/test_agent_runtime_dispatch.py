@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 from agent_runtime_support import (
@@ -22,7 +23,19 @@ from agent_runtime_support import (
     pytest,
 )
 
-from shinbot.agent.scheduler.models import ActiveChatDisposition
+from shinbot.agent.coordinators.review.models import (
+    ConsumedUnreadRange,
+    ReviewSchedulerCommitIntent,
+    ReviewSchedulerCommitKind,
+)
+from shinbot.agent.runtime.legacy_session_local_drain import (
+    LegacySessionLocalDrainRequest,
+)
+from shinbot.agent.runtime.legacy_signal_admission import (
+    LegacyAgentSignalFrozen,
+    LegacyAgentSignalQuiescenceStatus,
+)
+from shinbot.agent.scheduler.models import ActiveChatDisposition, ReviewPlan
 from shinbot.agent.signals import (
     AgentActiveChatBootstrapSignal,
     AgentSignal,
@@ -31,6 +44,7 @@ from shinbot.agent.signals import (
     AgentTimerSignal,
 )
 from shinbot.core.dispatch.agent_identity import DEFAULT_SESSION_ACTOR_PROFILE_ID
+from shinbot.core.dispatch.message_context import WaitingInputScope
 
 
 @pytest.mark.asyncio
@@ -43,6 +57,743 @@ async def test_agent_runtime_registers_background_tasks_in_manager(tmp_path: Pat
     profile.review_due_timer.start()
 
     assert runtime.task_manager.tasks(prefix=f"agent:{profile.bot_id or profile.profile_id}") != []
+
+
+@pytest.mark.asyncio
+async def test_profile_builds_an_unmounted_local_legacy_task_quiescer(tmp_path: Path) -> None:
+    """Constructing the local observer must not start or reroute runtime work."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("test-bot")
+
+    quiescer = profile.build_legacy_session_local_task_quiescer()
+    report = await quiescer.quiesce_session_tasks("test-bot:group:room")
+
+    assert report.locally_confirmed_quiescent is True
+    assert "review_due_timer" in [
+        observation.owner_name for observation in report.observations
+    ]
+    assert profile.active_chat_timer.active_sessions() == []
+    assert profile.review_due_timer._task is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_quiescer_includes_all_profiles(tmp_path: Path) -> None:
+    """A shared legacy base session must not drain only the selected profile."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        agent_configs_by_bot_id={
+            "bot-a": {"agent": {"id": "agent-a"}},
+            "bot-b": {"agent": {"id": "agent-b"}},
+        },
+    )
+
+    report = await runtime.build_legacy_base_session_local_task_quiescer().quiesce_session_tasks(
+        "test-bot:group:room"
+    )
+
+    assert report.locally_confirmed_quiescent is True
+    assert [observation.profile_id for observation in report.observations] == [
+        DEFAULT_SESSION_ACTOR_PROFILE_ID,
+        "bot-a",
+        "bot-b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_builds_unmounted_local_drain_participant(tmp_path: Path) -> None:
+    """Composition remains dormant until a future controller explicitly uses it."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:room"
+    request = LegacySessionLocalDrainRequest(
+        legacy_session_id=session_id,
+        waiting_input_scope=WaitingInputScope.from_routing_identity(
+            legacy_session_id=session_id,
+        ),
+        cutover_id="cutover-a",
+    )
+
+    participant = runtime.build_legacy_session_local_drain_participant(
+        bot.message_ingress
+    )
+    ticket = participant.freeze(request)
+    receipt = await participant.drain(ticket, timeout_seconds=0.5)
+
+    assert receipt.locally_confirmed_quiescent is True
+    assert participant.thaw(receipt) is True
+    assert bot.message_ingress.legacy_ingress_freeze_ticket(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_signal_freeze_blocks_reentry_before_session_lock(tmp_path: Path) -> None:
+    """A local lifecycle freeze sees and drains the real runtime entry call."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    class BlockingScheduler:
+        async def accept_signal(self, signal: AgentSignal) -> Any | None:
+            calls.append(signal.signal_id)
+            entered.set()
+            await release.wait()
+            return None
+
+    runtime.agent_scheduler = BlockingScheduler()  # type: ignore[assignment]
+    first = replace(make_signal(), signal_id="pre-freeze")
+    first_task = asyncio.create_task(runtime.handle_agent_signal(first))
+    await entered.wait()
+    ticket = runtime.freeze_legacy_session_signal_admission(
+        first.session_id,
+        cutover_id="cutover-a",
+    )
+
+    with pytest.raises(LegacyAgentSignalFrozen, match="frozen"):
+        await runtime.handle_agent_signal(replace(first, signal_id="post-freeze"))
+    timed_out = await runtime.await_legacy_session_signal_quiescent(
+        ticket,
+        timeout_seconds=0.0,
+    )
+
+    assert timed_out.status is LegacyAgentSignalQuiescenceStatus.TIMED_OUT
+    assert calls == ["pre-freeze"]
+    release.set()
+    await first_task
+    quiescent = await runtime.await_legacy_session_signal_quiescent(
+        ticket,
+        timeout_seconds=0.5,
+    )
+
+    assert quiescent.quiescent
+    assert runtime.thaw_legacy_session_signal_admission(ticket) is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_runs_idle_planner_outside_session_lock_and_coalesces_ticks(
+    tmp_path: Path,
+) -> None:
+    """A slow planner cannot block a duplicate exit signal for the same session."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    scheduler = profile.agent_scheduler
+    session_id = "test-bot:group:room"
+    scheduler._state_store.set_state(session_id, AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        session_id,
+        enter_active_chat=True,
+        active_chat_initial_interest=4.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+    planner_started = asyncio.Event()
+    release_planner = asyncio.Event()
+    requests: list[object] = []
+
+    async def blocked_planner(request: object) -> ReviewPlan:
+        requests.append(request)
+        planner_started.set()
+        await release_planner.wait()
+        return ReviewPlan(
+            session_id=session_id,
+            next_review_at=321.0,
+            reason="runtime_fenced_model_plan",
+            updated_at=61.0,
+        )
+
+    profile.plan_idle_review_after_active_chat = blocked_planner  # type: ignore[method-assign]
+    signal = AgentSignal(
+        signal_id="bootstrap-exit:one",
+        kind=AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP,
+        source=AgentSignalSource.MANUAL,
+        session_id=session_id,
+        occurred_at=61.0,
+        active_chat_bootstrap=AgentActiveChatBootstrapSignal(
+            disposition=ActiveChatDisposition.EXIT_SOON,
+            active_epoch=completion.active_chat_state.active_epoch,
+            reason="test_exit",
+        ),
+    )
+
+    try:
+        first = asyncio.create_task(runtime.handle_agent_signal(signal))
+        await asyncio.wait_for(planner_started.wait(), timeout=0.5)
+
+        duplicate = await asyncio.wait_for(
+            runtime.handle_agent_signal(replace(signal, signal_id="bootstrap-exit:two")),
+            timeout=0.2,
+        )
+
+        assert duplicate is None
+        assert len(requests) == 1
+        release_planner.set()
+        decision = await asyncio.wait_for(first, timeout=0.5)
+
+        assert decision is not None
+        assert decision.returned_to_idle is True
+        assert scheduler.state_for(session_id) == AgentState.IDLE
+        assert scheduler.review_plan_for(session_id).reason == "runtime_fenced_model_plan"
+        assert runtime._idle_review_planning_requests == {}
+        application_rows = [
+            row
+            for row in bot.database.audit.list_by_session(session_id)
+            if row["command_name"] == "agent.idle_review_planning.application"
+        ]
+        assert len(application_rows) == 1
+        assert application_rows[0]["metadata"] == {
+            "profile_id": DEFAULT_SESSION_ACTOR_PROFILE_ID,
+            "signal_id": "bootstrap-exit:one",
+            "trigger": "active_chat_bootstrap",
+            "active_epoch": completion.active_chat_state.active_epoch,
+            "checked_at": 61.0,
+            "outcome": "applied_model_plan",
+            "reason": "runtime_fenced_model_plan",
+            "model_plan_supplied": True,
+            "model_plan_reason": "runtime_fenced_model_plan",
+            "model_plan_next_review_at": 321.0,
+            "decision_skipped_reason": "",
+            "applied_plan_reason": "runtime_fenced_model_plan",
+            "applied_next_review_at": 321.0,
+            "scheduler_state": "idle",
+        }
+    finally:
+        release_planner.set()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_runs_active_reply_model_outside_session_lock(
+    tmp_path: Path,
+) -> None:
+    """A slow active reply cannot hold up later signals for its session."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime(
+        [
+            make_generate_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "reply handled"})
+                ]
+            )
+        ]
+    )
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    session_id = "test-bot:group:group:1"
+    first_message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="active-reply-first",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="@bot hello",
+            content_json="[]",
+            role="user",
+            created_at=10_000.0,
+            is_mentioned=True,
+        )
+    )
+    second_message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="active-reply-second",
+            sender_id="user-2",
+            sender_name="User Two",
+            raw_text="follow up while the model is working",
+            content_json="[]",
+            role="user",
+            created_at=10_001.0,
+        )
+    )
+    model_started = asyncio.Event()
+    release_model = asyncio.Event()
+
+    async def block_active_reply_model(call: Any) -> None:
+        if call.purpose != "active_chat_fast":
+            return
+        model_started.set()
+        await release_model.wait()
+
+    model_runtime.on_generate = block_active_reply_model
+
+    try:
+        first_signal = asyncio.create_task(
+            runtime.handle_agent_signal(
+                make_signal(message_log_id=first_message_log_id, is_mentioned=True)
+            )
+        )
+        await asyncio.wait_for(model_started.wait(), timeout=0.5)
+        assert first_signal.done()
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.ACTIVE_REPLY
+
+        task_prefix = f"agent:{profile.bot_id or profile.profile_id}:active_reply"
+        active_reply_tasks = runtime.task_manager.tasks(prefix=task_prefix)
+        assert len(active_reply_tasks) == 1
+
+        await asyncio.wait_for(
+            runtime.handle_agent_signal(
+                AgentSignal(
+                    signal_id="review-due-during-active-reply",
+                    kind=AgentSignalKind.REVIEW_DUE,
+                    source=AgentSignalSource.TIMER,
+                    session_id=session_id,
+                    occurred_at=10_001.0,
+                    timer=AgentTimerSignal(
+                        trigger=AgentSignalKind.REVIEW_DUE.value,
+                        due_at=10_001.0,
+                    ),
+                )
+            ),
+            timeout=0.2,
+        )
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.ACTIVE_REPLY
+
+        await asyncio.wait_for(
+            runtime.handle_agent_signal(make_signal(message_log_id=second_message_log_id)),
+            timeout=0.2,
+        )
+        assert second_message_log_id in {
+            message.message_log_id
+            for message in runtime.agent_scheduler.unread_messages(session_id)
+        }
+
+        release_model.set()
+        await asyncio.wait_for(active_reply_tasks[0], timeout=0.5)
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.IDLE
+    finally:
+        release_model.set()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_fences_active_chat_round_commit_and_plans_outside_lock(
+    tmp_path: Path,
+) -> None:
+    """A round result cannot mutate scheduling state outside the runtime fence."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime(
+        [
+            make_generate_result(
+                tool_calls=[
+                    make_tool_call(
+                        "exit_active",
+                        {"reason": "conversation has ended"},
+                    )
+                ]
+            ),
+            make_generate_result(
+                text='{"next_review_after_seconds": 120, "reason": "round_settled"}'
+            ),
+        ]
+    )
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:group:1"
+    message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="active-chat-fenced-round",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="@bot goodbye",
+            content_json="[]",
+            role="user",
+            created_at=20_000.0,
+            is_mentioned=True,
+        )
+    )
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=60.0,
+        decay_half_life_seconds=20.0,
+        entered_at=10.0,
+        updated_at=10.0,
+        active_epoch=18,
+    )
+    runtime.agent_scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    runtime.agent_scheduler._state_store.set_active_chat_state(active_state)
+    await runtime.active_chat_workflow.start_active_chat(
+        session_id=session_id,
+        active_chat_state=active_state,
+    )
+    runtime.active_chat_workflow.update_attention_config(
+        replace(
+            runtime.active_chat_workflow.attention_config,
+            semantic_wait_ms=60_000.0,
+        )
+    )
+    round_model_started = asyncio.Event()
+    release_round_model = asyncio.Event()
+    planner_started = asyncio.Event()
+    release_planner = asyncio.Event()
+
+    async def block_round_commit_boundary(call: Any) -> None:
+        if call.purpose == "active_chat_fast":
+            round_model_started.set()
+            await release_round_model.wait()
+        elif call.purpose == "idle_review_planning":
+            planner_started.set()
+            await release_planner.wait()
+
+    model_runtime.on_generate = block_round_commit_boundary
+    flush_task: asyncio.Task[None] | None = None
+    try:
+        await runtime.handle_agent_signal(
+            make_signal(message_log_id=message_log_id, is_mentioned=True)
+        )
+
+        async with runtime._session_signal_lock(session_id):
+            flush_task = asyncio.create_task(
+                runtime.active_chat_workflow.flush_now(
+                    scheduler=runtime.agent_scheduler,
+                    session_id=session_id,
+                )
+            )
+            await asyncio.wait_for(round_model_started.wait(), timeout=0.5)
+            release_round_model.set()
+            await asyncio.sleep(0.02)
+
+            assert {
+                message.message_log_id
+                for message in runtime.agent_scheduler.unread_messages(session_id)
+            } == {message_log_id}
+            assert planner_started.is_set() is False
+            assert runtime._idle_review_planning_requests == {}
+
+        await asyncio.wait_for(planner_started.wait(), timeout=0.5)
+        assert len(runtime._idle_review_planning_requests) == 1
+        await asyncio.wait_for(
+            runtime.handle_agent_signal(
+                AgentSignal(
+                    signal_id="review-due-during-active-chat-planner",
+                    kind=AgentSignalKind.REVIEW_DUE,
+                    source=AgentSignalSource.TIMER,
+                    session_id=session_id,
+                    occurred_at=20_001.0,
+                    timer=AgentTimerSignal(
+                        trigger=AgentSignalKind.REVIEW_DUE.value,
+                        due_at=20_001.0,
+                    ),
+                )
+            ),
+            timeout=0.2,
+        )
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.ACTIVE_CHAT
+
+        release_planner.set()
+        await asyncio.wait_for(flush_task, timeout=0.5)
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.IDLE
+        assert runtime.agent_scheduler.unread_messages(session_id) == []
+        assert runtime.agent_scheduler.review_plan_for(session_id).reason == "round_settled"
+        assert runtime._idle_review_planning_requests == {}
+    finally:
+        release_round_model.set()
+        release_planner.set()
+        if flush_task is not None:
+            await asyncio.gather(flush_task, return_exceptions=True)
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_fences_review_scheduler_commit(
+    tmp_path: Path,
+) -> None:
+    """Review completion and range consumption wait for the runtime mutex."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    coordinator = profile.review_coordinator
+    assert coordinator is not None
+    commit_handler = coordinator._scheduler_commit_handler
+    assert commit_handler is not None
+    session_id = "test-bot:group:group:1"
+    message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="review-fenced-commit",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="one review message",
+            content_json="[]",
+            role="user",
+            created_at=30_000.0,
+        )
+    )
+    try:
+        await runtime.handle_agent_signal(make_signal(message_log_id=message_log_id))
+        review_plan = ReviewPlan(
+            session_id=session_id,
+            next_review_at=60.0,
+            reason="review_fence_test",
+            updated_at=10.0,
+        )
+        profile.agent_scheduler._state_store.set_state(session_id, AgentState.REVIEW)
+        profile.agent_scheduler._state_store.set_review_plan(review_plan)
+        intent = ReviewSchedulerCommitIntent(
+            kind=ReviewSchedulerCommitKind.COMPLETE_REVIEW,
+            session_id=session_id,
+            review_run_id="review-fence-test",
+            expected_review_plan=review_plan,
+            consumed_ranges=(
+                ConsumedUnreadRange(
+                    range_id=None,
+                    session_id=session_id,
+                    start_msg_log_id=message_log_id,
+                    end_msg_log_id=message_log_id,
+                    message_count=1,
+                ),
+            ),
+            enter_active_chat=True,
+            active_chat_initial_interest=15.0,
+            active_chat_decay_half_life_seconds=20.0,
+        )
+
+        async with runtime._session_signal_lock(session_id):
+            commit_task = asyncio.create_task(commit_handler(intent))
+            await asyncio.sleep(0.02)
+            assert profile.agent_scheduler.state_for(session_id) == AgentState.REVIEW
+            assert {
+                message.message_log_id
+                for message in profile.agent_scheduler.unread_messages(session_id)
+            } == {message_log_id}
+
+        decision = await asyncio.wait_for(commit_task, timeout=0.5)
+        assert decision.accepted is True
+        assert decision.completion is not None
+        assert decision.completion.active_chat_started is True
+        assert profile.agent_scheduler.state_for(session_id) == AgentState.ACTIVE_CHAT
+        assert profile.agent_scheduler.unread_messages(session_id) == []
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_stale_review_scheduler_commit(
+    tmp_path: Path,
+) -> None:
+    """An old review model result cannot complete a replacement review plan."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    coordinator = profile.review_coordinator
+    assert coordinator is not None
+    commit_handler = coordinator._scheduler_commit_handler
+    assert commit_handler is not None
+    session_id = "test-bot:group:group:1"
+    expected_plan = ReviewPlan(
+        session_id=session_id,
+        next_review_at=60.0,
+        reason="old_review",
+        updated_at=10.0,
+    )
+    replacement_plan = replace(
+        expected_plan,
+        next_review_at=90.0,
+        reason="replacement_review",
+        updated_at=20.0,
+    )
+    profile.agent_scheduler._state_store.set_state(session_id, AgentState.REVIEW)
+    profile.agent_scheduler._state_store.set_review_plan(replacement_plan)
+    try:
+        decision = await commit_handler(
+            ReviewSchedulerCommitIntent(
+                kind=ReviewSchedulerCommitKind.COMPLETE_REVIEW,
+                session_id=session_id,
+                review_run_id="stale-review-fence-test",
+                expected_review_plan=expected_plan,
+                enter_active_chat=True,
+                active_chat_initial_interest=15.0,
+                active_chat_decay_half_life_seconds=20.0,
+            )
+        )
+
+        assert decision.accepted is False
+        assert decision.skipped_reason == "review_plan_changed"
+        assert decision.completion is not None
+        assert decision.completion.skipped_reason == "review_plan_changed"
+        assert profile.agent_scheduler.state_for(session_id) == AgentState.REVIEW
+        assert profile.agent_scheduler.review_plan_for(session_id) == replacement_plan
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_accepts_review_commit_after_state_timestamp_refresh(
+    tmp_path: Path,
+) -> None:
+    """A REVIEW transition must not invalidate the plan it is executing."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    scheduler = profile.agent_scheduler
+    session_id = "test-bot:group:review-plan-timestamp"
+    expected_plan = ReviewPlan(
+        session_id=session_id,
+        next_review_at=100.0,
+        reason="timestamp_fence_regression",
+        updated_at=10.0,
+    )
+    scheduler._state_store.set_review_plan(expected_plan)
+    scheduler._state_store.set_state(session_id, AgentState.REVIEW)
+    persisted_plan = scheduler.review_plan_for(session_id)
+    assert persisted_plan is not None
+    assert persisted_plan.updated_at != expected_plan.updated_at
+
+    try:
+        decision = await profile._commit_review_scheduler_mutation_from_task(
+            ReviewSchedulerCommitIntent(
+                kind=ReviewSchedulerCommitKind.COMPLETE_REVIEW,
+                session_id=session_id,
+                review_run_id="timestamp-fence-regression",
+                expected_review_plan=expected_plan,
+                enter_active_chat=True,
+                active_chat_initial_interest=15.0,
+                active_chat_decay_half_life_seconds=20.0,
+            )
+        )
+
+        assert decision.accepted is True
+        assert decision.completion is not None
+        assert decision.completion.active_chat_started is True
+        assert scheduler.state_for(session_id) == AgentState.ACTIVE_CHAT
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_fences_force_idle_management_mutation(
+    tmp_path: Path,
+) -> None:
+    """Management state changes share the same session mutex as workflow commits."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:group:1"
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=30.0,
+        decay_half_life_seconds=20.0,
+        entered_at=10.0,
+        updated_at=10.0,
+        active_epoch=27,
+    )
+    runtime.agent_scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    runtime.agent_scheduler._state_store.set_active_chat_state(active_state)
+    try:
+        async with runtime._session_signal_lock(session_id):
+            force_idle_task = asyncio.create_task(runtime.force_idle(session_id))
+            await asyncio.sleep(0.02)
+            assert runtime.agent_scheduler.state_for(session_id) == AgentState.ACTIVE_CHAT
+
+        assert await asyncio.wait_for(force_idle_task, timeout=0.5) is True
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.IDLE
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_composes_actor_v2_diagnostics_without_claiming_traffic(
+    tmp_path: Path,
+) -> None:
+    """Diagnostic composition must not publish a second ingress writer."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        agent_configs_by_bot_id={"bot-a": {"agent": {"id": "agent-a"}}},
+    )
+
+    diagnostics = runtime.actor_v2_diagnostics
+    graph = runtime.actor_v2_handler_graph
+
+    assert diagnostics is not None
+    assert graph is not None
+    assert diagnostics.actor_wake_target_available is False
+    assert diagnostics.effects_running is False
+    assert diagnostics.shutdown_complete is False
+    assert "actor_v2_durable_isolation_lease_unavailable" in (
+        diagnostics.readiness.activation_blockers
+    )
+    assert "actor_v2_ownership_ingress_cutover_controller_unavailable" in (
+        diagnostics.readiness.activation_blockers
+    )
+    assert "actor_v2_legacy_state_handoff_manifest_unavailable" in (
+        diagnostics.readiness.activation_blockers
+    )
+    assert diagnostics.readiness.clean_session_handler_graph_complete is True
+    assert diagnostics.readiness.clean_session_handler_failures == ()
+    assert not hasattr(diagnostics, "recovery_scanner")
+    assert not hasattr(diagnostics, "recovery_commit_coordinator")
+    assert not hasattr(diagnostics, "handler_registry")
+    assert not hasattr(runtime, "actor_wake_target")
+    assert not hasattr(runtime, "session_actor_registry")
+    assert diagnostics.recovery_materialization_states == (
+        "active_chat",
+        "active_chat_settling",
+        "active_reply",
+        "review",
+    )
+    assert [snapshot.status.value for snapshot in diagnostics.background_service_health] == [
+        "stopped",
+        "stopped",
+    ]
+    assert graph.profile_ids == (DEFAULT_SESSION_ACTOR_PROFILE_ID, "bot-a")
+    supported_refs = {
+        (contract.effect_kind, contract.version) for contract in graph.supported_contracts
+    }
+    assert ("cancel_model_execution", 3) in supported_refs
+    assert ("run_idle_review_planning", 3) in supported_refs
+    missing_kinds = {
+        contract.effect_kind for contract in diagnostics.readiness.missing_handler_contracts
+    }
+    assert missing_kinds == {
+        "active_chat_runtime_reconciliation",
+        "cancel_idle_review_planning",
+        "cancel_review_workflow",
+        "idle_review_planning_cancellation_reconciliation",
+        "run_active_chat_bootstrap",
+        "run_active_chat_round",
+        "stop_active_chat_runtime",
+    }
+    missing_refs = {
+        (contract.effect_kind, contract.version)
+        for contract in diagnostics.readiness.missing_handler_contracts
+    }
+    assert ("cancel_review_workflow", 1) in missing_refs
+    assert ("cancel_review_workflow", 2) not in missing_refs
+    assert len(missing_refs) == 13
+
+    await runtime.start_background_tasks()
+
+    assert diagnostics.effects_running is False
+    assert [snapshot.status.value for snapshot in diagnostics.background_service_health] == [
+        "stopped",
+        "stopped",
+    ]
+    with bot.database.connect() as conn:
+        ownership_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_runtime_ownership"
+        ).fetchone()[0]
+    assert ownership_count == 0
+
+    await runtime.shutdown()
+
+    closed_diagnostics = runtime.actor_v2_diagnostics
+    assert closed_diagnostics is not None
+    assert closed_diagnostics.closed is True
 
 
 @pytest.mark.asyncio
@@ -69,13 +820,11 @@ async def test_agent_runtime_selects_profile_by_bot_id(tmp_path: Path) -> None:
 
     assert runtime.agent_profile_for_bot("bot-a").profile_id == "bot-a"
     assert runtime.agent_profile_for_bot("bot-a").config.agent_id == "agent-a"
+    assert runtime.agent_profile_for_bot("bot-b").profile_id == DEFAULT_SESSION_ACTOR_PROFILE_ID
     assert (
-        runtime.agent_profile_for_bot("bot-b").profile_id
-        == DEFAULT_SESSION_ACTOR_PROFILE_ID
-    )
-    assert (
-        runtime.agent_profile_for_bot("bot-a")
-        .config.active_chat_policy_config.initial_interest_value
+        runtime.agent_profile_for_bot(
+            "bot-a"
+        ).config.active_chat_policy_config.initial_interest_value
         == 77
     )
     assert [signal.bot_id for signal in bot_a_scheduler.calls] == ["bot-a"]
@@ -135,7 +884,7 @@ async def test_agent_runtime_starts_background_timers_only_for_bot_profiles(
         },
     )
 
-    runtime.start_background_tasks()
+    await runtime.start_background_tasks()
 
     default_tasks = runtime.task_manager.tasks(
         prefix=f"agent:{DEFAULT_SESSION_ACTOR_PROFILE_ID}:review_due_timer"
@@ -143,6 +892,132 @@ async def test_agent_runtime_starts_background_timers_only_for_bot_profiles(
     bot_tasks = runtime.task_manager.tasks(prefix="agent:bot-a:review_due_timer")
     assert default_tasks == []
     assert bot_tasks != []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_startup_recovery_uses_session_mutation_lock(
+    tmp_path: Path,
+) -> None:
+    """Startup recovery must not bypass the runtime mutation boundary."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    scheduler = profile.agent_scheduler
+    session_id = "test-bot:group:recovery-room"
+    scheduler._state_store.set_state(session_id, AgentState.REVIEW)
+    scheduler._state_store.set_review_plan(
+        ReviewPlan(
+            session_id=session_id,
+            next_review_at=200.0,
+            reason="interrupted_review",
+            updated_at=100.0,
+        )
+    )
+    calls: list[str] = []
+    reconcile_transient = scheduler.reconcile_transient_session
+    reconcile_active_chat = scheduler.reconcile_active_chat_session
+
+    def locked_reconcile_transient(
+        recovered_session_id: str,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        assert recovered_session_id == session_id
+        assert runtime._session_signal_lock(recovered_session_id).locked()
+        assert profile.review_due_timer._task is None
+        calls.append("transient")
+        return reconcile_transient(recovered_session_id, now=now)
+
+    def locked_reconcile_active_chat(
+        recovered_session_id: str,
+        *,
+        now: float | None = None,
+    ) -> Any:
+        assert recovered_session_id == session_id
+        assert runtime._session_signal_lock(recovered_session_id).locked()
+        assert profile.review_due_timer._task is None
+        calls.append("active_chat")
+        return reconcile_active_chat(recovered_session_id, now=now)
+
+    scheduler.reconcile_transient_session = locked_reconcile_transient  # type: ignore[method-assign]
+    scheduler.reconcile_active_chat_session = locked_reconcile_active_chat  # type: ignore[method-assign]
+
+    await runtime.start_background_tasks()
+
+    assert calls == ["transient", "active_chat"]
+    assert scheduler.state_for(session_id) == AgentState.IDLE
+    assert profile.review_due_timer._task is not None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_startup_recovery_rehydrates_active_chat_workflow(
+    tmp_path: Path,
+) -> None:
+    """A durable ACTIVE_CHAT state must not restart without its workflow state."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    scheduler = profile.agent_scheduler
+    session_id = "test-bot:group:active-chat-recovery"
+    now = time.time()
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=100.0,
+        decay_half_life_seconds=86_400.0,
+        entered_at=now,
+        updated_at=now,
+        active_epoch=73,
+    )
+    scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    scheduler._state_store.set_active_chat_state(active_state)
+
+    await runtime.start_background_tasks()
+
+    attention_state = profile.active_chat_workflow.attention_state_for(session_id)
+    assert attention_state is not None
+    assert attention_state.active_epoch == active_state.active_epoch
+    assert profile.active_chat_timer.active_sessions() == [session_id]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_startup_recovery_exits_active_chat_when_restore_fails(
+    tmp_path: Path,
+) -> None:
+    """A failed local restore must not leave a scheduler-only active chat behind."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    scheduler = profile.agent_scheduler
+    session_id = "test-bot:group:failed-active-chat-recovery"
+    now = time.time()
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=100.0,
+        decay_half_life_seconds=86_400.0,
+        entered_at=now,
+        updated_at=now,
+        active_epoch=74,
+    )
+    scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    scheduler._state_store.set_active_chat_state(active_state)
+
+    async def fail_restore(**_kwargs: Any) -> None:
+        raise RuntimeError("restore failed")
+
+    profile.restore_active_chat_session = fail_restore  # type: ignore[method-assign]
+
+    await runtime.start_background_tasks()
+
+    assert scheduler.state_for(session_id) == AgentState.IDLE
+    assert scheduler.active_chat_state_for(session_id) is None
+    assert profile.active_chat_workflow.attention_state_for(session_id) is None
+    assert profile.active_chat_timer.active_sessions() == []
     await runtime.shutdown()
 
 
@@ -184,9 +1059,7 @@ enabled: true
 
     assert component is not None
     assert component.content == "用户自定义 review scan prompt。"
-    assert runtime_prompt.read_text(encoding="utf-8").endswith(
-        "用户自定义 review scan prompt。\n"
-    )
+    assert runtime_prompt.read_text(encoding="utf-8").endswith("用户自定义 review scan prompt。\n")
 
 
 def test_agent_runtime_reload_prompt_files_picks_up_data_edits(tmp_path: Path) -> None:
@@ -227,8 +1100,7 @@ def test_agent_runtime_applies_active_chat_threshold_delta_to_all_profiles(
 
     assert runtime.active_chat_workflow.attention_config.base_threshold == 8.0
     assert (
-        runtime.agent_profile_for_bot("bot-a")
-        .active_chat_workflow.attention_config.base_threshold
+        runtime.agent_profile_for_bot("bot-a").active_chat_workflow.attention_config.base_threshold
         == 10.0
     )
 
@@ -236,8 +1108,7 @@ def test_agent_runtime_applies_active_chat_threshold_delta_to_all_profiles(
 
     assert runtime.active_chat_workflow.attention_config.base_threshold == 5.0
     assert (
-        runtime.agent_profile_for_bot("bot-a")
-        .active_chat_workflow.attention_config.base_threshold
+        runtime.agent_profile_for_bot("bot-a").active_chat_workflow.attention_config.base_threshold
         == 7.0
     )
 
@@ -373,9 +1244,7 @@ async def test_agent_runtime_high_priority_message_interrupts_and_resumes_review
 
     class BlockingReviewCoordinator:
         async def run(self, **kwargs: Any) -> Any:
-            unread_batches.append(
-                [message.message_log_id for message in kwargs["unread_messages"]]
-            )
+            unread_batches.append([message.message_log_id for message in kwargs["unread_messages"]])
             started = first_review_started if len(unread_batches) == 1 else resumed_review_started
             started.set()
             try:
@@ -391,6 +1260,10 @@ async def test_agent_runtime_high_priority_message_interrupts_and_resumes_review
                         consumed_start_msg_log_id=first_message_log_id,
                         consumed_end_msg_log_id=first_message_log_id,
                     )
+                    assert first_message_log_id not in {
+                        message.message_log_id
+                        for message in scheduler.unread_messages(session_id)
+                    }
                 raise
 
     class ImmediateActiveReplyWorkflow:
@@ -471,7 +1344,7 @@ async def test_agent_runtime_high_priority_message_interrupts_and_resumes_review
         await asyncio.wait_for(first_review_cancelled.wait(), timeout=1.0)
         await asyncio.sleep(0)
         assert resumed_review_started.is_set() is False
-        assert interrupt_task.done() is False
+        assert interrupt_task.done() is True
 
         release_first_review_tail.set()
         await asyncio.wait_for(interrupt_task, timeout=1.0)
@@ -483,11 +1356,14 @@ async def test_agent_runtime_high_priority_message_interrupts_and_resumes_review
             [first_message_log_id],
             [second_message_log_id],
         ]
-        assert len(
-            runtime.task_manager.tasks(
-                prefix=f"agent:{profile.bot_id or profile.profile_id}:review_workflow"
+        assert (
+            len(
+                runtime.task_manager.tasks(
+                    prefix=f"agent:{profile.bot_id or profile.profile_id}:review_workflow"
+                )
             )
-        ) == 1
+            == 1
+        )
     finally:
         await runtime.shutdown()
 
@@ -553,8 +1429,7 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
             make_signal(message_log_id=message_log_id, is_mentioned=True)
         )
         await asyncio.sleep(
-            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0
-            + 0.1
+            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0 + 0.1
         )
 
         assert len(model_runtime.calls) == 1
@@ -563,14 +1438,14 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
         assert call.route_id == "route-main"
         assert call.metadata["message_log_ids"] == [message_log_id]
         assert call.metadata["explicit_prompt_cache_enabled"] is True
-        assert {
-            tool["function"]["name"]
-            for tool in call.tools
-        } >= {"send_reply", "no_reply", "send_poke", "send_reaction", "exit_active"}
-        assert "request_think_mode" not in {
-            tool["function"]["name"]
-            for tool in call.tools
+        assert {tool["function"]["name"] for tool in call.tools} >= {
+            "send_reply",
+            "no_reply",
+            "send_poke",
+            "send_reaction",
+            "exit_active",
         }
+        assert "request_think_mode" not in {tool["function"]["name"] for tool in call.tools}
         assert runtime.agent_scheduler.unread_messages(session_id) == []
         state = runtime.active_chat_workflow.attention_state_for(session_id)
         assert state is not None
@@ -726,8 +1601,7 @@ async def test_agent_runtime_repair_merges_active_chat_pending_messages(
             make_signal(message_log_id=first_message_log_id, is_mentioned=True)
         )
         await asyncio.sleep(
-            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0
-            + 0.1
+            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0 + 0.1
         )
 
         assert len(model_runtime.calls) == 2
@@ -742,9 +1616,7 @@ async def test_agent_runtime_repair_merges_active_chat_pending_messages(
         state = runtime.active_chat_workflow.attention_state_for(session_id)
         assert state is not None
         assert state.pending_buffer == []
-        assert state.conversation_messages[0]["tool_calls"][0]["function"]["name"] == (
-            "no_reply"
-        )
+        assert state.conversation_messages[0]["tool_calls"][0]["function"]["name"] == ("no_reply")
     finally:
         await runtime.shutdown()
 
@@ -805,8 +1677,7 @@ async def test_agent_runtime_exit_active_returns_idle_with_review_plan(
             make_signal(message_log_id=message_log_id, is_mentioned=True)
         )
         await asyncio.sleep(
-            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0
-            + 0.1
+            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0 + 0.1
         )
 
         assert len(model_runtime.calls) == 2
@@ -828,11 +1699,7 @@ async def test_agent_runtime_active_chat_tick_plans_review_before_idle(
 ) -> None:
     bot = ShinBot(data_dir=tmp_path)
     model_runtime = FakeModelRuntime(
-        [
-            make_generate_result(
-                text='{"next_review_after_seconds": 120, "reason": "timer_settled"}'
-            )
-        ]
+        [make_generate_result(text='{"next_review_after_seconds": 120, "reason": "timer_settled"}')]
     )
     bot.mount_model_runtime(model_runtime)
     runtime = install_agent_runtime(
@@ -943,8 +1810,7 @@ async def test_agent_runtime_idle_review_planning_uses_observed_message_count_me
             make_signal(message_log_id=message_log_id, is_mentioned=True)
         )
         await asyncio.sleep(
-            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0
-            + 0.1
+            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0 + 0.1
         )
 
         assert len(model_runtime.calls) == 2

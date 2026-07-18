@@ -57,6 +57,10 @@ reply_context_after_messages = 10
 block_digest_concurrency = 4
 reply_commit_timeout_seconds = 20
 bootstrap_timeout_seconds = 20
+default_review_after_seconds = 900
+default_review_reason = "default_idle_review_interval"
+idle_review_planning_min_after_seconds = 30
+idle_review_planning_max_after_seconds = 3600
 
 
 [agent.review.overflow_compression]
@@ -123,6 +127,20 @@ retry_backoff_seconds = 0.25
 system = "review.active_chat_bootstrap.system"
 task = "review.active_chat_bootstrap.task"
 constraints = "review.active_chat_bootstrap.constraints"
+
+
+[agent.review.idle_review_planning]
+# Runs whenever ACTIVE_CHAT is about to return to IDLE. Returning null for
+# next_review_after_seconds explicitly delegates to the static fallback above.
+enabled = true
+llm = "[route]chat.reasoning"
+max_model_retries = 1
+retry_backoff_seconds = 0.25
+
+[agent.review.idle_review_planning.prompts]
+system = "review.idle_review_planning.system"
+task = "review.idle_review_planning.task"
+constraints = "review.idle_review_planning.constraints"
 
 
 # ─── Active Chat Workflow ────────────────────────────────────────────────────

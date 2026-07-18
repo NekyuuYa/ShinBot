@@ -7,7 +7,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from inspect import isawaitable
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
@@ -32,6 +32,14 @@ from shinbot.agent.runtime.session_actor.recovery_commit import (
 from shinbot.agent.runtime.session_actor.transition_validation import (
     validate_session_transition,
 )
+from shinbot.core.dispatch.actor_v2_admission import ActorV2AdmissionFenceError
+from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipError
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
+from shinbot.core.dispatch.fenced_wake_target_lease import (
+    FencedActorExecutionBinding,
+    FencedWakeTargetLeaseError,
+)
+from shinbot.core.dispatch.legacy_recovery_gate import LegacyRecoveryPermit
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +63,23 @@ class SessionActorStore(Protocol):
     async def enqueue(self, envelope: SessionEventEnvelope) -> EventEnqueueResult:
         """Idempotently persist an event before its actor is awakened."""
 
-    async def ensure(self, key: SessionKey) -> AgentSessionAggregate:
+    async def ensure(
+        self,
+        key: SessionKey,
+        *,
+        ownership_generation: int | None = None,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> AgentSessionAggregate:
         """Ensure and return the durable aggregate for a session."""
 
-    async def load(self, key: SessionKey) -> AgentSessionAggregate:
+    async def load(
+        self,
+        key: SessionKey,
+        *,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> AgentSessionAggregate:
         """Load the latest durable aggregate for a session."""
 
     async def claim_next(
@@ -66,6 +87,8 @@ class SessionActorStore(Protocol):
         key: SessionKey,
         *,
         worker_id: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ClaimedSessionEvent | None:
         """Atomically lease the next available event for a session."""
 
@@ -75,6 +98,8 @@ class SessionActorStore(Protocol):
         transition: SessionTransition,
         *,
         expected_revision: int,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> AgentSessionAggregate:
         """Atomically commit a transition and complete its claimed event."""
 
@@ -83,6 +108,8 @@ class SessionActorStore(Protocol):
         claim: ClaimedSessionEvent,
         *,
         error: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> None:
         """Release a failed claim back to the durable pending queue."""
 
@@ -91,14 +118,54 @@ class SessionActorStore(Protocol):
         claim: ClaimedSessionEvent,
         *,
         error: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> None:
         """Move a claimed poison event into a terminal failed state."""
 
-    async def recover(self, key: SessionKey, *, worker_id: str) -> int:
+    async def recover(
+        self,
+        key: SessionKey,
+        *,
+        worker_id: str,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> int:
         """Release expired claims that may be retried by this actor."""
 
     async def pending_keys(self) -> list[SessionKey]:
         """Return session keys with recoverable pending mailbox events."""
+
+    async def has_pending_for_key(
+        self,
+        key: SessionKey,
+        *,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> bool:
+        """Return whether one exact actor key still has mailbox work."""
+
+
+@runtime_checkable
+class _LegacyRecoveryActorStore(Protocol):
+    """Store boundaries required before a lifecycle-owned recovery actor starts."""
+
+    async def ensure_for_legacy_recovery(
+        self,
+        key: SessionKey,
+        *,
+        permit: LegacyRecoveryPermit,
+    ) -> AgentSessionAggregate:
+        """Ensure one aggregate while the owning lifecycle retains ``permit``."""
+
+    async def recover_for_legacy_recovery(
+        self,
+        key: SessionKey,
+        *,
+        worker_id: str,
+        permit: LegacyRecoveryPermit,
+    ) -> int:
+        """Release stale actor leases while the owning lifecycle retains ``permit``."""
 
 
 class AgentSessionActor:
@@ -113,6 +180,8 @@ class AgentSessionActor:
         worker_id: str | None = None,
         retry_delay_seconds: float = 1.0,
         max_attempts: int = 5,
+        ownership_binding: FencedMailboxWakeRequest | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> None:
         """Initialize an actor without starting its background task.
 
@@ -123,10 +192,31 @@ class AgentSessionActor:
             worker_id: Optional durable lease owner identifier.
             retry_delay_seconds: Delay before retrying a released failed event.
             max_attempts: Infrastructure attempts before an event is failed.
+            ownership_binding: Optional immutable owner incarnation. A bound
+                actor proves this exact generation and admission fence at each
+                persistence boundary instead of widening to a SessionKey wake.
+            execution_binding: Optional target-lease capability paired with
+                ``ownership_binding``. When present, every actor persistence
+                operation additionally proves that this target incarnation is
+                still the live consumer for the same owner.
         """
 
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least one")
+        if ownership_binding is not None:
+            if not isinstance(ownership_binding, FencedMailboxWakeRequest):
+                raise TypeError("ownership_binding must be a FencedMailboxWakeRequest")
+            if ownership_binding.key != key:
+                raise ValueError("ownership_binding key does not match actor key")
+        if execution_binding is not None:
+            if not isinstance(execution_binding, FencedActorExecutionBinding):
+                raise TypeError("execution_binding must be a FencedActorExecutionBinding")
+            if execution_binding.request.key != key:
+                raise ValueError("execution_binding key does not match actor key")
+            if ownership_binding is None:
+                ownership_binding = execution_binding.request
+            elif ownership_binding != execution_binding.request:
+                raise ValueError("execution_binding request does not match ownership_binding")
         self.key = key
         self._store = store
         self._handler = handler
@@ -140,6 +230,8 @@ class AgentSessionActor:
         self.worker_id = str(worker_id or f"session-actor:{uuid.uuid4().hex}")
         self._retry_delay_seconds = max(0.0, float(retry_delay_seconds))
         self._max_attempts = max_attempts
+        self._ownership_binding = ownership_binding
+        self._execution_binding = execution_binding
         self._wake_event = asyncio.Event()
         self._idle_event = asyncio.Event()
         self._idle_event.set()
@@ -171,16 +263,81 @@ class AgentSessionActor:
 
         return self._last_error
 
+    @property
+    def ownership_binding(self) -> FencedMailboxWakeRequest | None:
+        """Return the immutable owner incarnation, if this actor is bound."""
+
+        return self._ownership_binding
+
+    @property
+    def execution_binding(self) -> FencedActorExecutionBinding | None:
+        """Return the optional target-lease capability bound to this actor."""
+
+        return self._execution_binding
+
     async def start(self) -> None:
         """Ensure durable state, recover stale claims, and start draining."""
+
+        await self._start(legacy_recovery_permit=None)
+
+    async def _start_for_legacy_recovery(
+        self,
+        permit: LegacyRecoveryPermit,
+    ) -> None:
+        """Start only under the registry's permit-owning recovery lifecycle."""
+
+        if not isinstance(permit, LegacyRecoveryPermit):
+            raise TypeError("permit must be a LegacyRecoveryPermit")
+        await self._start(legacy_recovery_permit=permit)
+
+    async def _start(
+        self,
+        *,
+        legacy_recovery_permit: LegacyRecoveryPermit | None,
+    ) -> None:
+        """Create the drain task after one selected startup authority path."""
 
         async with self._start_lock:
             if self._started:
                 return
             if self._closing:
                 raise RuntimeError("a closed session actor cannot be restarted")
-            await self._store.ensure(self.key)
-            await self._store.recover(self.key, worker_id=self.worker_id)
+            ownership_binding = self._ownership_binding
+            if legacy_recovery_permit is not None and ownership_binding is not None:
+                raise RuntimeError(
+                    "a legacy recovery actor cannot also bind a fenced ownership incarnation"
+                )
+            if legacy_recovery_permit is None and ownership_binding is None:
+                await self._store.ensure(self.key)
+                await self._store.recover(self.key, worker_id=self.worker_id)
+            elif ownership_binding is not None:
+                await self._store.ensure(
+                    self.key,
+                    ownership_generation=ownership_binding.ownership_generation,
+                    ownership_binding=ownership_binding,
+                    execution_binding=self._execution_binding,
+                )
+                await self._store.recover(
+                    self.key,
+                    worker_id=self.worker_id,
+                    ownership_binding=ownership_binding,
+                    execution_binding=self._execution_binding,
+                )
+            else:
+                store = self._store
+                if not isinstance(store, _LegacyRecoveryActorStore):
+                    raise TypeError(
+                        "session actor store does not support lifecycle-owned legacy recovery"
+                    )
+                await store.ensure_for_legacy_recovery(
+                    self.key,
+                    permit=legacy_recovery_permit,
+                )
+                await store.recover_for_legacy_recovery(
+                    self.key,
+                    worker_id=self.worker_id,
+                    permit=legacy_recovery_permit,
+                )
             self._task = asyncio.create_task(
                 self._run(),
                 name=(
@@ -259,22 +416,29 @@ class AgentSessionActor:
     async def _drain_mailbox(self) -> bool:
         while not (self._closing and not self._drain_on_shutdown):
             try:
-                claim = await self._store.claim_next(
-                    self.key,
-                    worker_id=self.worker_id,
-                )
+                claim = await self._claim_next()
             except Exception as exc:
+                if self._is_ownership_binding_lost(exc):
+                    self._stop_for_binding_loss(exc, event_id="", phase="claim")
+                    return True
                 self._record_error(exc, event_id="", phase="claim")
                 return False
             if claim is None:
                 if self._wake_event.is_set():
                     continue
                 try:
-                    pending_keys = await self._store.pending_keys()
+                    has_pending = await self._has_pending_for_key()
                 except Exception as exc:
+                    if self._is_ownership_binding_lost(exc):
+                        self._stop_for_binding_loss(
+                            exc,
+                            event_id="",
+                            phase="pending_check",
+                        )
+                        return True
                     self._record_error(exc, event_id="", phase="pending_check")
                     return False
-                if self.key in pending_keys:
+                if has_pending:
                     return False
                 self._idle_event.set()
                 if self._wake_event.is_set():
@@ -288,12 +452,20 @@ class AgentSessionActor:
 
             self._current_claim = claim
             try:
-                aggregate = await self._store.load(self.key)
+                aggregate = await self._load_aggregate()
             except asyncio.CancelledError:
                 await self._release_after_cancellation(claim)
                 self._current_claim = None
                 raise
             except Exception as exc:
+                if self._is_ownership_binding_lost(exc):
+                    self._stop_for_binding_loss(
+                        exc,
+                        event_id=claim.envelope.event_id,
+                        phase="load",
+                    )
+                    self._current_claim = None
+                    return True
                 terminal = await self._retry_or_fail_claim(
                     claim,
                     exc,
@@ -323,7 +495,7 @@ class AgentSessionActor:
                 return False
 
             try:
-                await self._store.commit(
+                await self._commit_claim(
                     claim,
                     transition,
                     expected_revision=aggregate.state_revision,
@@ -337,6 +509,14 @@ class AgentSessionActor:
                 self._current_claim = None
                 return False
             except Exception as exc:
+                if self._is_ownership_binding_lost(exc):
+                    self._stop_for_binding_loss(
+                        exc,
+                        event_id=claim.envelope.event_id,
+                        phase="commit",
+                    )
+                    self._current_claim = None
+                    return True
                 terminal = await self._retry_or_fail_claim(
                     claim,
                     exc,
@@ -361,6 +541,95 @@ class AgentSessionActor:
             effect_contract_authority=self._effect_contract_authority,
         )
 
+    async def _claim_next(self) -> ClaimedSessionEvent | None:
+        """Claim work while preserving an optional immutable owner binding."""
+
+        ownership_binding = self._ownership_binding
+        if ownership_binding is None:
+            return await self._store.claim_next(self.key, worker_id=self.worker_id)
+        return await self._store.claim_next(
+            self.key,
+            worker_id=self.worker_id,
+            ownership_binding=ownership_binding,
+            execution_binding=self._execution_binding,
+        )
+
+    async def _has_pending_for_key(self) -> bool:
+        """Check pending work without widening a bound actor to another owner."""
+
+        ownership_binding = self._ownership_binding
+        if ownership_binding is None:
+            return await self._store.has_pending_for_key(self.key)
+        return await self._store.has_pending_for_key(
+            self.key,
+            ownership_binding=ownership_binding,
+            execution_binding=self._execution_binding,
+        )
+
+    async def _load_aggregate(self) -> AgentSessionAggregate:
+        """Load state only while the actor's bound incarnation remains active."""
+
+        ownership_binding = self._ownership_binding
+        if ownership_binding is None:
+            return await self._store.load(self.key)
+        return await self._store.load(
+            self.key,
+            ownership_binding=ownership_binding,
+            execution_binding=self._execution_binding,
+        )
+
+    async def _commit_claim(
+        self,
+        claim: ClaimedSessionEvent,
+        transition: SessionTransition,
+        *,
+        expected_revision: int,
+    ) -> AgentSessionAggregate:
+        """Commit one claim without dropping its optional ownership binding."""
+
+        ownership_binding = self._ownership_binding
+        if ownership_binding is None:
+            return await self._store.commit(
+                claim,
+                transition,
+                expected_revision=expected_revision,
+            )
+        return await self._store.commit(
+            claim,
+            transition,
+            expected_revision=expected_revision,
+            ownership_binding=ownership_binding,
+            execution_binding=self._execution_binding,
+        )
+
+    async def _release_claim(self, claim: ClaimedSessionEvent, *, error: str) -> None:
+        """Release a claim without widening a bound actor to another owner."""
+
+        ownership_binding = self._ownership_binding
+        if ownership_binding is None:
+            await self._store.release(claim, error=error)
+            return
+        await self._store.release(
+            claim,
+            error=error,
+            ownership_binding=ownership_binding,
+            execution_binding=self._execution_binding,
+        )
+
+    async def _fail_claim_to_store(self, claim: ClaimedSessionEvent, *, error: str) -> None:
+        """Dead-letter a claim only while its immutable owner remains active."""
+
+        ownership_binding = self._ownership_binding
+        if ownership_binding is None:
+            await self._store.fail(claim, error=error)
+            return
+        await self._store.fail(
+            claim,
+            error=error,
+            ownership_binding=ownership_binding,
+            execution_binding=self._execution_binding,
+        )
+
     async def _release_failed_claim(
         self,
         claim: ClaimedSessionEvent,
@@ -372,8 +641,15 @@ class AgentSessionActor:
             return
         self._record_error(exc, event_id=claim.envelope.event_id, phase=phase)
         try:
-            await self._store.release(claim, error=self._last_error or type(exc).__name__)
+            await self._release_claim(claim, error=self._last_error or type(exc).__name__)
         except Exception as release_exc:
+            if self._is_ownership_binding_lost(release_exc):
+                self._stop_for_binding_loss(
+                    release_exc,
+                    event_id=claim.envelope.event_id,
+                    phase="release",
+                )
+                return
             self._record_error(
                 release_exc,
                 event_id=claim.envelope.event_id,
@@ -405,22 +681,36 @@ class AgentSessionActor:
             return False
         self._record_error(exc, event_id=claim.envelope.event_id, phase=phase)
         try:
-            await self._store.fail(
+            await self._fail_claim_to_store(
                 claim,
                 error=self._last_error or type(exc).__name__,
             )
         except Exception as fail_exc:
+            if self._is_ownership_binding_lost(fail_exc):
+                self._stop_for_binding_loss(
+                    fail_exc,
+                    event_id=claim.envelope.event_id,
+                    phase="dead_letter",
+                )
+                return False
             self._record_error(
                 fail_exc,
                 event_id=claim.envelope.event_id,
                 phase="dead_letter",
             )
             try:
-                await self._store.release(
+                await self._release_claim(
                     claim,
                     error=self._last_error or type(fail_exc).__name__,
                 )
             except Exception as release_exc:
+                if self._is_ownership_binding_lost(release_exc):
+                    self._stop_for_binding_loss(
+                        release_exc,
+                        event_id=claim.envelope.event_id,
+                        phase="release_after_dead_letter_failure",
+                    )
+                    return False
                 self._record_error(
                     release_exc,
                     event_id=claim.envelope.event_id,
@@ -431,7 +721,7 @@ class AgentSessionActor:
 
     async def _release_after_cancellation(self, claim: ClaimedSessionEvent) -> None:
         release_task = asyncio.create_task(
-            self._store.release(claim, error="actor_cancelled"),
+            self._release_claim(claim, error="actor_cancelled"),
             name=f"agent-session-actor-release:{claim.envelope.event_id}",
         )
         try:
@@ -439,6 +729,13 @@ class AgentSessionActor:
         except asyncio.CancelledError:
             await release_task
         except Exception as exc:
+            if self._is_ownership_binding_lost(exc):
+                self._stop_for_binding_loss(
+                    exc,
+                    event_id=claim.envelope.event_id,
+                    phase="release_after_cancel",
+                )
+                return
             self._record_error(
                 exc,
                 event_id=claim.envelope.event_id,
@@ -476,6 +773,34 @@ class AgentSessionActor:
                 "recovery_claim_code": exc.code,
             },
         )
+
+    def _is_ownership_binding_lost(self, exc: BaseException) -> bool:
+        """Return whether a bound actor lost owner or target authority."""
+
+        return (
+            self._ownership_binding is not None
+            and isinstance(
+                exc,
+                (ActorV2AdmissionFenceError, AgentRuntimeOwnershipError),
+            )
+        ) or (
+            self._execution_binding is not None
+            and isinstance(exc, FencedWakeTargetLeaseError)
+        )
+
+    def _stop_for_binding_loss(
+        self,
+        exc: BaseException,
+        *,
+        event_id: str,
+        phase: str,
+    ) -> None:
+        """Stop a bound actor instead of retrying under a changed owner key."""
+
+        self._record_error(exc, event_id=event_id, phase=f"ownership_binding_{phase}")
+        self._closing = True
+        self._drain_on_shutdown = False
+        self._cancel_retry()
 
     def _preserve_unproven_typed_recovery(
         self,

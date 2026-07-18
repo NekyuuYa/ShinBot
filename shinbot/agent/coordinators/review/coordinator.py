@@ -6,7 +6,7 @@ import asyncio
 import math
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
@@ -15,6 +15,9 @@ from shinbot.agent.coordinators.review.models import (
     ConsumedUnreadRange,
     ReplyDecisionResult,
     ReviewScanResult,
+    ReviewSchedulerCommitDecision,
+    ReviewSchedulerCommitIntent,
+    ReviewSchedulerCommitKind,
     ReviewStageTrace,
     ReviewWorkflowConfig,
     ReviewWorkflowResult,
@@ -48,6 +51,11 @@ from shinbot.agent.runners.review_reply import (
     ReplyDecisionStageRunner,
 )
 from shinbot.agent.runners.review_scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.runtime.task_manager import (
+    AgentTaskQuiescence,
+    AgentTaskScope,
+    cancel_and_wait_for_tasks,
+)
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
@@ -73,9 +81,6 @@ from shinbot.agent.signals import (
     AgentSignalSource,
 )
 from shinbot.utils.logger import format_log_event, get_logger
-
-if False:
-    from shinbot.agent.runtime.task_manager import AgentTaskScope
 
 logger = get_logger(__name__, source="agent:review", color="green")
 
@@ -171,12 +176,17 @@ class ReviewSchedulerPort(Protocol):
         *,
         disposition: ActiveChatDisposition,
         active_epoch: int | None = None,
+        next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
     ) -> ActiveChatBootstrapApplyDecision:
         """Apply delayed stage-3 active chat disposition."""
 
 
 ReviewBootstrapSignalHandler = Callable[[AgentSignal], Any]
+ReviewSchedulerCommitHandler = Callable[
+    [ReviewSchedulerCommitIntent],
+    ReviewSchedulerCommitDecision | Awaitable[ReviewSchedulerCommitDecision],
+]
 
 
 class ReviewCoordinator:
@@ -201,6 +211,7 @@ class ReviewCoordinator:
         reply_runner: ReplyDecisionStageRunner | None = None,
         bootstrap_runner: ActiveChatBootstrapStageRunner | None = None,
         bootstrap_signal_handler: ReviewBootstrapSignalHandler | None = None,
+        scheduler_commit_handler: ReviewSchedulerCommitHandler | None = None,
         bot_id: str = "",
         bootstrap_task_scope: AgentTaskScope | None = None,
         block_digest_task_scope: AgentTaskScope | None = None,
@@ -217,12 +228,17 @@ class ReviewCoordinator:
         self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
         self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner()
         self._bootstrap_signal_handler = bootstrap_signal_handler
+        self._scheduler_commit_handler = scheduler_commit_handler
         self._bot_id = str(bot_id or "").strip()
         self._bootstrap_task_scope = bootstrap_task_scope
         self._block_digest_task_scope = block_digest_task_scope
         self._now = now or time.time
-        self._bootstrap_tasks: set[asyncio.Task[ActiveChatBootstrapResult]] = set()
-        self._late_reply_commit_tasks: set[asyncio.Task[Any]] = set()
+        self._bootstrap_tasks: dict[asyncio.Task[ActiveChatBootstrapResult], str] = {}
+        self._late_reply_commit_tasks: dict[asyncio.Task[Any], str] = {}
+        self._block_digest_tasks: dict[
+            asyncio.Task[ReviewBlockDigestStageOutput],
+            str,
+        ] = {}
         self._last_bootstrap_results: dict[str, ActiveChatBootstrapResult] = {}
 
     async def run(
@@ -258,6 +274,7 @@ class ReviewCoordinator:
             scan, consumed_ranges, block_digests = await self._run_review_scan(
                 scheduler=scheduler,
                 session_id=session_id,
+                expected_review_plan=review_plan,
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
                 review_run_id=review_run_id,
@@ -296,38 +313,45 @@ class ReviewCoordinator:
                         trace_id=_first_trace_id(trace_by_message_id),
                     )
                 if reply_completed:
-                    self._consume_review_ranges_safely(
+                    await self._consume_review_ranges_safely(
                         scheduler,
                         consumed_ranges,
                         session_id=session_id,
                         review_run_id=review_run_id,
                         trace_by_message_id=trace_by_message_id,
+                        expected_review_plan=review_plan,
                     )
                 raise
-            completion = scheduler.complete_review(
-                session_id,
-                enter_active_chat=True,
-                active_chat_initial_interest=self._config.provisional_active_chat_interest,
-                active_chat_decay_half_life_seconds=(
-                    self._config.provisional_active_chat_half_life_seconds
+            commit = await self._commit_review_completion(
+                scheduler=scheduler,
+                session_id=session_id,
+                review_run_id=review_run_id,
+                expected_review_plan=review_plan,
+                consumed_ranges=(
+                    [] if reply.consumption_deferred else consumed_ranges
                 ),
             )
+            completion = commit.completion
+            if completion is None:
+                raise RuntimeError("review completion commit returned no scheduler decision")
             active_epoch = (
                 completion.active_chat_state.active_epoch
                 if completion.active_chat_state is not None
                 else None
             )
-            applied_consumed_ranges = (
-                []
-                if reply.consumption_deferred
-                else self._consume_review_ranges_safely(
-                    scheduler,
-                    consumed_ranges,
-                    session_id=session_id,
+            applied_consumed_ranges = list(commit.consumed_ranges)
+            if not commit.accepted:
+                return ReviewWorkflowResult(
                     review_run_id=review_run_id,
-                    trace_by_message_id=trace_by_message_id,
+                    scan=scan,
+                    reply=reply,
+                    bootstrap=ActiveChatBootstrapResult(
+                        reason=commit.skipped_reason or "review_commit_discarded"
+                    ),
+                    review_started_at=started_at,
+                    completion=completion,
+                    stage_traces=stage_traces,
                 )
-            )
             bootstrap = self._schedule_active_chat_bootstrap(
                 scheduler=scheduler,
                 session_id=session_id,
@@ -364,14 +388,18 @@ class ReviewCoordinator:
                     trace_id=_first_trace_id(trace_by_message_id),
                 )
             )
-            completion = scheduler.complete_review(
-                session_id,
-                enter_active_chat=True,
-                active_chat_initial_interest=self._config.provisional_active_chat_interest,
-                active_chat_decay_half_life_seconds=(
-                    self._config.provisional_active_chat_half_life_seconds
-                ),
+            commit = await self._commit_review_completion(
+                scheduler=scheduler,
+                session_id=session_id,
+                review_run_id=review_run_id,
+                expected_review_plan=review_plan,
+                consumed_ranges=[],
             )
+            completion = commit.completion
+            if completion is None:
+                raise RuntimeError(
+                    "review failure commit returned no scheduler decision"
+                ) from exc
             bootstrap = ActiveChatBootstrapResult(
                 reason="review_failed_provisional_active_chat",
                 active_chat_interest_value=(
@@ -408,7 +436,49 @@ class ReviewCoordinator:
 
         return [task for task in self._late_reply_commit_tasks if not task.done()]
 
-    def _consume_review_ranges_safely(
+    def pending_session_tasks(self, session_id: str) -> list[asyncio.Task[Any]]:
+        """Return known background tasks currently tied to one review session.
+
+        This intentionally observes only work launched by this coordinator.
+        The primary review task belongs to ``ActiveReplyDispatcher`` and must
+        be cancelled before a caller treats this result as a local drain.
+        """
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id must not be empty")
+        tasks: list[asyncio.Task[Any]] = []
+        for task_map in (
+            self._bootstrap_tasks,
+            self._late_reply_commit_tasks,
+            self._block_digest_tasks,
+        ):
+            tasks.extend(
+                task
+                for task, task_session_id in task_map.items()
+                if task_session_id == normalized_session_id and not task.done()
+            )
+        return tasks
+
+    async def quiesce_session_tasks(
+        self,
+        session_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> AgentTaskQuiescence:
+        """Cancel and observe coordinator-owned background work for one session.
+
+        The returned report is strictly process-local. In particular, it does
+        not prove that a reply already delivered to an external platform has
+        been reversed or that a model provider did not receive a request.
+        """
+
+        return await cancel_and_wait_for_tasks(
+            self.pending_session_tasks(session_id),
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def _consume_review_ranges_safely(
         self,
         scheduler: ReviewSchedulerPort,
         consumed_ranges: list[ConsumedUnreadRange],
@@ -416,9 +486,20 @@ class ReviewCoordinator:
         session_id: str,
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        expected_review_plan: ReviewPlan,
     ) -> list[ConsumedUnreadRange]:
         try:
-            return self._consume_review_ranges(scheduler, consumed_ranges)
+            decision = await self._submit_scheduler_commit(
+                scheduler=scheduler,
+                intent=ReviewSchedulerCommitIntent(
+                    kind=ReviewSchedulerCommitKind.CONSUME_RANGES,
+                    session_id=session_id,
+                    review_run_id=review_run_id,
+                    expected_review_plan=expected_review_plan,
+                    consumed_ranges=tuple(consumed_ranges),
+                ),
+            )
+            return list(decision.consumed_ranges) if decision.accepted else []
         except Exception as exc:
             logger.exception(
                 format_log_event(
@@ -430,6 +511,95 @@ class ReviewCoordinator:
                 )
             )
             return []
+
+    async def _commit_review_completion(
+        self,
+        *,
+        scheduler: ReviewSchedulerPort,
+        session_id: str,
+        review_run_id: str,
+        expected_review_plan: ReviewPlan,
+        consumed_ranges: list[ConsumedUnreadRange],
+    ) -> ReviewSchedulerCommitDecision:
+        """Submit terminal review completion and unread consumption together."""
+
+        return await self._submit_scheduler_commit(
+            scheduler=scheduler,
+            intent=ReviewSchedulerCommitIntent(
+                kind=ReviewSchedulerCommitKind.COMPLETE_REVIEW,
+                session_id=session_id,
+                review_run_id=review_run_id,
+                expected_review_plan=expected_review_plan,
+                consumed_ranges=tuple(consumed_ranges),
+                enter_active_chat=True,
+                active_chat_initial_interest=self._config.provisional_active_chat_interest,
+                active_chat_decay_half_life_seconds=(
+                    self._config.provisional_active_chat_half_life_seconds
+                ),
+            ),
+        )
+
+    async def _submit_scheduler_commit(
+        self,
+        *,
+        scheduler: ReviewSchedulerPort,
+        intent: ReviewSchedulerCommitIntent,
+    ) -> ReviewSchedulerCommitDecision:
+        """Submit one review scheduler mutation to its configured state owner."""
+
+        handler = self._scheduler_commit_handler
+        if handler is not None:
+            decision = handler(intent)
+            if asyncio.iscoroutine(decision) or asyncio.isfuture(decision):
+                decision = await decision
+            if not isinstance(decision, ReviewSchedulerCommitDecision):
+                raise TypeError("review scheduler commit handler returned an invalid decision")
+            return decision
+        return self._apply_scheduler_commit_fallback(
+            scheduler=scheduler,
+            intent=intent,
+        )
+
+    def _apply_scheduler_commit_fallback(
+        self,
+        *,
+        scheduler: ReviewSchedulerPort,
+        intent: ReviewSchedulerCommitIntent,
+    ) -> ReviewSchedulerCommitDecision:
+        """Apply review mutation directly for standalone coordinator callers."""
+
+        consumed_ranges = list(intent.consumed_ranges)
+        if intent.kind == ReviewSchedulerCommitKind.CONSUME_RANGES:
+            applied = self._consume_review_ranges(scheduler, consumed_ranges)
+            return ReviewSchedulerCommitDecision(
+                session_id=intent.session_id,
+                accepted=True,
+                consumed_ranges=tuple(applied),
+            )
+        if intent.kind == ReviewSchedulerCommitKind.COMPLETE_REVIEW:
+            completion = scheduler.complete_review(
+                intent.session_id,
+                enter_active_chat=intent.enter_active_chat,
+                active_chat_initial_interest=intent.active_chat_initial_interest,
+                active_chat_decay_half_life_seconds=(
+                    intent.active_chat_decay_half_life_seconds
+                ),
+            )
+            if completion.skipped_reason is not None:
+                return ReviewSchedulerCommitDecision(
+                    session_id=intent.session_id,
+                    accepted=False,
+                    completion=completion,
+                    skipped_reason=completion.skipped_reason,
+                )
+            applied = self._consume_review_ranges(scheduler, consumed_ranges)
+            return ReviewSchedulerCommitDecision(
+                session_id=intent.session_id,
+                accepted=True,
+                completion=completion,
+                consumed_ranges=tuple(applied),
+            )
+        raise RuntimeError(f"unsupported review scheduler commit: {intent.kind!r}")
 
     async def shutdown(self) -> None:
         """Cancel coordinator-owned background tasks with a bounded late-reply wait."""
@@ -459,6 +629,13 @@ class ReviewCoordinator:
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        block_digest_tasks = list(self._block_digest_tasks)
+        self._block_digest_tasks.clear()
+        for task in block_digest_tasks:
+            if not task.done():
+                task.cancel()
+        if block_digest_tasks:
+            await asyncio.gather(*block_digest_tasks, return_exceptions=True)
 
     def _track_late_reply_commit_task(
         self,
@@ -468,7 +645,7 @@ class ReviewCoordinator:
         review_run_id: str,
         trace_id: str,
     ) -> None:
-        self._late_reply_commit_tasks.add(task)
+        self._late_reply_commit_tasks[task] = session_id
         task.add_done_callback(
             lambda completed: self._finish_late_reply_commit_task(
                 completed,
@@ -486,7 +663,7 @@ class ReviewCoordinator:
         review_run_id: str,
         trace_id: str,
     ) -> None:
-        self._late_reply_commit_tasks.discard(task)
+        self._late_reply_commit_tasks.pop(task, None)
         _consume_reply_commit_task_result(
             task,
             session_id=session_id,
@@ -504,6 +681,7 @@ class ReviewCoordinator:
         *,
         scheduler: ReviewSchedulerPort | None = None,
         session_id: str,
+        expected_review_plan: ReviewPlan | None = None,
         unread_count: int,
         unread_ranges: list[UnreadRange],
         review_run_id: str,
@@ -537,6 +715,7 @@ class ReviewCoordinator:
         ) = await self._load_scan_batches(
             scheduler=scheduler,
             session_id=session_id,
+            expected_review_plan=expected_review_plan,
             unread_ranges=unread_ranges,
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
@@ -836,7 +1015,7 @@ class ReviewCoordinator:
                 coro,
                 name=f"review-active-chat-bootstrap:{session_id}",
             )
-        self._bootstrap_tasks.add(task)
+        self._bootstrap_tasks[task] = session_id
         task.add_done_callback(
             lambda completed, task_session_id=session_id: self._finish_bootstrap_task(
                 task_session_id,
@@ -854,7 +1033,7 @@ class ReviewCoordinator:
         session_id: str,
         task: asyncio.Task[ActiveChatBootstrapResult],
     ) -> None:
-        self._bootstrap_tasks.discard(task)
+        self._bootstrap_tasks.pop(task, None)
         try:
             result = task.result()
         except asyncio.CancelledError:
@@ -1022,6 +1201,7 @@ class ReviewCoordinator:
         unread_ranges: list[UnreadRange],
         *,
         scheduler: ReviewSchedulerPort | None = None,
+        expected_review_plan: ReviewPlan | None = None,
         max_messages: int,
         prefer_tail: bool,
         summaries: list[UnreadRangeSummaryRecord],
@@ -1068,68 +1248,78 @@ class ReviewCoordinator:
                 )
                 for item in scan_ranges
             ]
-        for consumed_range in scan_ranges:
-            offset = 0
-            while remaining > 0:
-                unread_range = self._unread_range_from_consumed(consumed_range)
-                batch = self._message_store.list_for_unread_range(
-                    unread_range,
-                    limit=min(self._config.review_scan_batch_size, remaining),
-                    offset=offset,
-                )
-                if not batch:
-                    break
-                loaded_count += len(batch)
-                defer_batch_consumption = False
-                stage_input = self._build_stage_input(
-                    session_id=session_id,
-                    messages=batch,
-                    purpose="review_scan",
-                    review_run_id=review_run_id,
-                    metadata={
-                        "range_id": unread_range.id,
-                        "range_start_msg_log_id": unread_range.start_msg_log_id,
-                        "range_end_msg_log_id": unread_range.end_msg_log_id,
-                        "offset": offset,
-                        **_summary_metadata_payload(summaries),
-                        **_trace_metadata_for_messages(batch, trace_by_message_id),
-                    },
-                    self_platform_id=self_platform_id,
-                    previous_summary=_format_overflow_summaries(summaries),
-                )
-                if stage_input is not None:
-                    stage_input_count += 1
-                    block_digest_tasks.append(
-                        self._schedule_block_digest(
-                            session_id=session_id,
-                            messages=batch,
-                            block_index=block_index,
-                            range_id=unread_range.id,
-                            range_start=unread_range.start_msg_log_id,
-                            range_end=unread_range.end_msg_log_id,
-                            review_run_id=review_run_id,
-                            trace_by_message_id=trace_by_message_id,
-                            self_platform_id=self_platform_id,
-                            semaphore=block_digest_semaphore,
-                        )
+        try:
+            for consumed_range in scan_ranges:
+                offset = 0
+                while remaining > 0:
+                    unread_range = self._unread_range_from_consumed(consumed_range)
+                    batch = self._message_store.list_for_unread_range(
+                        unread_range,
+                        limit=min(self._config.review_scan_batch_size, remaining),
+                        offset=offset,
                     )
-                    block_index += 1
-                    stage_output = await self._run_scan_stage(stage_input)
-                    stage_traces.append(_trace_for_scan(stage_input, stage_output))
-                    candidate_message_ids.extend(stage_output.candidate_message_ids)
-                    defer_batch_consumption = bool(stage_output.candidate_message_ids)
-                    if stage_output.reason.strip():
-                        scan_reasons.append(stage_output.reason.strip())
-                # Persist progress for this batch immediately so a forced
-                # shutdown mid-scan only loses the in-flight batch instead of
-                # the whole review run (which would re-scan from scratch). A
-                # candidate batch stays unread until its reply stage commits.
-                if not defer_batch_consumption:
-                    self._persist_scan_batch_consumption(scheduler, session_id, batch)
-                remaining -= len(batch)
-                offset += len(batch)
-            if offset > 0:
-                consumed_ranges.append(consumed_range)
+                    if not batch:
+                        break
+                    loaded_count += len(batch)
+                    defer_batch_consumption = False
+                    stage_input = self._build_stage_input(
+                        session_id=session_id,
+                        messages=batch,
+                        purpose="review_scan",
+                        review_run_id=review_run_id,
+                        metadata={
+                            "range_id": unread_range.id,
+                            "range_start_msg_log_id": unread_range.start_msg_log_id,
+                            "range_end_msg_log_id": unread_range.end_msg_log_id,
+                            "offset": offset,
+                            **_summary_metadata_payload(summaries),
+                            **_trace_metadata_for_messages(batch, trace_by_message_id),
+                        },
+                        self_platform_id=self_platform_id,
+                        previous_summary=_format_overflow_summaries(summaries),
+                    )
+                    if stage_input is not None:
+                        stage_input_count += 1
+                        block_digest_tasks.append(
+                            self._schedule_block_digest(
+                                session_id=session_id,
+                                messages=batch,
+                                block_index=block_index,
+                                range_id=unread_range.id,
+                                range_start=unread_range.start_msg_log_id,
+                                range_end=unread_range.end_msg_log_id,
+                                review_run_id=review_run_id,
+                                trace_by_message_id=trace_by_message_id,
+                                self_platform_id=self_platform_id,
+                                semaphore=block_digest_semaphore,
+                            )
+                        )
+                        block_index += 1
+                        stage_output = await self._run_scan_stage(stage_input)
+                        stage_traces.append(_trace_for_scan(stage_input, stage_output))
+                        candidate_message_ids.extend(stage_output.candidate_message_ids)
+                        defer_batch_consumption = bool(stage_output.candidate_message_ids)
+                        if stage_output.reason.strip():
+                            scan_reasons.append(stage_output.reason.strip())
+                    # Persist progress for this batch immediately so a forced
+                    # shutdown mid-scan only loses the in-flight batch instead of
+                    # the whole review run (which would re-scan from scratch). A
+                    # candidate batch stays unread until its reply stage commits.
+                    if not defer_batch_consumption:
+                        await self._persist_scan_batch_consumption(
+                            scheduler,
+                            session_id,
+                            batch,
+                            expected_review_plan=expected_review_plan,
+                            review_run_id=review_run_id,
+                        )
+                    remaining -= len(batch)
+                    offset += len(batch)
+                if offset > 0:
+                    consumed_ranges.append(consumed_range)
+        except BaseException:
+            await _cancel_and_wait_for_tasks(block_digest_tasks)
+            raise
         return (
             loaded_count,
             stage_input_count,
@@ -1347,12 +1537,14 @@ class ReviewCoordinator:
             )
             task_name = f"review-block-digest:{session_id}:{block_index}"
             if self._block_digest_task_scope is not None:
-                return self._block_digest_task_scope.create_task(
+                task = self._block_digest_task_scope.create_task(
                     f"{session_id}:{block_index}",
                     coro,
                     name=task_name,
                 )
-            return asyncio.create_task(coro, name=task_name)
+            else:
+                task = asyncio.create_task(coro, name=task_name)
+            return self._track_block_digest_task(session_id, task)
 
         async def _run() -> ReviewBlockDigestStageOutput:
             async with semaphore:
@@ -1367,15 +1559,36 @@ class ReviewCoordinator:
 
         task_name = f"review-block-digest:{session_id}:{block_index}"
         if self._block_digest_task_scope is not None:
-            return self._block_digest_task_scope.create_task(
+            task = self._block_digest_task_scope.create_task(
                 f"{session_id}:{block_index}",
                 _run(),
                 name=task_name,
             )
-        return asyncio.create_task(
-            _run(),
-            name=task_name,
-        )
+        else:
+            task = asyncio.create_task(
+                _run(),
+                name=task_name,
+            )
+        return self._track_block_digest_task(session_id, task)
+
+    def _track_block_digest_task(
+        self,
+        session_id: str,
+        task: asyncio.Task[ReviewBlockDigestStageOutput],
+    ) -> asyncio.Task[ReviewBlockDigestStageOutput]:
+        """Associate one parallel digest with the session that started it."""
+
+        self._block_digest_tasks[task] = session_id
+        task.add_done_callback(self._finish_block_digest_task)
+        return task
+
+    def _finish_block_digest_task(
+        self,
+        task: asyncio.Task[ReviewBlockDigestStageOutput],
+    ) -> None:
+        """Forget a digest task after its normal await or cancellation tail."""
+
+        self._block_digest_tasks.pop(task, None)
 
     async def _await_block_digests(
         self,
@@ -1464,11 +1677,14 @@ class ReviewCoordinator:
         scheduler.mark_ranges_review_consumed(_dedupe_preserve_order(whole_range_ids))
         return applied
 
-    def _persist_scan_batch_consumption(
+    async def _persist_scan_batch_consumption(
         self,
         scheduler: ReviewSchedulerPort | None,
         session_id: str,
         batch: list[dict[str, Any]],
+        *,
+        expected_review_plan: ReviewPlan | None,
+        review_run_id: str,
     ) -> None:
         """Durably mark one scanned batch consumed as soon as it is scanned.
 
@@ -1489,9 +1705,6 @@ class ReviewCoordinator:
         """
         if scheduler is None or not batch:
             return
-        split = getattr(scheduler, "split_review_consumed", None)
-        if split is None:
-            return
         first_id = _message_id(batch[0])
         last_id = _message_id(batch[-1])
         if first_id is None or last_id is None:
@@ -1499,6 +1712,44 @@ class ReviewCoordinator:
         if last_id < first_id:
             first_id, last_id = last_id, first_id
         try:
+            if (
+                self._scheduler_commit_handler is not None
+                and expected_review_plan is not None
+            ):
+                decision = await self._submit_scheduler_commit(
+                    scheduler=scheduler,
+                    intent=ReviewSchedulerCommitIntent(
+                        kind=ReviewSchedulerCommitKind.CONSUME_RANGES,
+                        session_id=session_id,
+                        review_run_id=review_run_id,
+                        expected_review_plan=expected_review_plan,
+                        consumed_ranges=(
+                            ConsumedUnreadRange(
+                                range_id=None,
+                                session_id=session_id,
+                                start_msg_log_id=first_id,
+                                end_msg_log_id=last_id,
+                                message_count=len(batch),
+                                full_range=False,
+                            ),
+                        ),
+                    ),
+                )
+                if not decision.accepted:
+                    logger.debug(
+                        format_log_event(
+                            "agent.review.scan.incremental_consume_discarded",
+                            session_id=session_id,
+                            review_run_id=review_run_id,
+                            start_msg_log_id=first_id,
+                            end_msg_log_id=last_id,
+                            reason=decision.skipped_reason or "unknown",
+                        )
+                    )
+                return
+            split = getattr(scheduler, "split_review_consumed", None)
+            if split is None:
+                return
             ranges = scheduler.unread_ranges(session_id, limit=10_000)
             target = next(
                 (
@@ -1744,6 +1995,16 @@ async def _wait_for_task_until(
             return True
         return task.done()
     return True
+
+
+async def _cancel_and_wait_for_tasks(tasks: list[asyncio.Task[Any]]) -> None:
+    """Cancel unfinished child tasks before propagating a parent failure."""
+
+    pending = [task for task in tasks if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _reply_commit_task_succeeded(

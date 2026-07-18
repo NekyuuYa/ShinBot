@@ -32,6 +32,7 @@ from shinbot.agent.runtime.session_actor.external_actions import (
     builtin_external_action_effect_contract,
     builtin_external_action_effect_contracts,
 )
+from shinbot.core.dispatch.fenced_wake_target_lease import FencedActorExecutionBinding
 from shinbot.persistence.records import MessageLogRecord
 
 
@@ -100,6 +101,7 @@ class ExternalActionReceiptPort(Protocol):
         request: ExternalActionRequest,
         *,
         effect_claim: ClaimedEffect,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Persist or validate the action receipt before dispatch."""
 
@@ -108,6 +110,7 @@ class ExternalActionReceiptPort(Protocol):
         request: ExternalActionRequest,
         *,
         effect_claim: ClaimedEffect,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> (
         ClaimedExternalAction
         | ExternalActionOrderBlockedResult
@@ -123,6 +126,7 @@ class ExternalActionReceiptPort(Protocol):
         reason_code: str,
         reason_message: str = "",
         evidence: Mapping[str, Any] | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Persist a retryable, proven pre-dispatch rejection."""
 
@@ -133,6 +137,7 @@ class ExternalActionReceiptPort(Protocol):
         reason_code: str,
         reason_message: str = "",
         evidence: Mapping[str, Any] | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Persist an ambiguous outcome after dispatch may have begun."""
 
@@ -142,6 +147,7 @@ class ExternalActionReceiptPort(Protocol):
         *,
         platform_result: Mapping[str, Any],
         assistant_message: MessageLogRecord | None = None,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Persist success and any assistant message atomically."""
 
@@ -171,13 +177,19 @@ class ExternalActionEffectHandler:
         """
 
         request = external_action_request_from_effect(context)
-        await self._receipts.prepare(request, effect_claim=context.claim)
+        binding_kwargs = self._execution_binding_kwargs(context)
+        await self._receipts.prepare(
+            request,
+            effect_claim=context.claim,
+            **binding_kwargs,
+        )
         execution = await self._receipts.begin_execution(
             request,
             effect_claim=context.claim,
+            **binding_kwargs,
         )
         if isinstance(execution, ClaimedExternalAction):
-            return await self._dispatch_claimed(request, execution)
+            return await self._dispatch_claimed(context, request, execution)
         if isinstance(execution, ExternalActionTerminalResult):
             return _completion_for_receipt(
                 execution.receipt,
@@ -195,11 +207,18 @@ class ExternalActionEffectHandler:
 
     async def _dispatch_claimed(
         self,
+        context: EffectExecutionContext,
         request: ExternalActionRequest,
         action_claim: ClaimedExternalAction,
     ) -> EffectHandlerResult:
         """Invoke the platform port once and settle the resulting receipt."""
 
+        # This is the final durable target-lease check before an adapter call.
+        # A future target lifecycle must still quiesce this task before it can
+        # release the lease; no database check can retract an I/O request that
+        # has already crossed the adapter boundary.
+        await context.renew_lease()
+        binding_kwargs = self._execution_binding_kwargs(context)
         try:
             result = await self._dispatcher.dispatch(request, action_claim)
         except ExternalActionPreDispatchRejected as exc:
@@ -208,18 +227,20 @@ class ExternalActionEffectHandler:
                 reason_code=exc.reason_code,
                 reason_message=exc.reason_message,
                 evidence=exc.evidence,
+                **binding_kwargs,
             )
             raise ExternalActionRetryRequired(
                 "external action rejected before dispatch: " + exc.reason_code
             ) from exc
         except asyncio.CancelledError:
-            await self._mark_cancelled_unknown(action_claim)
+            await self._mark_cancelled_unknown(action_claim, **binding_kwargs)
             raise
         except Exception as exc:
             receipt = await self._mark_unknown_after_dispatch(
                 action_claim,
                 reason_code="dispatch_exception",
                 reason_message=type(exc).__name__,
+                **binding_kwargs,
             )
             return _completion_for_receipt(
                 receipt,
@@ -230,6 +251,7 @@ class ExternalActionEffectHandler:
                 action_claim,
                 reason_code="dispatch_result_invalid",
                 reason_message="dispatcher returned an invalid result type",
+                **binding_kwargs,
             )
             return _completion_for_receipt(
                 receipt,
@@ -240,12 +262,14 @@ class ExternalActionEffectHandler:
                 action_claim,
                 platform_result=result.platform_result,
                 assistant_message=result.assistant_message,
+                **binding_kwargs,
             )
         except Exception as exc:
             receipt = await self._mark_unknown_after_dispatch(
                 action_claim,
                 reason_code="success_settlement_failed",
                 reason_message=type(exc).__name__,
+                **binding_kwargs,
             )
             return _completion_for_receipt(
                 receipt,
@@ -259,28 +283,57 @@ class ExternalActionEffectHandler:
         *,
         reason_code: str,
         reason_message: str,
+        execution_binding: FencedActorExecutionBinding | None = None,
     ) -> ExternalActionReceipt:
         """Persist ambiguity whenever adapter execution may already have run."""
 
+        binding_kwargs = (
+            {"execution_binding": execution_binding}
+            if execution_binding is not None
+            else {}
+        )
         return await self._receipts.mark_unknown(
             claim,
             reason_code=reason_code,
             reason_message=reason_message,
+            **binding_kwargs,
         )
 
-    async def _mark_cancelled_unknown(self, claim: ClaimedExternalAction) -> None:
+    async def _mark_cancelled_unknown(
+        self,
+        claim: ClaimedExternalAction,
+        *,
+        execution_binding: FencedActorExecutionBinding | None = None,
+    ) -> None:
         """Record ambiguity before propagating cancellation to the executor."""
 
         try:
+            binding_kwargs = (
+                {"execution_binding": execution_binding}
+                if execution_binding is not None
+                else {}
+            )
             await self._receipts.mark_unknown(
                 claim,
                 reason_code="dispatch_cancelled",
                 reason_message="effect handler cancelled while dispatch may be active",
+                **binding_kwargs,
             )
         except Exception:
             # The executing lease remains durable and recovery will turn it
             # unknown. Never let secondary evidence failure authorize a retry.
             return
+
+    @staticmethod
+    def _execution_binding_kwargs(
+        context: EffectExecutionContext,
+    ) -> dict[str, FencedActorExecutionBinding]:
+        """Pass the target capability only to scoped receipt boundaries."""
+
+        binding = context.execution_binding
+        if binding is None:
+            return {}
+        return {"execution_binding": binding}
 
 
 def register_external_action_effect_handlers(

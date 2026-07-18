@@ -14,11 +14,17 @@ import asyncio
 import inspect
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
+from shinbot.core.platform.ingress_pause import (
+    AdapterIngressPauseParticipant,
+    AdapterIngressPauseSupport,
+    AdapterIngressPauseSupportInventory,
+    AdapterIngressPauseSupportStatus,
+)
 from shinbot.schema.elements import MessageElement
 from shinbot.utils.logger import format_log_event, get_logger
 
@@ -140,6 +146,17 @@ class BaseAdapter(ABC):
         if self._connection_state_callback is None:
             return
         self._connection_state_callback(bool(connected))
+
+    def ingress_pause_participant(self) -> AdapterIngressPauseParticipant | None:
+        """Return a lossless local ingress pause participant when implemented.
+
+        Returning ``None`` is the required default. An adapter must not claim
+        this capability merely because it can stop a callback task: a valid
+        participant also preserves post-pause events through a durable buffer
+        or an upstream acknowledgement/flow-control guarantee.
+        """
+
+        return None
 
     @abstractmethod
     async def start(self) -> None:
@@ -859,6 +876,102 @@ class AdapterManager:
         if adapter is None:
             return None
         return await adapter.get_capabilities()
+
+    def inspect_ingress_pause_support(
+        self,
+        instance_ids: Iterable[str],
+    ) -> AdapterIngressPauseSupportInventory:
+        """Inspect local adapter pause participants without pausing any traffic.
+
+        This is intentionally an inventory, not a controller operation. A
+        future cross-process lifecycle coordinator must still establish process
+        membership and collect actual pause/drain receipts from every process
+        capable of receiving the listed adapter instances.
+        """
+
+        if isinstance(instance_ids, str):
+            raise TypeError("instance_ids must be an iterable of identifiers, not a string")
+        normalized_instance_ids = tuple(
+            dict.fromkeys(
+                str(instance_id or "").strip() for instance_id in instance_ids
+            )
+        )
+        if not normalized_instance_ids or any(not item for item in normalized_instance_ids):
+            raise ValueError("instance_ids must contain non-empty identifiers")
+        supports = tuple(
+            self._inspect_ingress_pause_support(instance_id)
+            for instance_id in normalized_instance_ids
+        )
+        return AdapterIngressPauseSupportInventory(supports=supports)
+
+    def _inspect_ingress_pause_support(
+        self,
+        instance_id: str,
+    ) -> AdapterIngressPauseSupport:
+        """Build one local read-only adapter pause support record."""
+
+        adapter = self._instances.get(instance_id)
+        if adapter is None:
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.MISSING_INSTANCE,
+                reason="adapter_instance_missing",
+            )
+        if instance_id not in self._running:
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.NOT_RUNNING,
+                reason="adapter_instance_not_running",
+            )
+        try:
+            participant = adapter.ingress_pause_participant()
+        except Exception:
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.INVALID,
+                reason="adapter_ingress_pause_participant_factory_failed",
+            )
+        if participant is None:
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.UNSUPPORTED,
+                reason="adapter_ingress_pause_participant_unavailable",
+            )
+        if not isinstance(participant, AdapterIngressPauseParticipant):
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.INVALID,
+                reason="adapter_ingress_pause_participant_contract_invalid",
+            )
+        try:
+            participant_instance_id = str(participant.adapter_instance_id or "").strip()
+            participant_id = str(participant.participant_id or "").strip()
+            delivery_guarantee = participant.delivery_guarantee
+        except Exception:
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.INVALID,
+                reason="adapter_ingress_pause_participant_metadata_invalid",
+            )
+        if participant_instance_id != instance_id or not participant_id:
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.INVALID,
+                reason="adapter_ingress_pause_participant_identity_invalid",
+            )
+        try:
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.AVAILABLE,
+                participant_id=participant_id,
+                delivery_guarantee=delivery_guarantee,
+            )
+        except (TypeError, ValueError):
+            return AdapterIngressPauseSupport(
+                adapter_instance_id=instance_id,
+                status=AdapterIngressPauseSupportStatus.INVALID,
+                reason="adapter_ingress_pause_participant_delivery_invalid",
+            )
 
     def _handle_connection_state_change(
         self,

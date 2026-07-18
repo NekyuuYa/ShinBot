@@ -22,6 +22,9 @@ class MessageRoutingSkipReason(StrEnum):
     SESSION_MUTED = "session_muted"
     INTERCEPTOR_BLOCKED = "interceptor_blocked"
     WAIT_FOR_INPUT = "wait_for_input"
+    WAIT_FOR_INPUT_FROZEN = "wait_for_input_frozen"
+    WAIT_FOR_INPUT_SCOPE_MISMATCH = "wait_for_input_scope_mismatch"
+    WAIT_FOR_INPUT_STATE_CHANGED = "wait_for_input_state_changed"
 
 
 def routing_status_value(status: MessageRoutingStatus | str) -> str:

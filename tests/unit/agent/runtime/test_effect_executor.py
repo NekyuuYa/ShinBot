@@ -25,8 +25,10 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     DurableEffectStatus,
     EffectAuthorityChanged,
     EffectClaimLost,
+    EffectExecutionConfigurationError,
     EffectExecutionContext,
     EffectExecutionContract,
+    EffectExecutionDeferred,
     EffectHandlerRegistry,
     EffectHandlerResult,
     EffectLane,
@@ -34,10 +36,23 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     EffectRunStatus,
     EffectSettlementResult,
     EffectSettlementStatus,
+    LocalOperationQuiescenceScope,
+    LocalOperationQuiescenceStatus,
     completion_event_id,
     quarantined_event_id,
 )
 from shinbot.agent.runtime.session_actor.events import SessionEventEnvelope
+from shinbot.agent.runtime.session_actor.model_execution_witness import (
+    ModelExecutionClaim,
+    ModelExecutionPermit,
+    ModelExecutionPermitDisposition,
+)
+from shinbot.agent.runtime.session_actor.review_execution_gate import (
+    ReviewExecutionClaim,
+    ReviewExecutionPermit,
+    ReviewExecutionPermitDisposition,
+)
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
 
 
 @dataclass(slots=True)
@@ -69,6 +84,7 @@ class _MemoryEffectStore:
         self.completion_fence_fields: list[tuple[str, ...]] = []
         self.failure_fence_fields: list[tuple[str, ...]] = []
         self.quarantine_notifications: list[EffectSettlementResult] = []
+        self.recover_expired_calls = 0
 
     @property
     def persistence_domain(self) -> object:
@@ -217,6 +233,21 @@ class _MemoryEffectStore:
             record.last_error = error
             self._clear_claim(record)
 
+    async def defer_without_attempt(
+        self,
+        claim: ClaimedEffect,
+        *,
+        reason: str,
+        available_at: float,
+    ) -> None:
+        async with self._lock:
+            record = self._owned_record(claim)
+            record.status = DurableEffectStatus.PENDING
+            record.attempt_count = max(0, record.attempt_count - 1)
+            record.available_at = available_at
+            record.last_error = reason
+            self._clear_claim(record)
+
     async def fail_with_event(
         self,
         claim: ClaimedEffect,
@@ -307,6 +338,7 @@ class _MemoryEffectStore:
 
     async def recover_expired(self, *, worker_id: str) -> int:
         del worker_id
+        self.recover_expired_calls += 1
         recovered = 0
         async with self._lock:
             now = self._clock()
@@ -429,12 +461,63 @@ class _WakeRegistry:
         return 0
 
 
+class _SettlementWakeStore(_MemoryEffectStore):
+    """Decorate in-memory settlements with one exact wake identity."""
+
+    def __init__(
+        self,
+        now: list[float],
+        *,
+        wake_request: FencedMailboxWakeRequest | None,
+        mailbox_id: int,
+    ) -> None:
+        super().__init__(now)
+        self.wake_request = wake_request
+        self.mailbox_id = mailbox_id
+
+    async def complete_with_event(
+        self,
+        claim: ClaimedEffect,
+        completion_envelope: SessionEventEnvelope,
+        *,
+        outcome_fence_fields: tuple[str, ...] = DEFAULT_OUTCOME_FENCE_FIELDS,
+    ) -> EffectSettlementResult:
+        settlement = await super().complete_with_event(
+            claim,
+            completion_envelope,
+            outcome_fence_fields=outcome_fence_fields,
+        )
+        return replace(
+            settlement,
+            wake_request=self.wake_request,
+            mailbox_id=self.mailbox_id,
+        )
+
+
+class _MailboxHandoffNotifier:
+    """Small async notifier used to assert exact mailbox-id delivery."""
+
+    def __init__(self) -> None:
+        self.mailbox_ids: list[int] = []
+
+    async def notify(self, mailbox_id: int) -> None:
+        self.mailbox_ids.append(mailbox_id)
+
+
+class _FailingMailboxHandoffNotifier:
+    def __init__(self) -> None:
+        self.mailbox_ids: list[int] = []
+
+    def notify(self, mailbox_id: int) -> None:
+        self.mailbox_ids.append(mailbox_id)
+        raise RuntimeError("advisory notifier unavailable")
+
+
 class _BlockingWakeRegistry:
     def __init__(self) -> None:
         self.block = True
         self.started = asyncio.Event()
         self.keys: list[SessionKey] = []
-        self.recoveries = 0
 
     async def wake(self, key: SessionKey) -> None:
         self.keys.append(key)
@@ -442,9 +525,75 @@ class _BlockingWakeRegistry:
             self.started.set()
             await asyncio.Event().wait()
 
-    async def recover(self) -> int:
-        self.recoveries += 1
-        return 2
+
+class _ReviewExecutionGate:
+    """In-memory witness port used to verify executor task-lifetime ordering."""
+
+    def __init__(self, persistence_domain: object) -> None:
+        self.persistence_domain = persistence_domain
+        self.started: list[ReviewExecutionClaim] = []
+        self.finished: list[ReviewExecutionClaim] = []
+
+    async def begin_execution(
+        self,
+        claim: ReviewExecutionClaim,
+    ) -> ReviewExecutionPermit:
+        self.started.append(claim)
+        return ReviewExecutionPermit(
+            disposition=ReviewExecutionPermitDisposition.STARTED,
+            claim=claim,
+        )
+
+    async def finish_execution(
+        self,
+        claim: ReviewExecutionClaim,
+    ) -> ReviewExecutionPermit:
+        self.finished.append(claim)
+        return ReviewExecutionPermit(
+            disposition=ReviewExecutionPermitDisposition.STARTED,
+            claim=claim,
+        )
+
+
+class _ModelExecutionWitness:
+    """In-memory generic witness port for executor lifecycle tests."""
+
+    def __init__(
+        self,
+        persistence_domain: object,
+        *,
+        defer_start: bool = False,
+    ) -> None:
+        self.persistence_domain = persistence_domain
+        self.defer_start = defer_start
+        self.started: list[ModelExecutionClaim] = []
+        self.finished: list[ModelExecutionClaim] = []
+
+    async def begin_execution(
+        self,
+        claim: ModelExecutionClaim,
+    ) -> ModelExecutionPermit:
+        self.started.append(claim)
+        if self.defer_start:
+            return ModelExecutionPermit(
+                disposition=ModelExecutionPermitDisposition.DEFERRED,
+                claim=claim,
+                blocker_code="model_execution_witness_finished",
+            )
+        return ModelExecutionPermit(
+            disposition=ModelExecutionPermitDisposition.STARTED,
+            claim=claim,
+        )
+
+    async def finish_execution(
+        self,
+        claim: ModelExecutionClaim,
+    ) -> ModelExecutionPermit:
+        self.finished.append(claim)
+        return ModelExecutionPermit(
+            disposition=ModelExecutionPermitDisposition.STARTED,
+            claim=claim,
+        )
 
 
 def _contract(
@@ -550,6 +699,277 @@ def _historical_contract_signature(contract: EffectExecutionContract) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_fenced_settlement_without_notifier_never_wakes_legacy_registry() -> None:
+    """Fenced settlement debt remains in its sidecar when no notifier is composed."""
+
+    now = [100.0]
+    contract = _contract()
+    effect = replace(_effect(contract=contract), ownership_generation=1)
+    request = FencedMailboxWakeRequest(
+        key=effect.key,
+        ownership_generation=1,
+        admission_fence_id="admission-fence",
+        admission_fence_generation=1,
+    )
+    store = _SettlementWakeStore(now, wake_request=request, mailbox_id=41)
+    await store.seed(effect)
+    registry = _WakeRegistry(store.actions)
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert registry.keys == []
+    assert store.records[effect.effect_id].status is DurableEffectStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_mailbox_settlement_without_wake_evidence_fails_closed() -> None:
+    """A durable mailbox id cannot silently choose the legacy wake boundary."""
+
+    now = [100.0]
+    contract = _contract()
+    effect = replace(_effect(contract=contract), ownership_generation=1)
+    store = _SettlementWakeStore(now, wake_request=None, mailbox_id=45)
+    await store.seed(effect)
+    registry = _WakeRegistry(store.actions)
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    with pytest.raises(RuntimeError, match="missing wake evidence"):
+        await executor.run_once()
+
+    assert registry.keys == []
+    assert store.records[effect.effect_id].status is DurableEffectStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_fenced_settlement_notifier_receives_exact_mailbox_id() -> None:
+    """The advisory sink receives mailbox identity, never a session projection."""
+
+    now = [100.0]
+    contract = _contract()
+    effect = replace(_effect(contract=contract), ownership_generation=1)
+    request = FencedMailboxWakeRequest(
+        key=effect.key,
+        ownership_generation=1,
+        admission_fence_id="admission-fence",
+        admission_fence_generation=1,
+    )
+    store = _SettlementWakeStore(now, wake_request=request, mailbox_id=42)
+    await store.seed(effect)
+    registry = _WakeRegistry(store.actions)
+    notifier = _MailboxHandoffNotifier()
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        mailbox_handoff_notifier=notifier,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert notifier.mailbox_ids == [42]
+    assert registry.keys == []
+
+
+@pytest.mark.asyncio
+async def test_fenced_notifier_error_does_not_fallback_or_rerun_effect() -> None:
+    """A failed advisory hint leaves committed fenced debt for pull delivery."""
+
+    now = [100.0]
+    contract = _contract()
+    effect = replace(_effect(contract=contract), ownership_generation=1)
+    request = FencedMailboxWakeRequest(
+        key=effect.key,
+        ownership_generation=1,
+        admission_fence_id="admission-fence",
+        admission_fence_generation=1,
+    )
+    store = _SettlementWakeStore(now, wake_request=request, mailbox_id=43)
+    await store.seed(effect)
+    registry = _WakeRegistry(store.actions)
+    notifier = _FailingMailboxHandoffNotifier()
+    handler_calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        mailbox_handoff_notifier=notifier,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+    replay = await executor.run_once()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert replay.status is EffectRunStatus.EMPTY
+    assert notifier.mailbox_ids == [43]
+    assert registry.keys == []
+    assert handler_calls == 1
+    assert store.records[effect.effect_id].status is DurableEffectStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_unfenced_settlement_keeps_legacy_key_wake() -> None:
+    """Only admission-fenced results are diverted away from the legacy registry."""
+
+    now = [100.0]
+    contract = _contract()
+    effect = replace(_effect(contract=contract), ownership_generation=1)
+    request = FencedMailboxWakeRequest(key=effect.key, ownership_generation=1)
+    store = _SettlementWakeStore(now, wake_request=request, mailbox_id=44)
+    await store.seed(effect)
+    registry = _WakeRegistry(store.actions)
+    notifier = _MailboxHandoffNotifier()
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        mailbox_handoff_notifier=notifier,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert registry.keys == [effect.key]
+    assert notifier.mailbox_ids == []
+
+
+@pytest.mark.asyncio
+async def test_fenced_store_notifications_do_not_coalesce_to_session_keys() -> None:
+    """Maintenance notifications retain each fenced mailbox id independently."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    key = SessionKey("profile-a", "bot:group:room")
+    request = FencedMailboxWakeRequest(
+        key=key,
+        ownership_generation=1,
+        admission_fence_id="admission-fence",
+        admission_fence_generation=1,
+    )
+    store.quarantine_notifications.extend(
+        (
+            EffectSettlementResult(
+                status=EffectSettlementStatus.COMMITTED,
+                effect_id="maintenance-a",
+                event_id="maintenance-event-a",
+                key=key,
+                wake_request=request,
+                mailbox_id=51,
+            ),
+            EffectSettlementResult(
+                status=EffectSettlementStatus.COMMITTED,
+                effect_id="maintenance-b",
+                event_id="maintenance-event-b",
+                key=key,
+                wake_request=request,
+                mailbox_id=52,
+            ),
+        )
+    )
+    registry = _WakeRegistry(store.actions)
+    notifier = _MailboxHandoffNotifier()
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        mailbox_handoff_notifier=notifier,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once(lane=EffectLane.ORPHAN)
+
+    assert result.status is EffectRunStatus.EMPTY
+    assert notifier.mailbox_ids == [51, 52]
+    assert registry.keys == []
+
+
+@pytest.mark.asyncio
+async def test_mailbox_notification_without_wake_evidence_never_uses_legacy_key() -> None:
+    """Store-owned maintenance debt also fails closed before key aggregation."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    key = SessionKey("profile-a", "bot:group:room")
+    store.quarantine_notifications.append(
+        EffectSettlementResult(
+            status=EffectSettlementStatus.COMMITTED,
+            effect_id="maintenance-missing-evidence",
+            event_id="maintenance-missing-evidence-event",
+            key=key,
+            mailbox_id=53,
+        )
+    )
+    registry = _WakeRegistry(store.actions)
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    with pytest.raises(RuntimeError, match="missing wake evidence"):
+        await executor.run_once(lane=EffectLane.ORPHAN)
+
+    assert registry.keys == []
 
 
 def test_handler_registration_without_contract_requires_an_unambiguous_version() -> None:
@@ -691,9 +1111,7 @@ async def test_handler_lanes_do_not_claim_known_contracts_without_handlers() -> 
         unwired.ref,
         wired.ref,
     )
-    assert handlers.handled_effect_contracts_for_lane(EffectLane.DEFAULT) == (
-        wired.ref,
-    )
+    assert handlers.handled_effect_contracts_for_lane(EffectLane.DEFAULT) == (wired.ref,)
 
 
 @pytest.mark.asyncio
@@ -752,6 +1170,28 @@ async def test_orphan_only_executor_is_not_started_as_a_handler_runtime() -> Non
         assert executor.running is True
         assert executor.has_runnable_handlers is False
         assert executor.started is False
+    finally:
+        await executor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_clean_executor_start_never_recovers_expired_claims() -> None:
+    """A clean-domain worker must not repurpose restart-recovery authority."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    executor = _executor(store, registry, handler, now=now)
+    await executor.start_clean_session()
+    try:
+        await asyncio.sleep(0.05)
+
+        assert executor.started is True
+        assert store.recover_expired_calls == 0
     finally:
         await executor.shutdown()
 
@@ -827,6 +1267,46 @@ async def test_failed_handler_retries_after_restart_and_preserves_idempotency_ke
     assert seen == [effect.idempotency_key, effect.idempotency_key]
     assert store.records[effect.effect_id].attempt_count == 2
     assert store.records[effect.effect_id].status == DurableEffectStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_deferred_handler_does_not_consume_retry_budget_or_emit_failure() -> None:
+    """Durable control waits must not become terminal effect failures."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    effect = _effect(contract=_contract(max_attempts=1))
+    await store.seed(effect)
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        if calls < 4:
+            raise EffectExecutionDeferred(
+                "review_cancellation_pending",
+                delay_seconds=2.0,
+            )
+        return EffectHandlerResult(payload={"settled": True})
+
+    executor = _executor(store, registry, handler, now=now, max_attempts=1)
+    for expected_retry_at in (102.0, 104.0, 106.0):
+        result = await executor.run_once()
+        assert result.status is EffectRunStatus.DEFERRED
+        assert result.retry_at == expected_retry_at
+        assert result.attempt_count == 0
+        assert store.records[effect.effect_id].attempt_count == 0
+        assert store.records[effect.effect_id].status is DurableEffectStatus.PENDING
+        assert store.mailbox == {}
+        now[0] = expected_retry_at
+
+    completed = await executor.run_once()
+
+    assert completed.status is EffectRunStatus.COMPLETED
+    assert calls == 4
+    assert store.records[effect.effect_id].attempt_count == 1
+    assert len(store.mailbox) == 1
 
 
 @pytest.mark.asyncio
@@ -944,6 +1424,13 @@ async def test_shutdown_releases_claim_for_recovery_by_new_executor() -> None:
     assert first_cancelled.is_set()
     assert record.status == DurableEffectStatus.PENDING
     assert record.last_error == "effect_executor_shutdown"
+    assert (
+        first_executor.local_in_flight_handler_keys(
+            key=effect.key,
+            operation_id=effect.operation_id,
+        )
+        == ()
+    )
 
     second_executor = _executor(store, registry, handler, now=now)
     recovered = await second_executor.run_once()
@@ -952,8 +1439,284 @@ async def test_shutdown_releases_claim_for_recovery_by_new_executor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wake_cancellation_preserves_notifications_and_releases_unstarted_claim(
-) -> None:
+async def test_local_operation_registry_cleans_normally_completed_handler() -> None:
+    """A completed handler must not remain visible to later local controls."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    effect = _effect()
+    await store.seed(effect)
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    executor = _executor(store, registry, handler, now=now)
+
+    result = await executor.run_once()
+    report = await executor.ensure_local_operation_quiescent(
+        key=effect.key,
+        operation_id=effect.operation_id,
+        timeout_seconds=0.0,
+    )
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert (
+        executor.local_in_flight_handler_keys(
+            key=effect.key,
+            operation_id=effect.operation_id,
+        )
+        == ()
+    )
+    assert report.scope is LocalOperationQuiescenceScope.LOCAL_PROCESS
+    assert report.status is LocalOperationQuiescenceStatus.NO_LOCAL_HANDLER_TASKS
+    assert report.locally_confirmed_quiescent is False
+    assert report.matched_handler_keys == ()
+    assert report.cancelled_handler_keys == ()
+    assert report.remaining_handler_keys == ()
+
+
+@pytest.mark.asyncio
+async def test_local_operation_quiescence_cancels_and_awaits_handler_tail() -> None:
+    """Local control waits for cancellation acknowledgement, not just ``cancel()``."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    effect = _effect()
+    await store.seed(effect)
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    allow_handler_exit = asyncio.Event()
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await allow_handler_exit.wait()
+            raise
+
+    executor = _executor(store, registry, handler, now=now)
+    attempt = asyncio.create_task(executor.run_once())
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+
+    quiescence_task = asyncio.create_task(
+        executor.ensure_local_operation_quiescent(
+            key=effect.key,
+            operation_id=effect.operation_id,
+            timeout_seconds=1.0,
+        )
+    )
+    await asyncio.wait_for(cancellation_seen.wait(), timeout=0.5)
+    assert not quiescence_task.done()
+
+    allow_handler_exit.set()
+    report = await asyncio.wait_for(quiescence_task, timeout=0.5)
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+
+    assert report.scope is LocalOperationQuiescenceScope.LOCAL_PROCESS
+    assert report.status is LocalOperationQuiescenceStatus.QUIESCENT
+    assert report.locally_confirmed_quiescent is True
+    assert len(report.matched_handler_keys) == 1
+    assert report.cancelled_handler_keys == report.matched_handler_keys
+    assert report.remaining_handler_keys == ()
+    assert (
+        executor.local_in_flight_handler_keys(
+            key=effect.key,
+            operation_id=effect.operation_id,
+        )
+        == ()
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_executor_quiescence_requires_handler_tail_to_end_after_shutdown() -> None:
+    """Target retirement must not treat a cancellation request as quiescence."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    effect = _effect()
+    await store.seed(effect)
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    allow_handler_exit = asyncio.Event()
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            while not allow_handler_exit.is_set():
+                try:
+                    await allow_handler_exit.wait()
+                except asyncio.CancelledError:
+                    continue
+            raise
+
+    executor = _executor(store, registry, handler, now=now)
+    await executor.start()
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    await executor.shutdown(drain=False)
+    await asyncio.wait_for(cancellation_seen.wait(), timeout=0.5)
+
+    timed_out = await executor.ensure_local_executor_quiescent(
+        timeout_seconds=0.01,
+    )
+    assert timed_out.status is LocalOperationQuiescenceStatus.TIMED_OUT
+    assert len(timed_out.matched_handler_keys) == 1
+    assert timed_out.cancelled_handler_keys == timed_out.matched_handler_keys
+    assert timed_out.locally_confirmed_quiescent is False
+    assert timed_out.remaining_handler_keys == timed_out.matched_handler_keys
+
+    allow_handler_exit.set()
+    quiescent = await executor.ensure_local_executor_quiescent(timeout_seconds=0.5)
+
+    assert quiescent.status is LocalOperationQuiescenceStatus.QUIESCENT
+    assert quiescent.locally_confirmed_quiescent is True
+    assert quiescent.matched_handler_keys == timed_out.matched_handler_keys
+    assert quiescent.remaining_handler_keys == ()
+
+
+@pytest.mark.asyncio
+async def test_local_operation_quiescence_controls_all_matching_claims() -> None:
+    """One operation can own multiple local effect claims at the same time."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    first_effect = _effect("effect-a")
+    second_effect = _effect("effect-b")
+    await store.seed(first_effect)
+    await store.seed(second_effect)
+    started_effect_ids: set[str] = set()
+    both_started = asyncio.Event()
+
+    async def handler(context: EffectExecutionContext) -> EffectHandlerResult:
+        started_effect_ids.add(context.effect.effect_id)
+        if len(started_effect_ids) == 2:
+            both_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("handler should have been cancelled")
+
+    executor = _executor(store, registry, handler, now=now)
+    first_attempt = asyncio.create_task(executor.run_once(worker_id="worker-a"))
+    second_attempt = asyncio.create_task(executor.run_once(worker_id="worker-b"))
+    await asyncio.wait_for(both_started.wait(), timeout=0.5)
+
+    before = executor.local_in_flight_handler_keys(
+        key=first_effect.key,
+        operation_id=first_effect.operation_id,
+    )
+    report = await executor.ensure_local_operation_quiescent(
+        key=first_effect.key,
+        operation_id=first_effect.operation_id,
+        timeout_seconds=0.5,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await first_attempt
+    with pytest.raises(asyncio.CancelledError):
+        await second_attempt
+
+    assert {identity.effect_id for identity in before} == {"effect-a", "effect-b"}
+    assert len({identity.claim_id for identity in before}) == 2
+    assert report.status is LocalOperationQuiescenceStatus.QUIESCENT
+    assert report.matched_handler_keys == before
+    assert report.cancelled_handler_keys == before
+    assert report.remaining_handler_keys == ()
+
+
+@pytest.mark.asyncio
+async def test_stale_handler_tail_cleanup_preserves_reclaimed_claim_entry() -> None:
+    """An old timeout tail may not remove a newer claim for the same effect."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    contract = _contract(max_attempts=2, timeout_seconds=0.02)
+    effect = _effect(contract=contract)
+    await store.seed(effect)
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+    release_first_tail = asyncio.Event()
+    second_started = asyncio.Event()
+    release_second = asyncio.Event()
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                await release_first_tail.wait()
+                return EffectHandlerResult(payload={"late": True})
+        second_started.set()
+        await release_second.wait()
+        return EffectHandlerResult(payload={"current": True})
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    first_attempt = asyncio.create_task(executor.run_once())
+    await asyncio.wait_for(first_started.wait(), timeout=0.5)
+    first_result = await first_attempt
+    await asyncio.wait_for(first_cancelled.wait(), timeout=0.5)
+    now[0] = 105.0
+    second_attempt = asyncio.create_task(executor.run_once())
+    await asyncio.wait_for(second_started.wait(), timeout=0.5)
+
+    before = executor.local_in_flight_handler_keys(
+        key=effect.key,
+        operation_id=effect.operation_id,
+    )
+    assert len(before) == 2
+    assert len({identity.claim_id for identity in before}) == 2
+
+    release_first_tail.set()
+    after = before
+    for _attempt in range(20):
+        await asyncio.sleep(0)
+        after = executor.local_in_flight_handler_keys(
+            key=effect.key,
+            operation_id=effect.operation_id,
+        )
+        if len(after) == 1:
+            break
+
+    assert first_result.status is EffectRunStatus.RETRY_SCHEDULED
+    assert len(after) == 1
+    assert after[0].claim_id == store.records[effect.effect_id].claim_id
+
+    release_second.set()
+    second_result = await asyncio.wait_for(second_attempt, timeout=0.5)
+    assert second_result.status is EffectRunStatus.COMPLETED
+    assert (
+        executor.local_in_flight_handler_keys(
+            key=effect.key,
+            operation_id=effect.operation_id,
+        )
+        == ()
+    )
+
+
+@pytest.mark.asyncio
+async def test_wake_cancellation_preserves_notifications_and_releases_unstarted_claim() -> None:
     now = [100.0]
     store = _MemoryEffectStore(now)
     effect = _effect()
@@ -1001,13 +1764,13 @@ async def test_wake_cancellation_preserves_notifications_and_releases_unstarted_
     assert record.last_error == "effect_executor_shutdown"
     assert calls == 0
     assert not executor._active_claims
-    assert executor._pending_wakes == notification_keys
+    assert executor._pending_legacy_wakes == notification_keys
 
     wake_registry.block = False
     result = await executor.run_once()
 
-    assert wake_registry.recoveries == 1
-    assert not executor._pending_wakes
+    assert notification_keys.issubset(set(wake_registry.keys))
+    assert not executor._pending_legacy_wakes
     assert result.status is EffectRunStatus.COMPLETED
     assert calls == 1
 
@@ -1304,6 +2067,18 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[_ActorEffectContractExpectation, ...] = (
         "bbca6267e9a16a690312269aa770263a99180ee753e1abcb75aeeb79fbc8562d",
         "13f2272fb25d1e4cb5f6cc5135026e3588cd597cae2911ad25460d599f8477ee",
         {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "source",
+            "trigger",
+        },
+        v3_signature="63165937d17f7388a1d16106e4cfc164dddbb3a8b4a1ca5f8b4daa6c8f36795f",
+        v3_outcome_fence_fields={
             "plan_id",
             "active_epoch",
             "activity_generation",
@@ -1931,6 +2706,362 @@ async def test_timeout_releases_worker_without_awaiting_cancellation_tail() -> N
     finally:
         release_late_handler.set()
         await executor.shutdown(drain=True)
+
+
+@pytest.mark.asyncio
+async def test_review_workflow_fails_before_handler_without_lease_renewal() -> None:
+    """A missing heartbeat cannot create a permanently unknown model witness."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    wake_registry = _WakeRegistry(store.actions)
+    contract = _contract(
+        kind="run_review_workflow",
+        lane=EffectLane.PLANNER,
+        max_attempts=1,
+    )
+    handler_calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        return EffectHandlerResult(payload={})
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    await store.seed(_effect("review-without-renewal", contract=contract))
+    gate = _ReviewExecutionGate(store.persistence_domain)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        review_execution_gate_store=gate,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once(lane=EffectLane.PLANNER)
+
+    assert result.status is EffectRunStatus.FAILED
+    assert handler_calls == 0
+    assert gate.started == []
+    assert gate.finished == []
+    record = store.records["review-without-renewal"]
+    assert record.status is DurableEffectStatus.FAILED
+    assert record.settled_event is not None
+    assert (
+        record.settled_event.payload["failure_code"] == EffectExecutionConfigurationError.__name__
+    )
+    assert record.settled_event.payload["failure_message"] == (
+        "run_review_workflow requires automatic effect lease renewal"
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_timeout_waits_for_actual_task_exit_before_finishing_witness() -> None:
+    """Review-specific timeout handling never acknowledges a still-running task."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    wake_registry = _WakeRegistry(store.actions)
+    contract = _contract(
+        kind="run_review_workflow",
+        lane=EffectLane.PLANNER,
+        timeout_seconds=0.02,
+        max_attempts=1,
+    )
+    handler_started = asyncio.Event()
+    handler_cancelled = asyncio.Event()
+    release_handler = asyncio.Event()
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            handler_cancelled.set()
+            await release_handler.wait()
+            return EffectHandlerResult(payload={"late": True})
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    effect = replace(
+        _effect("review-timeout", contract=contract),
+        ownership_generation=1,
+    )
+    await store.seed(effect)
+    gate = _ReviewExecutionGate(store.persistence_domain)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        worker_id="review-timeout-test",
+        renew_interval_seconds=10.0,
+        review_execution_gate_store=gate,
+        clock=lambda: now[0],
+    )
+
+    run_task = asyncio.create_task(executor.run_once(lane=EffectLane.PLANNER))
+    await asyncio.wait_for(handler_started.wait(), timeout=0.5)
+    await asyncio.wait_for(handler_cancelled.wait(), timeout=0.5)
+
+    assert len(gate.started) == 1
+    assert gate.finished == []
+    assert run_task.done() is False
+
+    release_handler.set()
+    result = await asyncio.wait_for(run_task, timeout=0.5)
+
+    assert result.status is EffectRunStatus.FAILED
+    assert gate.finished == gate.started
+
+
+@pytest.mark.asyncio
+async def test_cancelling_review_finish_observer_does_not_finish_live_handler_witness() -> None:
+    """Only the handler's own completion can make its witness terminal."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    wake_registry = _WakeRegistry(store.actions)
+    contract = _contract(kind="run_review_workflow", lane=EffectLane.PLANNER)
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+
+    async def unused_handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        return EffectHandlerResult()
+
+    handlers.register(contract.effect_kind, unused_handler, contract=contract)
+    gate = _ReviewExecutionGate(store.persistence_domain)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        review_execution_gate_store=gate,
+        clock=lambda: now[0],
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def live_handler() -> EffectHandlerResult:
+        started.set()
+        await release.wait()
+        return EffectHandlerResult()
+
+    handler_task = asyncio.create_task(live_handler())
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    effect = replace(_effect("review-observer", contract=contract), ownership_generation=1)
+    claim = ReviewExecutionClaim(
+        key=effect.key,
+        ownership_generation=1,
+        review_effect_id=effect.effect_id,
+        review_operation_id=effect.operation_id,
+        review_effect_kind=effect.kind,
+        review_contract_version=effect.contract_version,
+        review_contract_signature=effect.contract_signature,
+        claim_id="review-observer-claim",
+        worker_id="review-observer-worker",
+    )
+    gate.started.append(claim)
+    finish_task = asyncio.create_task(
+        executor._finish_review_execution_after_handler(handler_task, claim)
+    )
+    await asyncio.sleep(0)
+
+    finish_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await finish_task
+
+    assert handler_task.done() is False
+    assert gate.finished == []
+
+    release.set()
+    await handler_task
+    await gate.finish_execution(claim)
+
+
+@pytest.mark.asyncio
+async def test_generic_model_witness_brackets_the_real_handler_task() -> None:
+    """Non-review model work persists start before task creation and finish after exit."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    wake_registry = _WakeRegistry(store.actions)
+    contract = _contract(
+        kind="run_active_reply_workflow",
+        lane=EffectLane.PLANNER,
+        max_attempts=3,
+    )
+    witness = _ModelExecutionWitness(store.persistence_domain)
+    observed_start: list[tuple[ModelExecutionClaim, ...]] = []
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        observed_start.append(tuple(witness.started))
+        assert witness.finished == []
+        return EffectHandlerResult(payload={})
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    effect = replace(
+        _effect("generic-model-witness", contract=contract),
+        ownership_generation=1,
+    )
+    await store.seed(effect)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        model_execution_witness_store=witness,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once(lane=EffectLane.PLANNER)
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert len(observed_start) == 1
+    assert len(witness.started) == 1
+    assert witness.finished == witness.started
+
+
+@pytest.mark.asyncio
+async def test_generic_model_witness_deferral_never_creates_a_handler_task() -> None:
+    """An unresolved generic witness is observed without repeating model work."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    wake_registry = _WakeRegistry(store.actions)
+    contract = _contract(kind="run_active_reply_workflow", lane=EffectLane.PLANNER)
+    witness = _ModelExecutionWitness(store.persistence_domain, defer_start=True)
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        return EffectHandlerResult(payload={})
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    effect = replace(
+        _effect("generic-model-deferred", contract=contract),
+        ownership_generation=1,
+    )
+    await store.seed(effect)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        model_execution_witness_store=witness,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once(lane=EffectLane.PLANNER)
+
+    assert result.status is EffectRunStatus.DEFERRED
+    assert calls == 0
+    assert len(witness.started) == 1
+    assert witness.finished == []
+
+
+@pytest.mark.asyncio
+async def test_generic_model_witness_forces_terminal_failure_after_task_exit() -> None:
+    """A failed model task is not retried after its upstream call may have begun."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    wake_registry = _WakeRegistry(store.actions)
+    contract = _contract(
+        kind="run_active_reply_workflow",
+        lane=EffectLane.PLANNER,
+        max_attempts=3,
+    )
+    witness = _ModelExecutionWitness(store.persistence_domain)
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("model transport failed after request dispatch")
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    effect = replace(
+        _effect("generic-model-failure", contract=contract),
+        ownership_generation=1,
+    )
+    await store.seed(effect)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        model_execution_witness_store=witness,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once(lane=EffectLane.PLANNER)
+
+    assert result.status is EffectRunStatus.FAILED
+    assert calls == 1
+    assert witness.finished == witness.started
+    assert store.records[effect.effect_id].status is DurableEffectStatus.FAILED
+    assert store.records[effect.effect_id].attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_generic_model_task_keeps_the_claim_for_unknown_recovery() -> None:
+    """Executor shutdown cannot turn started model work back into a retryable effect."""
+
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    wake_registry = _WakeRegistry(store.actions)
+    contract = _contract(
+        kind="run_active_reply_workflow",
+        lane=EffectLane.PLANNER,
+        timeout_seconds=30.0,
+    )
+    witness = _ModelExecutionWitness(store.persistence_domain)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+            raise
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    effect = replace(
+        _effect("generic-model-cancelled", contract=contract),
+        ownership_generation=1,
+    )
+    await store.seed(effect)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        model_execution_witness_store=witness,
+        clock=lambda: now[0],
+    )
+
+    run_task = asyncio.create_task(executor.run_once(lane=EffectLane.PLANNER))
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    run_task.cancel()
+    await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+    assert run_task.done() is False
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=0.5)
+
+    assert witness.finished == witness.started
+    assert store.records[effect.effect_id].status is DurableEffectStatus.PROCESSING
 
 
 @pytest.mark.asyncio

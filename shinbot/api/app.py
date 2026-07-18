@@ -9,6 +9,7 @@ Implements the communication contract defined in 16_api_communication_spec.md:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import time
@@ -116,7 +117,9 @@ def create_api_app(
         agent_runtime = getattr(bot, "agent_runtime", None)
         start_agent_background_tasks = getattr(agent_runtime, "start_background_tasks", None)
         if start_agent_background_tasks is not None:
-            start_agent_background_tasks()
+            startup_result = start_agent_background_tasks()
+            if inspect.isawaitable(startup_result):
+                await startup_result
         logger.info("Management API ready")
         yield
         broadcaster_task.cancel()

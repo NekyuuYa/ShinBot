@@ -14,6 +14,8 @@ from active_chat_workflow_support import (
     start_workflow,
 )
 
+from shinbot.agent.runtime.task_manager import AgentTaskQuiescenceStatus
+
 
 @pytest.mark.asyncio
 async def test_active_chat_workflow_runs_next_batch_for_messages_arriving_during_round() -> None:
@@ -213,6 +215,76 @@ async def test_active_chat_workflow_stop_cancels_running_round_without_consuming
     assert scheduler.adjustments == []
     assert workflow.attention_state_for("bot:group:room") is None
     await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_local_quiescence_keeps_a_cancelled_round_tail_observable() -> None:
+    """A stop request cannot hide a round that has not actually exited."""
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def handler(_batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+        completed.set()
+        return ActiveChatRoundResult(success=True, reason="released")
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatCoordinator(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+    await start_workflow(workflow)
+    try:
+        await workflow.notify_message(
+            scheduler=scheduler,
+            session_id="bot:group:room",
+            message_log_id=1,
+            sender_id="user-1",
+            response_profile="balanced",
+            is_mentioned=True,
+            is_reply_to_bot=False,
+            is_mention_to_other=False,
+            is_poke_to_bot=False,
+            is_poke_to_other=False,
+            self_platform_id="bot-self",
+            active_chat_state=make_active_state(),
+        )
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        workflow.stop_active_chat("bot:group:room")
+        await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+
+        report = await workflow.quiesce_session_tasks(
+            "bot:group:room",
+            timeout_seconds=0.0,
+        )
+
+        assert report.status is AgentTaskQuiescenceStatus.TIMED_OUT
+        assert report.locally_confirmed_quiescent is False
+        assert report.remaining_task_names == ("active-chat-round-bot:group:room",)
+
+        release.set()
+        await asyncio.wait_for(completed.wait(), timeout=0.5)
+        await asyncio.sleep(0)
+        assert workflow.pending_session_tasks("bot:group:room") == []
+    finally:
+        release.set()
+        await workflow.shutdown()
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from shinbot.agent.scheduler.active_chat_timer import ActiveChatTimer, ActiveCha
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
+    ActiveChatBootstrapPreview,
     ActiveChatDisposition,
     ActiveChatInterestAdjustDecision,
     ActiveChatInterestAdjustmentPreview,
@@ -28,6 +29,8 @@ from shinbot.agent.scheduler.models import (
     AgentState,
     HighPriorityEvent,
     HighPriorityEventKind,
+    IdleReviewPlanningRequest,
+    IdleReviewPlanningTrigger,
     MentionSensitivity,
     ReviewCompletionDecision,
     ReviewDueDecision,
@@ -66,6 +69,7 @@ __all__ = [
     "ActiveReplyThreshold",
     "ActiveChatPolicy",
     "ActiveChatBootstrapApplyDecision",
+    "ActiveChatBootstrapPreview",
     "ActiveChatBootstrapCorrection",
     "ActiveChatPolicyConfig",
     "ActiveChatDisposition",
@@ -91,6 +95,8 @@ __all__ = [
     "DefaultReviewPolicy",
     "HighPriorityEvent",
     "HighPriorityEventKind",
+    "IdleReviewPlanningTrigger",
+    "IdleReviewPlanningRequest",
     "InMemoryAgentInbox",
     "InMemoryAgentStateStore",
     "interest_curve_after_ticks",

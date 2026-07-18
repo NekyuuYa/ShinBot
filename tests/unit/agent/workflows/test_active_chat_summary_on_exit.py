@@ -14,6 +14,10 @@ from shinbot.agent.coordinators.active_chat.models import (
 from shinbot.agent.coordinators.dispatcher import ActiveReplyDispatcher
 from shinbot.agent.runners.review_models import IdleReviewPlanningStageOutput
 from shinbot.agent.scheduler import ActiveChatState
+from shinbot.agent.scheduler.models import (
+    IdleReviewPlanningRequest,
+    SchedulerEventKind,
+)
 
 
 class FakeSummaryService:
@@ -609,3 +613,61 @@ async def test_idle_review_delay_starts_after_planner_completion() -> None:
     assert plan is not None
     assert plan.updated_at == 130.0
     assert plan.next_review_at == 250.0
+
+
+@pytest.mark.asyncio
+async def test_idle_review_planning_recorder_preserves_model_provenance() -> None:
+    class Scheduler:
+        def review_plan_for(self, _session_id: str):
+            return None
+
+        def active_chat_state_for(self, _session_id: str):
+            return None
+
+    class Runner:
+        async def run(self, _stage_input):
+            return IdleReviewPlanningStageOutput(
+                next_review_after_seconds=10.0,
+                reason="model_delay",
+                model_execution_id="execution-42",
+                prompt_signature="prompt-42",
+            )
+
+    active_state = make_active_state(interest_value=4.0, active_epoch=42)
+    request = IdleReviewPlanningRequest(
+        session_id="bot:group:room",
+        trigger=SchedulerEventKind.ACTIVE_CHAT_BOOTSTRAP,
+        signal_id="bootstrap:42",
+        checked_at=100.0,
+        expected_active_chat_state=active_state,
+        planning_active_chat_state=active_state,
+    )
+    recorded = []
+    dispatcher = ActiveReplyDispatcher(
+        idle_review_planning_runner=Runner(),  # type: ignore[arg-type]
+        idle_review_planning_recorder=lambda item, result: recorded.append(
+            (item, result)
+        ),
+    )
+    dispatcher.bind_agent_scheduler(Scheduler())  # type: ignore[arg-type]
+
+    with patch(
+        "shinbot.agent.coordinators.dispatcher.time.time",
+        side_effect=[100.0, 130.0],
+    ):
+        plan = await dispatcher.plan_idle_review_after_active_chat(
+            "bot:group:room",
+            request=request,
+        )
+
+    assert plan is not None
+    assert len(recorded) == 1
+    recorded_request, result = recorded[0]
+    assert recorded_request == request
+    assert result.outcome == "model_plan"
+    assert result.reason == "model_delay"
+    assert result.model_execution_id == "execution-42"
+    assert result.prompt_signature == "prompt-42"
+    assert result.requested_next_review_after_seconds == 10.0
+    assert result.applied_next_review_after_seconds == 30.0
+    assert result.plan == plan

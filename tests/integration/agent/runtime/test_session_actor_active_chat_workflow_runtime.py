@@ -48,6 +48,9 @@ from shinbot.agent.runtime.session_actor.review_due_identity import (
     REVIEW_DUE_EVENT_SOURCE,
     review_due_event_id,
 )
+from shinbot.agent.runtime.session_actor.review_execution_gate import (
+    SQLiteReviewExecutionGateStore,
+)
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.agent.runtime.session_actor.workflow_adapters import (
     ActiveChatBootstrapWorkflowOutput,
@@ -71,6 +74,7 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import MessageElement
+from tests.agent_runtime_helpers import wait_for_session_actor_idle
 
 
 @dataclass(slots=True)
@@ -425,7 +429,11 @@ async def test_actor_v3_active_chat_runs_review_handoff_round_and_receipt(
         ),
         handlers=handlers,
         session_registry=registry,
-        renew_interval_seconds=None,
+        renew_interval_seconds=10.0,
+        review_execution_gate_store=SQLiteReviewExecutionGateStore(
+            database,
+            clock=lambda: now[0],
+        ),
         clock=lambda: now[0],
     )
 
@@ -445,7 +453,12 @@ async def test_actor_v3_active_chat_runs_review_handoff_round_and_receipt(
                 occurred_at=100.0,
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="initial review message",
+        )
         planned = await actor_store.load(key)
 
         now[0] = 150.0
@@ -458,14 +471,24 @@ async def test_actor_v3_active_chat_runs_review_handoff_round_and_receipt(
                 occurred_at=now[0],
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="review due delivery",
+        )
         reviewing = await actor_store.load(key)
         review_operation_id = reviewing.review_operation_id
         assert reviewing.state == AgentSessionState.REVIEW
 
         now[0] = 200.0
         assert (await executor.run_once(lane=EffectLane.PLANNER)).status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="review workflow completion",
+        )
         bootstrapping = await actor_store.load(key)
         bootstrap_operation_id = str(
             bootstrapping.active_chat_state["bootstrap_operation_id"]
@@ -481,7 +504,12 @@ async def test_actor_v3_active_chat_runs_review_handoff_round_and_receipt(
 
         now[0] = 210.0
         assert (await executor.run_once(lane=EffectLane.PLANNER)).status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="active-chat bootstrap completion",
+        )
         active = await actor_store.load(key)
         assert active.active_chat_state["bootstrap_status"] == "completed"
         assert active.active_chat_state["bootstrap_disposition"] == "engaged"
@@ -506,11 +534,21 @@ async def test_actor_v3_active_chat_runs_review_handoff_round_and_receipt(
                 occurred_at=now[0],
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="active-chat round message",
+        )
 
         now[0] = 221.0
         assert (await executor.run_once(lane=EffectLane.CONTROL)).status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="active-chat round control effect",
+        )
         round_running = await actor_store.load(key)
         round_operation_id = round_running.active_chat_round_operation_id
         round_fence = round_running.data["operation_fences"][round_operation_id]
@@ -520,7 +558,12 @@ async def test_actor_v3_active_chat_runs_review_handoff_round_and_receipt(
 
         now[0] = 230.0
         assert (await executor.run_once(lane=EffectLane.PLANNER)).status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="active-chat round workflow completion",
+        )
         waiting_for_receipt = await actor_store.load(key)
         pending_effect_ids = tuple(waiting_for_receipt.data["pending_outbound_actions"])
         assert len(pending_effect_ids) == 1
@@ -532,7 +575,12 @@ async def test_actor_v3_active_chat_runs_review_handoff_round_and_receipt(
 
         now[0] = 240.0
         assert (await executor.run_once(lane=EffectLane.DEFAULT)).status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="outbound action receipt completion",
+        )
         settled = await actor_store.load(key)
         assert "pending_outbound_actions" not in settled.data
         assert "outbound_continuation" not in settled.data
@@ -703,7 +751,11 @@ async def test_actor_v3_receipt_gated_bootstrap_keeps_frozen_review_handoff(
         ),
         handlers=handlers,
         session_registry=registry,
-        renew_interval_seconds=None,
+        renew_interval_seconds=10.0,
+        review_execution_gate_store=SQLiteReviewExecutionGateStore(
+            database,
+            clock=lambda: now[0],
+        ),
         clock=lambda: now[0],
     )
 
@@ -723,7 +775,12 @@ async def test_actor_v3_receipt_gated_bootstrap_keeps_frozen_review_handoff(
                 occurred_at=100.0,
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="receipt-gated initial review message",
+        )
         planned = await actor_store.load(key)
 
         now[0] = 150.0
@@ -736,13 +793,23 @@ async def test_actor_v3_receipt_gated_bootstrap_keeps_frozen_review_handoff(
                 occurred_at=now[0],
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="receipt-gated review due delivery",
+        )
 
         now[0] = 200.0
         assert (
             await executor.run_once(lane=EffectLane.PLANNER)
         ).status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="receipt-gated review workflow completion",
+        )
         waiting_for_receipt = await actor_store.load(key)
         assert waiting_for_receipt.state == AgentSessionState.ACTIVE_CHAT
         assert (
@@ -781,7 +848,12 @@ async def test_actor_v3_receipt_gated_bootstrap_keeps_frozen_review_handoff(
                 occurred_at=now[0],
             )
         )
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="message buffered during receipt wait",
+        )
         buffered = await actor_store.load(key)
         assert buffered.active_chat_state["pending_message_log_ids"] == [
             later_message_log_id
@@ -802,7 +874,12 @@ async def test_actor_v3_receipt_gated_bootstrap_keeps_frozen_review_handoff(
         assert (
             await executor.run_once(lane=EffectLane.DEFAULT)
         ).status is EffectRunStatus.COMPLETED
-        await registry.wait_idle(key)
+        await wait_for_session_actor_idle(
+            database,
+            registry,
+            key,
+            checkpoint="receipt-gated outbound action completion",
+        )
 
         bootstrapping = await actor_store.load(key)
         bootstrap_operation_id = str(
