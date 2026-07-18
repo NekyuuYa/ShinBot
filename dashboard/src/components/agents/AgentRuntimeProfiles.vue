@@ -111,6 +111,47 @@
                     session.latestAudit ? session.latestAudit.timestamp : noValueLabel
                   }}</strong>
                 </div>
+                <section
+                  v-if="session.idleReviewPlanningDecisions.length > 0"
+                  class="idle-review-planning"
+                >
+                  <div class="runtime-meta-row">
+                    <span>{{ idleReviewPlanningLabel }}</span>
+                    <strong>{{ session.idleReviewPlanningDecisions.length }}</strong>
+                  </div>
+                  <article
+                    v-for="decision in session.idleReviewPlanningDecisions"
+                    :key="decision.signalId"
+                    class="planning-decision"
+                  >
+                    <div class="planning-decision-header">
+                      <span class="text-truncate">{{ decision.trigger }}</span>
+                      <v-chip
+                        size="x-small"
+                        variant="tonal"
+                        :color="planningOutcomeColor(decision)"
+                      >
+                        {{ planningOutcome(decision) }}
+                      </v-chip>
+                    </div>
+                    <div class="planning-decision-row">
+                      <span>{{ modelResultLabel }}</span>
+                      <strong>{{ planningModelDetail(decision) }}</strong>
+                    </div>
+                    <div class="planning-decision-row">
+                      <span>{{ applicationLabel }}</span>
+                      <strong>{{ planningApplicationDetail(decision) }}</strong>
+                    </div>
+                    <div class="planning-decision-row">
+                      <span>{{ nextReviewPlanLabel }}</span>
+                      <strong>{{ formatPlanningTimestamp(plannedReviewAt(decision)) }}</strong>
+                    </div>
+                    <div class="planning-decision-row">
+                      <span>{{ modelExecutionLabel }}</span>
+                      <strong>{{ decision.modelResult?.modelExecutionId || noValueLabel }}</strong>
+                    </div>
+                  </article>
+                </section>
                 <div class="session-actions mt-3">
                   <v-btn
                     v-if="session.state === 'idle'"
@@ -145,11 +186,15 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 
-import type { AgentRuntimePlatformState, AgentRuntimeProfile } from '@/api/agents'
+import type {
+  AgentRuntimeIdleReviewPlanningDecision,
+  AgentRuntimePlatformState,
+  AgentRuntimeProfile,
+} from '@/api/agents'
 
 const { t } = useI18n()
 
-defineProps<{
+const props = defineProps<{
   profiles: AgentRuntimeProfile[]
   bindingsLabel: string
   sessionsLabel: string
@@ -162,6 +207,11 @@ defineProps<{
   lastReviewLabel: string
   reviewNoteLabel: string
   lastAuditLabel: string
+  idleReviewPlanningLabel: string
+  modelResultLabel: string
+  applicationLabel: string
+  nextReviewPlanLabel: string
+  modelExecutionLabel: string
   noValueLabel: string
   triggerReviewLabel: string
   forceIdleLabel: string
@@ -206,6 +256,58 @@ function platformStatus(platformState: AgentRuntimePlatformState): {
     label: t('pages.sessions.connection.stopped'),
   }
 }
+
+function planningOutcome(decision: AgentRuntimeIdleReviewPlanningDecision): string {
+  return decision.application?.outcome || decision.modelResult?.outcome || t('pages.agents.labels.pending')
+}
+
+function planningOutcomeColor(decision: AgentRuntimeIdleReviewPlanningDecision): string {
+  const outcome = planningOutcome(decision)
+  if (outcome === 'discarded') {
+    return 'warning'
+  }
+  if (outcome.includes('fallback')) {
+    return 'secondary'
+  }
+  if (outcome.includes('failed')) {
+    return 'error'
+  }
+  if (outcome === 'applied_model_plan') {
+    return 'success'
+  }
+  return 'info'
+}
+
+function planningModelDetail(decision: AgentRuntimeIdleReviewPlanningDecision): string {
+  const result = decision.modelResult
+  if (!result) {
+    return t('pages.agents.labels.noValue')
+  }
+  return [result.outcome, result.reason, result.failureCode].filter(Boolean).join(' · ')
+    || t('pages.agents.labels.noValue')
+}
+
+function planningApplicationDetail(decision: AgentRuntimeIdleReviewPlanningDecision): string {
+  const application = decision.application
+  if (!application) {
+    return t('pages.agents.labels.pending')
+  }
+  return [
+    application.outcome,
+    application.decisionSkippedReason || application.reason,
+  ].filter(Boolean).join(' · ') || t('pages.agents.labels.noValue')
+}
+
+function plannedReviewAt(decision: AgentRuntimeIdleReviewPlanningDecision): number | null {
+  return decision.application?.appliedNextReviewAt
+    ?? decision.application?.modelPlanNextReviewAt
+    ?? decision.modelResult?.proposedNextReviewAt
+    ?? null
+}
+
+function formatPlanningTimestamp(value: number | null): string {
+  return value ? props.formatTimestamp(value) : t('pages.agents.labels.noValue')
+}
 </script>
 
 <style scoped lang="scss">
@@ -242,5 +344,51 @@ function platformStatus(platformState: AgentRuntimePlatformState): {
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid rgba(var(--v-border-color), 0.12);
+}
+
+.idle-review-planning {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--v-border-color), 0.12);
+}
+
+.planning-decision {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid rgba(var(--v-border-color), 0.14);
+  border-radius: 6px;
+}
+
+.planning-decision-header,
+.planning-decision-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.planning-decision-header {
+  align-items: center;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  font-size: $font-size-xs;
+  font-weight: 600;
+}
+
+.planning-decision-row {
+  padding-top: 6px;
+
+  span {
+    flex: 0 0 auto;
+    color: rgba(var(--v-theme-on-surface), 0.58);
+    font-size: $font-size-xs;
+  }
+
+  strong {
+    min-width: 0;
+    color: rgba(var(--v-theme-on-surface), 0.88);
+    font-size: $font-size-xs;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
 }
 </style>

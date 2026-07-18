@@ -6,6 +6,44 @@ export interface AgentRuntimePlatformState {
   available: boolean
 }
 
+export interface AgentRuntimeIdleReviewPlanningModelResult {
+  auditId: number
+  recordedAt: string
+  outcome: string
+  reason: string
+  failureCode: string
+  modelExecutionId: string
+  promptSignature: string
+  requestedNextReviewAfterSeconds: number | null
+  appliedNextReviewAfterSeconds: number | null
+  proposedNextReviewAt: number | null
+  proposedPlanReason: string
+}
+
+export interface AgentRuntimeIdleReviewPlanningApplication {
+  auditId: number
+  recordedAt: string
+  outcome: string
+  reason: string
+  modelPlanSupplied: boolean
+  modelPlanReason: string
+  modelPlanNextReviewAt: number | null
+  decisionSkippedReason: string
+  appliedPlanReason: string
+  appliedNextReviewAt: number | null
+  schedulerState: string
+}
+
+export interface AgentRuntimeIdleReviewPlanningDecision {
+  signalId: string
+  trigger: string
+  activeEpoch: number
+  checkedAt: number
+  latestAt: string
+  modelResult: AgentRuntimeIdleReviewPlanningModelResult | null
+  application: AgentRuntimeIdleReviewPlanningApplication | null
+}
+
 export interface Agent {
   uuid: string
   agentId: string
@@ -83,19 +121,12 @@ export interface AgentRuntimeSession {
   latestAudit: {
     id: number
     timestamp: string
-    entry_type: string
-    command_name: string
-    plugin_id: string
-    user_id: string
-    session_id: string
-    instance_id: string
-    permission_required: string
-    permission_granted: boolean
-    execution_time_ms: number
+    entryType: string
+    commandName: string
+    pluginId: string
     success: boolean
-    error: string
-    metadata: Record<string, unknown>
   } | null
+  idleReviewPlanningDecisions: AgentRuntimeIdleReviewPlanningDecision[]
 }
 
 export interface AgentRuntimeProfile {
