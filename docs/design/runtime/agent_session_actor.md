@@ -342,6 +342,9 @@ input unread. The first slice accepts at most one reply plus bound reactions;
 every action targets captured message-log IDs, while raw platform IDs and
 unbound pokes are rejected. After the actor accepts the completion, its intent
 becomes a receipt-fenced outbound effect; only that effect may call an adapter.
+The current v3 active-reply contract keeps the v2 selection fence but extends
+the bounded workflow budget to 180 seconds; v1/v2 records retain their original
+one-minute policy for replay and recovery.
 SQLite integration coverage proves
 the full high-priority-message -> workflow -> accepted intent -> receipt ->
 adapter-send -> assistant-log chain while the runtime remains inactive.
