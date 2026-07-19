@@ -699,26 +699,27 @@ def test_explicit_registration_uses_builtin_actor_workflow_contracts() -> None:
     )
     assert len({contract.ref for contract in active_contracts}) == len(active_contracts)
     assert len({contract.ref for contract in review_contracts}) == len(review_contracts)
-    versions = {contract.version for contract in active_contracts}
-    assert versions == {
-        contract.version for contract in review_contracts
-    }
-    for version in versions:
+    active_versions = {contract.version for contract in active_contracts}
+    review_versions = {contract.version for contract in review_contracts}
+    assert active_versions == {1, 2, 3}
+    assert review_versions == {1, 2}
+    for version in active_versions:
         active_contract, registered_active_handler = registry.resolve(
             "run_active_reply_workflow",
-            version,
-        )
-        review_contract, registered_review_handler = registry.resolve(
-            "run_review_workflow",
             version,
         )
         assert active_contract == builtin_effect_contract(
             "run_active_reply_workflow",
             version=version,
         )
+        assert registered_active_handler is active_handler
+    for version in review_versions:
+        review_contract, registered_review_handler = registry.resolve(
+            "run_review_workflow",
+            version,
+        )
         assert review_contract == builtin_effect_contract(
             "run_review_workflow",
             version=version,
         )
-        assert registered_active_handler is active_handler
         assert registered_review_handler is review_handler

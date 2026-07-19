@@ -770,7 +770,7 @@ async def test_clean_session_scope_activates_only_current_actor_native_contracts
     )
 
     try:
-        assert len(_CLEAN_SESSION_CONTRACTS) == 23
+        assert len(_CLEAN_SESSION_CONTRACTS) == 24
         assert len(_FULL_CONTRACTS) - len(_CLEAN_SESSION_CONTRACTS) == 13
         assert {contract.ref for contract in _FULL_CONTRACTS} - {
             contract.ref for contract in _CLEAN_SESSION_CONTRACTS

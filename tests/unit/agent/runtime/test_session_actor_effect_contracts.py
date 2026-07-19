@@ -14,6 +14,7 @@ from shinbot.agent.runtime.session_actor.effect_contracts import (
     EffectExecutionContract,
     EffectLane,
     builtin_clean_session_actor_v2_effect_contracts,
+    builtin_effect_contract,
     builtin_effect_contract_authority,
     validate_effect_declaration,
 )
@@ -51,6 +52,18 @@ def test_clean_session_contract_classification_is_explicit_and_exhaustive() -> N
     assert authority_refs == (
         ACTOR_V2_CLEAN_SESSION_EFFECT_REFS | ACTOR_V2_HISTORICAL_UNBOUND_EFFECT_REFS
     )
+
+
+def test_current_active_reply_contract_uses_a_bounded_slow_model_budget() -> None:
+    """New actor work may outlive the historical one-minute budget safely."""
+
+    historical = builtin_effect_contract("run_active_reply_workflow", version=2)
+    current = builtin_effect_contract("run_active_reply_workflow")
+
+    assert historical.timeout_seconds == 60.0
+    assert current.version == 3
+    assert current.timeout_seconds == 180.0
+    assert current.outcome_fence_fields == historical.outcome_fence_fields
 
 
 class _ContractText(StrEnum):

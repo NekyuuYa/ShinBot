@@ -1993,6 +1993,16 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[_ActorEffectContractExpectation, ...] = (
             "completion_event_id",
             "failure_event_id",
         },
+        v3_signature="aa98b6fb23c2cc735b66270bf6e5ff0092eab29a238d488b738b710dc62008b9",
+        v3_outcome_fence_fields={
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+        },
     ),
     _ActorEffectContractExpectation(
         "run_active_chat_bootstrap",

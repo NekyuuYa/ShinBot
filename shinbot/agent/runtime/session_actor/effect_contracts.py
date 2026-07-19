@@ -73,6 +73,7 @@ ACTOR_V2_CLEAN_SESSION_EFFECT_REFS: frozenset[tuple[str, int]] = frozenset(
         ("run_active_chat_round", 3),
         ("run_active_reply_workflow", 1),
         ("run_active_reply_workflow", 2),
+        ("run_active_reply_workflow", 3),
         ("run_idle_review_planning", 1),
         ("run_idle_review_planning", 2),
         ("run_idle_review_planning", 3),
@@ -1024,6 +1025,17 @@ def builtin_session_actor_effect_contracts() -> tuple[EffectExecutionContract, .
         if (outcome_fence_fields := _CURRENT_OUTCOME_FENCE_FIELDS.get(contract.effect_kind))
         is not None
     )
+    # Execution budgets are part of a durable contract signature. Keep the
+    # historical one-minute records recoverable and issue new replies as v3.
+    active_reply_budget_contracts = tuple(
+        replace(
+            contract,
+            version=3,
+            timeout_seconds=180.0,
+        )
+        for contract in current_contracts
+        if contract.effect_kind == "run_active_reply_workflow"
+    )
     actor_native_active_chat_contracts = tuple(
         replace(
             contract,
@@ -1055,6 +1067,7 @@ def builtin_session_actor_effect_contracts() -> tuple[EffectExecutionContract, .
     return (
         *legacy_contracts,
         *current_contracts,
+        *active_reply_budget_contracts,
         *actor_native_active_chat_contracts,
         *model_execution_cancellation_contracts,
     )

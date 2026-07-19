@@ -43,7 +43,7 @@ is deliberately more specific than `activationPermitted=false`, so a complete
 clean-session handler graph cannot be mistaken for a deployable cutover. Its
 `closed` and `shutdownComplete` fields are intentionally distinct for the same
 reason: a shutdown request is not evidence that actor workers have stopped.
-The graph registers the 23 actor-native contracts that have real
+The graph registers the 24 actor-native contracts that have real
 implementations and rejects unknown durable profiles instead of falling back to
 the default bot configuration. The 13 remaining historical Active Chat and
 control/reconciliation contracts remain deliberately unbound, so production
@@ -86,7 +86,7 @@ rows and leaves all 13 contracts unbound.
 
 The readiness snapshot reports both complete-history and clean-session handler
 coverage. Complete-history coverage remains false while the 13 old shapes are
-isolated. Clean-session coverage verifies the 23 contracts emitted by the
+isolated. Clean-session coverage verifies the 24 contracts emitted by the
 current actor-native reducer/handler graph and is currently complete. Neither
 status is an activation permit: ingress, timer, recovery, ownership, and
 management-command lifecycle gates remain independently closed.
