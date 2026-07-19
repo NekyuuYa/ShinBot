@@ -36,6 +36,7 @@ from shinbot.agent.runtime.legacy_signal_admission import (
     LegacyAgentSignalQuiescenceStatus,
 )
 from shinbot.agent.scheduler.models import ActiveChatDisposition, ReviewPlan
+from shinbot.agent.services.model_runtime import ModelCallError
 from shinbot.agent.signals import (
     AgentActiveChatBootstrapSignal,
     AgentSignal,
@@ -379,6 +380,56 @@ async def test_runtime_runs_active_reply_model_outside_session_lock(
         }
     finally:
         release_model.set()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_active_reply_input_after_model_failure(
+    tmp_path: Path,
+) -> None:
+    """A failed immediate decision leaves its exact input available to review."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime([])
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    session_id = "test-bot:group:group:1"
+    message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="active-reply-failure",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="@bot hello",
+            content_json="[]",
+            role="user",
+            created_at=10_000.0,
+            is_mentioned=True,
+        )
+    )
+
+    async def fail_active_reply_model(call: Any) -> None:
+        if call.purpose == "active_chat_fast":
+            raise ModelCallError("test active reply model failure")
+
+    model_runtime.on_generate = fail_active_reply_model
+
+    try:
+        await runtime.handle_agent_signal(
+            make_signal(message_log_id=message_log_id, is_mentioned=True)
+        )
+        task_prefix = f"agent:{profile.bot_id or profile.profile_id}:active_reply"
+        active_reply_tasks = runtime.task_manager.tasks(prefix=task_prefix)
+
+        assert len(active_reply_tasks) == 1
+        await asyncio.wait_for(active_reply_tasks[0], timeout=0.5)
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.IDLE
+        assert message_log_id in {
+            message.message_log_id
+            for message in runtime.agent_scheduler.unread_messages(session_id)
+        }
+    finally:
         await runtime.shutdown()
 
 
