@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -73,6 +74,7 @@ class ReviewStageRuntimeConfig:
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)
     max_model_retries: int = 1
     retry_backoff_seconds: float = 0.25
+    model_deadline_seconds: float | None = None
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any] | None) -> ReviewStageRuntimeConfig:
@@ -114,6 +116,9 @@ class ReviewStageRuntimeConfig:
                 value.get("retry_backoff_seconds"),
                 0.25,
             ),
+            model_deadline_seconds=_optional_positive_float(
+                value.get("model_deadline_seconds")
+            ),
         )
 
     def to_llm_config(
@@ -148,6 +153,7 @@ class ReviewStageRuntimeConfig:
             "tool_config": self.tool_config,
             "max_model_retries": self.max_model_retries,
             "retry_backoff_seconds": self.retry_backoff_seconds,
+            "model_deadline_seconds": self.model_deadline_seconds,
             "instance_config_resolver": instance_config_resolver,
             "model_target_resolver": model_target_resolver,
         }
@@ -440,6 +446,19 @@ def _float_or_default(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_positive_float(value: Any) -> float | None:
+    """Parse a positive timeout, with zero meaning no deadline."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed < 0:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _message_format_config(value: Any) -> MessageFormatConfig | None:

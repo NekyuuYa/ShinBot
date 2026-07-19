@@ -274,7 +274,35 @@ async def test_reply_decision_runner_collect_mode_rejects_bare_json_fallback() -
     assert result.replied is False
     assert result.external_action_intents == ()
     assert result.reason == "tool_call_plan_toolless"
+    assert result.consumption_deferred is True
     assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_defers_unconfirmed_bare_json_reply() -> None:
+    runner = LLMReplyDecisionStageRunner(
+        FakeModelRuntime(
+            ['{"replied": true, "reply_message_id": 42, "target_message_ids": [7]}']
+        ),
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=FakeReviewToolManager(),
+        max_repair_attempts=0,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [7]
+    assert result.reason == "llm_reply_decision_unconfirmed_json_output"
+    assert result.consumption_deferred is True
 
 
 @pytest.mark.asyncio
@@ -652,6 +680,7 @@ async def test_reply_decision_runner_defers_in_flight_slot_until_failed_send_rel
     old_result = await old_task
     assert old_result.replied is False
     assert old_result.reason == "reply_tool_failed:tool_execution_failed"
+    assert old_result.consumption_deferred is True
 
     retried_result = await make_runner("retry", "retry reply").run(stage_input)
 
@@ -871,6 +900,7 @@ async def test_reply_decision_runner_ignores_standalone_poke() -> None:
 
     assert result.replied is False
     assert result.reason == "llm_reply_decision_no_terminal_tool"
+    assert result.consumption_deferred is True
     assert tool_manager.execute_calls == []
 
 

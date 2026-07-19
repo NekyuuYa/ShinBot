@@ -142,6 +142,34 @@ class BlockingInvokeBackend(RecordingBackend):
         return super().invoke(plan)
 
 
+class FailingThenBlockingInvokeBackend(RecordingBackend):
+    """Consume most of the deadline before forcing route fallback."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_started = threading.Event()
+        self.second_started = threading.Event()
+        self.release_first = threading.Event()
+        self.release_second = threading.Event()
+        self._call_count = 0
+
+    def invoke(self, plan: BackendRequestPlan) -> dict[str, object]:
+        self._call_count += 1
+        call_number = self._call_count
+        self.plans.append(plan)
+        if call_number == 1:
+            self.first_started.set()
+            self.release_first.wait(timeout=5.0)
+            raise RuntimeError("first route member failed")
+        self.second_started.set()
+        self.release_second.wait(timeout=5.0)
+        return {
+            "model": plan.backend_model,
+            "choices": [{"message": {"content": "late fallback response"}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+        }
+
+
 def _seed_runtime(db: DatabaseManager) -> None:
     db.model_registry.upsert_provider(
         ModelProviderRecord(
@@ -652,6 +680,127 @@ async def test_generate_cancellation_is_audited_and_propagated(tmp_path):
     error_events = [event for event in observer_events if event.get("status") == "error"]
     assert len(error_events) == 1
     assert error_events[0]["error"]["code"] == "CancelledError"
+
+
+@pytest.mark.asyncio
+async def test_generate_deadline_releases_blocked_backend_and_persists_timeout(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    backend = BlockingInvokeBackend()
+    runtime = ModelRuntime(db, backend=backend)
+    observer_events: list[dict[str, object]] = []
+    runtime.register_observer(observer_events.append)
+
+    try:
+        with pytest.raises(ModelCallError, match="Model call exceeded its 0.020s deadline"):
+            await asyncio.wait_for(
+                runtime.generate(
+                    ModelRuntimeCall(
+                        route_id="agent.default_chat",
+                        caller="agent.runtime",
+                        purpose="deadline_test",
+                        deadline_seconds=0.02,
+                        messages=[{"role": "user", "content": "deadline me"}],
+                    )
+                ),
+                timeout=0.5,
+            )
+        assert backend.started.is_set()
+
+        records = db.model_executions.list_recent(limit=5)
+        assert len(records) == 1
+        assert records[0]["success"] is False
+        assert records[0]["error_code"] == "ModelCallDeadlineExceeded"
+        assert records[0]["metadata"]["model_deadline_seconds"] == 0.02
+
+        audit_path = tmp_path / "model-audit" / f"{records[0]['id']}.json"
+        payload = json.loads(audit_path.read_text(encoding="utf-8"))
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "ModelCallDeadlineExceeded"
+        assert payload["request"]["deadline_seconds"] == 0.02
+
+        error_events = [event for event in observer_events if event.get("status") == "error"]
+        assert len(error_events) == 1
+        assert error_events[0]["deadline_seconds"] == 0.02
+
+        backend.release.set()
+        for _ in range(100):
+            if backend.plans:
+                break
+            await asyncio.sleep(0.01)
+        assert len(backend.plans) == 1
+    finally:
+        backend.release.set()
+
+
+@pytest.mark.asyncio
+async def test_generate_deadline_limits_backend_timeout(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    backend = RecordingBackend()
+    runtime = ModelRuntime(db, backend=backend)
+
+    await runtime.generate(
+        ModelRuntimeCall(
+            model_id="openai-main/gpt-fast",
+            caller="agent.runtime",
+            deadline_seconds=3.5,
+            messages=[{"role": "user", "content": "limit backend timeout"}],
+        )
+    )
+
+    assert backend.plans[0].payload["timeout"] == pytest.approx(3.5, abs=0.1)
+    records = db.model_executions.list_recent(limit=5)
+    assert records[0]["metadata"]["model_deadline_seconds"] == 3.5
+
+
+@pytest.mark.asyncio
+async def test_generate_deadline_is_shared_across_route_fallbacks(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    backend = FailingThenBlockingInvokeBackend()
+    runtime = ModelRuntime(db, backend=backend)
+    task = asyncio.create_task(
+        runtime.generate(
+            ModelRuntimeCall(
+                route_id="agent.default_chat",
+                caller="agent.runtime",
+                deadline_seconds=0.2,
+                messages=[{"role": "user", "content": "shared deadline"}],
+            )
+        )
+    )
+
+    try:
+        for _ in range(100):
+            if backend.first_started.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert backend.first_started.is_set()
+        await asyncio.sleep(0.15)
+        backend.release_first.set()
+
+        for _ in range(100):
+            if backend.second_started.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert backend.second_started.is_set()
+        with pytest.raises(ModelCallError, match="Model call exceeded its 0.200s deadline"):
+            await asyncio.wait_for(task, timeout=0.5)
+
+        records = db.model_executions.list_recent(limit=5)
+        assert len(records) == 2
+        assert records[0]["error_code"] == "ModelCallDeadlineExceeded"
+        assert records[1]["error_code"] == "RuntimeError"
+    finally:
+        backend.release_first.set()
+        backend.release_second.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

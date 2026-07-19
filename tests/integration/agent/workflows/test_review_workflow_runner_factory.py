@@ -239,6 +239,7 @@ async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
                     PromptStage.CONSTRAINTS: ["review.scan.contract"],
                 },
                 params={"temperature": 0},
+                model_deadline_seconds=12.0,
             ),
             reply_decision=ReviewStageRuntimeConfig(enabled=False),
             overflow_compression=ReviewStageRuntimeConfig(enabled=False),
@@ -261,6 +262,7 @@ async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
     assert model_runtime.calls[0].model_id == "model-a"
     assert model_runtime.calls[0].caller == "test.review"
     assert model_runtime.calls[0].params == {"temperature": 0}
+    assert model_runtime.calls[0].deadline_seconds == 12.0
 
 
 def test_review_runtime_config_loads_plain_mapping() -> None:
@@ -278,6 +280,7 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
                     "unknown": ["ignored"],
                 },
                 "params": {"temperature": 0},
+                "model_deadline_seconds": 12,
             },
             "reply_decision": {
                 "special_prompt_ids": {"repair": "custom.reply.repair"},
@@ -297,12 +300,22 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
         PromptStage.CONSTRAINTS: ["review.contract"],
     }
     assert config.review_scan.params == {"temperature": 0}
+    assert config.review_scan.model_deadline_seconds == 12.0
     assert config.reply_decision.enabled is True
     assert config.reply_decision.special_prompt_ids == {"repair": "custom.reply.repair"}
     assert config.active_chat_bootstrap.enabled is False
     assert config.active_chat_bootstrap.params == {}
     assert config.idle_review_planning.enabled is False
     assert config.idle_review_planning.params == {"temperature": 0}
+
+
+@pytest.mark.parametrize("value", [float("nan"), -1, "invalid"])
+def test_review_stage_runtime_config_ignores_invalid_model_deadline(value) -> None:
+    config = ReviewStageRuntimeConfig.from_mapping(
+        {"model_deadline_seconds": value}
+    )
+
+    assert config.model_deadline_seconds is None
 
 
 @pytest.mark.asyncio

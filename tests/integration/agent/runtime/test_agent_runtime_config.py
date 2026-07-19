@@ -41,6 +41,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                     "llm": "[route]route-default",
                     "max_model_retries": 2,
                     "retry_backoff_seconds": 0.5,
+                    "model_deadline_seconds": 45,
                     "params": {"temperature": 0.2},
                     "message_format": {
                         "image_mode": "thumbnail",
@@ -51,18 +52,21 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                 "review": {
                     "scan_batch_size": 7,
                     "reply_commit_timeout_seconds": 0.25,
+                    "deferred_consumption_retry_after_seconds": 17,
                     "mention_wake_count": 3,
                     "default_review_after_seconds": 12,
                     "default_review_reason": "e2e_fast_review",
                     "review_due_tick_interval_seconds": 0.5,
                     "scan": {
                         "llm": "[model]model-scan",
+                        "model_deadline_seconds": 8,
                         "prompts": {
                             "system": "review.custom.system",
                             "task": ["review.custom.task"],
                         },
                     },
                     "reply_decision": {
+                        "model_deadline_seconds": 0,
                         "prompts": {
                             "repair": "review.reply_decision.repair",
                         },
@@ -95,6 +99,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                     },
                     "fast_mode": {
                         "llm": "[route]route-fast",
+                        "model_deadline_seconds": 9,
                         "source_context_before_messages": 12,
                         "params": {"top_p": 0.8},
                         "tools": {
@@ -116,6 +121,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.default_message_format_config.inject_record_id is True
     assert config.review_workflow_config.review_scan_batch_size == 7
     assert config.review_workflow_config.reply_commit_timeout_seconds == 0.25
+    assert config.review_workflow_config.deferred_consumption_retry_after_seconds == 17
     assert config.review_workflow_config.active_chat_summary_max_age_seconds == 999
     assert config.summary_markdown_config.enabled is True
     assert config.summary_markdown_config.directory == tmp_path / "summary-docs"
@@ -126,8 +132,11 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.review_runtime_config.review_scan.llm == "[model]model-scan"
     assert config.review_runtime_config.review_scan.default_llm == "[route]route-default"
     assert config.review_runtime_config.review_scan.max_model_retries == 2
+    assert config.review_runtime_config.review_scan.model_deadline_seconds == 8
     assert config.review_runtime_config.reply_decision.llm == ""
     assert config.review_runtime_config.reply_decision.default_llm == "[route]route-default"
+    assert config.review_runtime_config.reply_decision.model_deadline_seconds is None
+    assert config.review_runtime_config.overflow_compression.model_deadline_seconds == 45
     assert config.review_runtime_config.reply_decision.tool_config.extra_names == (
         "search_memory",
     )
@@ -151,6 +160,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.active_chat_fast_runner_config.llm == "[route]route-fast"
     assert config.active_chat_fast_runner_config.default_llm == "[route]route-default"
     assert config.active_chat_fast_runner_config.source_context_before_messages == 12
+    assert config.active_chat_fast_runner_config.model_deadline_seconds == 9
     assert config.active_chat_fast_runner_config.special_prompt_ids == {}
     assert config.active_chat_fast_runner_config.params == {
         "temperature": 0.2,

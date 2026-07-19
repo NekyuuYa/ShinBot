@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -79,6 +80,7 @@ _REVIEW_STAGE_NAMES = (
     "active_chat_bootstrap",
     "idle_review_planning",
 )
+_DEFAULT_MODEL_DEADLINE_SECONDS = 120.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -400,6 +402,10 @@ def _review_workflow_config(
             review.get("bootstrap_timeout_seconds"),
             20.0,
         ),
+        deferred_consumption_retry_after_seconds=_float(
+            review.get("deferred_consumption_retry_after_seconds"),
+            30.0,
+        ),
         idle_review_planning_min_after_seconds=_float(
             review.get("idle_review_planning_min_after_seconds"),
             30.0,
@@ -585,6 +591,10 @@ def _review_stage_config(
             _first(value, defaults_llm, key="retry_backoff_seconds"),
             0.25,
         ),
+        model_deadline_seconds=_optional_positive_float(
+            _first(value, defaults_llm, key="model_deadline_seconds"),
+            default=_DEFAULT_MODEL_DEADLINE_SECONDS,
+        ),
     )
 
 
@@ -613,6 +623,10 @@ def _active_chat_fast_runner_config(
             value.get("source_context_before_messages"),
             50,
         ),
+        model_deadline_seconds=_optional_positive_float(
+            _first(value, defaults_llm, key="model_deadline_seconds"),
+            default=_DEFAULT_MODEL_DEADLINE_SECONDS,
+        ),
     )
 
 
@@ -623,6 +637,7 @@ def _llm_defaults_config(defaults: dict[str, Any]) -> dict[str, Any]:
         "profile_id": defaults.get("profile_id"),
         "max_model_retries": defaults.get("max_model_retries"),
         "retry_backoff_seconds": defaults.get("retry_backoff_seconds"),
+        "model_deadline_seconds": defaults.get("model_deadline_seconds"),
         "params": defaults.get("params"),
     }
 
@@ -1046,6 +1061,21 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_positive_float(value: Any, *, default: float | None) -> float | None:
+    """Return a positive timeout, treating zero as an explicit opt-out."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed) or parsed < 0:
+        return default
+    return parsed if parsed > 0 else None
 
 
 def with_source_path(config: AgentRuntimeConfig, source_path: Path | str) -> AgentRuntimeConfig:

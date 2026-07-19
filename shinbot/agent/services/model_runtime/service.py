@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import random
 import uuid
 from collections.abc import Callable
@@ -34,6 +35,7 @@ from .types import (
     EmbedResult,
     GenerateResult,
     ImageResult,
+    ModelCallDeadlineExceeded,
     ModelCallError,
     ModelRuntimeCall,
     ModelRuntimeObserver,
@@ -88,6 +90,7 @@ class ModelRuntime:
         )
         self._random = random.Random()
         self._observers: list[ModelRuntimeObserver] = []
+        self._detached_backend_tasks: set[asyncio.Task[Any]] = set()
 
     def register_observer(self, observer: ModelRuntimeObserver) -> None:
         """Register an observer to receive model runtime events.
@@ -346,10 +349,20 @@ class ModelRuntime:
             call=call,
             picker=self._random,
         )
+        deadline_seconds = _normalize_deadline_seconds(call.deadline_seconds)
+        deadline_at = (
+            asyncio.get_running_loop().time() + deadline_seconds
+            if deadline_seconds is not None
+            else None
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
+            remaining_deadline_seconds = _remaining_deadline_seconds(deadline_at)
+            if remaining_deadline_seconds is not None and remaining_deadline_seconds <= 0:
+                last_error = ModelCallDeadlineExceeded(deadline_seconds or 0.0)
+                break
             execution_id = str(uuid.uuid4())
             started = utc_now()
             started_at = started.isoformat()
@@ -358,11 +371,19 @@ class ModelRuntime:
             plan: BackendRequestPlan | None = None
             success_persisted = False
             try:
+                backend_timeout_seconds = (
+                    _effective_backend_timeout_seconds(
+                        attempt.get("timeout_override"),
+                        remaining_deadline_seconds,
+                    )
+                    if remaining_deadline_seconds is not None
+                    else attempt["timeout_override"]
+                )
                 plan = self._backend.plan_request(
                     provider=attempt["provider"],
                     model=attempt["model"],
                     call=call,
-                    timeout_override=attempt["timeout_override"],
+                    timeout_override=backend_timeout_seconds,
                     operation=mode,
                 )
                 logger.debug(
@@ -381,6 +402,16 @@ class ModelRuntime:
                         trace_id=call.metadata.get("trace_id"),
                         fallback_from_model_id=previous_model_id,
                         backend=plan.backend_name,
+                        deadline_seconds=(
+                            f"{remaining_deadline_seconds:.3f}"
+                            if remaining_deadline_seconds is not None
+                            else ""
+                        ),
+                        backend_timeout_seconds=(
+                            f"{backend_timeout_seconds:.3f}"
+                            if backend_timeout_seconds is not None
+                            else ""
+                        ),
                     )
                 )
                 await self._notify_observers(
@@ -392,7 +423,18 @@ class ModelRuntime:
                         plan=plan,
                     )
                 )
-                response = await asyncio.to_thread(self._backend.invoke, plan)
+                invoke_deadline_seconds = _remaining_deadline_seconds(deadline_at)
+                if invoke_deadline_seconds is not None and invoke_deadline_seconds <= 0:
+                    raise ModelCallDeadlineExceeded(deadline_seconds or 0.0)
+                response = await self._invoke_backend(
+                    plan,
+                    deadline_at=deadline_at,
+                    deadline_budget_seconds=deadline_seconds,
+                    execution_id=execution_id,
+                    caller=call.caller,
+                    purpose=call.purpose,
+                    session_id=call.session_id,
+                )
                 finished = utc_now()
                 finished_at = finished.isoformat()
                 latency_ms = (finished - started).total_seconds() * 1000
@@ -564,6 +606,136 @@ class ModelRuntime:
             )
         )
         raise ModelCallError(str(last_error) if last_error else failure_message)
+
+    async def _invoke_backend(
+        self,
+        plan: BackendRequestPlan,
+        *,
+        deadline_at: float | None,
+        deadline_budget_seconds: float | None,
+        execution_id: str,
+        caller: str,
+        purpose: str,
+        session_id: str,
+    ) -> Any:
+        """Run one backend call and detach a late worker without blocking the caller.
+
+        ``asyncio.to_thread`` cannot forcibly stop a synchronous backend once it
+        starts.  The deadline therefore releases the state machine promptly,
+        records the failed attempt, and observes the late worker result without
+        accepting it as a valid model decision.
+        """
+        if deadline_at is None:
+            return await asyncio.to_thread(self._backend.invoke, plan)
+
+        deadline_seconds = _remaining_deadline_seconds(deadline_at)
+        if deadline_seconds is None or deadline_seconds <= 0:
+            raise ModelCallDeadlineExceeded(deadline_budget_seconds or 0.0)
+        task = asyncio.create_task(
+            asyncio.to_thread(self._backend.invoke, plan),
+            name=f"model-backend-invoke:{execution_id}",
+        )
+        try:
+            done, _pending = await asyncio.wait((task,), timeout=deadline_seconds)
+        except asyncio.CancelledError:
+            self._detach_backend_task(
+                task,
+                execution_id=execution_id,
+                caller=caller,
+                purpose=purpose,
+                session_id=session_id,
+                disposition="caller_cancelled",
+            )
+            raise
+        if task in done:
+            # The loop may wake after the timeout while a worker is completing.
+            # Rejecting that result is conservative, but preserves the hard
+            # deadline contract instead of allowing a stale decision through.
+            if (_remaining_deadline_seconds(deadline_at) or 0.0) <= 0:
+                self._detach_backend_task(
+                    task,
+                    execution_id=execution_id,
+                    caller=caller,
+                    purpose=purpose,
+                    session_id=session_id,
+                    disposition="deadline_exceeded",
+                )
+                raise ModelCallDeadlineExceeded(deadline_budget_seconds or 0.0)
+            return task.result()
+
+        self._detach_backend_task(
+            task,
+            execution_id=execution_id,
+            caller=caller,
+            purpose=purpose,
+            session_id=session_id,
+            disposition="deadline_exceeded",
+        )
+        raise ModelCallDeadlineExceeded(deadline_budget_seconds or 0.0)
+
+    def _detach_backend_task(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        execution_id: str,
+        caller: str,
+        purpose: str,
+        session_id: str,
+        disposition: str,
+    ) -> None:
+        """Observe a backend task whose result is no longer accepted."""
+        if task.done():
+            try:
+                task.result()
+            except (asyncio.CancelledError, Exception):
+                pass
+            return
+
+        self._detached_backend_tasks.add(task)
+
+        def _on_complete(completed: asyncio.Task[Any]) -> None:
+            self._detached_backend_tasks.discard(completed)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                logger.debug(
+                    format_log_event(
+                        "model.call.late_completion_discarded",
+                        execution_id=execution_id,
+                        caller=caller,
+                        purpose=purpose,
+                        session_id=session_id,
+                        disposition=disposition,
+                        completion="cancelled",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    format_log_event(
+                        "model.call.late_completion_discarded",
+                        execution_id=execution_id,
+                        caller=caller,
+                        purpose=purpose,
+                        session_id=session_id,
+                        disposition=disposition,
+                        completion="error",
+                        error_code=type(exc).__name__,
+                    )
+                )
+            else:
+                logger.warning(
+                    format_log_event(
+                        "model.call.late_completion_discarded",
+                        execution_id=execution_id,
+                        caller=caller,
+                        purpose=purpose,
+                        session_id=session_id,
+                        disposition=disposition,
+                        completion="success",
+                    )
+                )
+
+        task.add_done_callback(_on_complete)
 
     async def _record_failed_attempt(
         self,
@@ -792,6 +964,7 @@ class ModelRuntime:
             "model_id": attempt["model"]["id"],
             "backend_model": attempt["model"]["backend_model"],
             "strategy": attempt["strategy"],
+            "deadline_seconds": call.deadline_seconds,
         }
 
     def _build_execution_metadata(
@@ -806,6 +979,8 @@ class ModelRuntime:
         include_usage_raw: bool = False,
     ) -> dict[str, Any]:
         metadata = {"route_strategy": attempt["strategy"]}
+        if call.deadline_seconds is not None:
+            metadata["model_deadline_seconds"] = call.deadline_seconds
         if include_response_model:
             metadata["response_model"] = maybe_get(response, "model")
         if include_usage_raw:
@@ -853,6 +1028,7 @@ class ModelRuntime:
                     "response_format": sanitize_payload_for_audit(call.response_format),
                     "params": sanitize_payload_for_audit(call.params),
                     "metadata": sanitize_payload_for_audit(call.metadata),
+                    "deadline_seconds": call.deadline_seconds,
                     "kwargs": sanitize_payload_for_audit(
                         plan.safe_payload if plan is not None else {}
                     ),
@@ -955,3 +1131,51 @@ class ModelRuntime:
                     await result
             except Exception:
                 logger.exception("Model runtime observer failed for event %s", payload.get("event"))
+
+
+def _normalize_deadline_seconds(value: float | None) -> float | None:
+    """Normalize a call deadline, where zero explicitly disables it."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Model call deadline must be a finite number")
+    try:
+        deadline_seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Model call deadline must be a finite number") from exc
+    if not math.isfinite(deadline_seconds) or deadline_seconds < 0:
+        raise ValueError("Model call deadline must be a non-negative finite number")
+    return deadline_seconds if deadline_seconds > 0 else None
+
+
+def _remaining_deadline_seconds(deadline_at: float | None) -> float | None:
+    """Return the remaining duration for an absolute event-loop deadline."""
+    if deadline_at is None:
+        return None
+    return deadline_at - asyncio.get_running_loop().time()
+
+
+def _effective_backend_timeout_seconds(
+    route_timeout_seconds: object,
+    deadline_seconds: float | None,
+) -> float | None:
+    """Return the tighter provider timeout for a deadline-bounded call."""
+    normalized_route_timeout = _positive_timeout_seconds(route_timeout_seconds)
+    if deadline_seconds is None:
+        return normalized_route_timeout
+    if normalized_route_timeout is None:
+        return deadline_seconds
+    return min(normalized_route_timeout, deadline_seconds)
+
+
+def _positive_timeout_seconds(value: object) -> float | None:
+    """Return a valid positive timeout from persisted route configuration."""
+    if isinstance(value, bool):
+        return None
+    try:
+        timeout_seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        return None
+    return timeout_seconds

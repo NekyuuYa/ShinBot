@@ -29,6 +29,7 @@ class ReviewWorkflowConfig:
     provisional_active_chat_half_life_seconds: float = 20.0
     reply_commit_timeout_seconds: float = 20.0
     active_chat_bootstrap_timeout_seconds: float = 20.0
+    deferred_consumption_retry_after_seconds: float = 30.0
     idle_review_planning_min_after_seconds: float = 30.0
     idle_review_planning_max_after_seconds: float = 3600.0
 
@@ -93,6 +94,7 @@ class ReviewSchedulerCommitIntent:
     session_id: str
     review_run_id: str
     expected_review_plan: ReviewPlan
+    next_review_plan: ReviewPlan | None = None
     consumed_ranges: tuple[ConsumedUnreadRange, ...] = ()
     enter_active_chat: bool = False
     active_chat_initial_interest: float | None = None
@@ -188,6 +190,7 @@ class ReviewScanResult:
     batch_count: int = 0
     compressed_ranges: list[UnreadRangeSummaryRecord] = field(default_factory=list)
     ignored_ranges: list[UnreadRangeIgnoreRecord] = field(default_factory=list)
+    consumption_deferred: bool = False
 
 
 @dataclass(slots=True, frozen=True)

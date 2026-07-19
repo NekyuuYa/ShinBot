@@ -19,6 +19,7 @@ class ModelRuntimeCall:
     instance_id: str = ""
     prompt_snapshot_id: str = ""
     purpose: str = ""
+    deadline_seconds: float | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
     input_data: str | list[str] | None = None
     tools: list[dict[str, Any]] = field(default_factory=list)
@@ -104,6 +105,19 @@ class VideoResult:
 
 class ModelCallError(RuntimeError):
     """Model invocation failure after route resolution/fallback."""
+
+
+class ModelCallDeadlineExceeded(TimeoutError):
+    """A model invocation exceeded its configured runtime deadline."""
+
+    def __init__(self, deadline_seconds: float) -> None:
+        """Create an error with the effective deadline duration.
+
+        Args:
+            deadline_seconds: Maximum allowed duration for the model call.
+        """
+        self.deadline_seconds = deadline_seconds
+        super().__init__(f"Model call exceeded its {deadline_seconds:.3f}s deadline")
 
 
 @dataclass(slots=True)

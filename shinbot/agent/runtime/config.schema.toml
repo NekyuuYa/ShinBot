@@ -85,6 +85,13 @@ min = 0.0
 description = "Default model retry backoff in seconds."
 
 [[fields]]
+path = "agent.defaults.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Hard deadline for one logical Agent model decision across route fallback; zero disables it."
+
+[[fields]]
 path = "agent.defaults.params"
 type = "object"
 default = {}
@@ -257,6 +264,13 @@ min = 0.0
 description = "Timeout for active chat bootstrap review."
 
 [[fields]]
+path = "agent.review.deferred_consumption_retry_after_seconds"
+type = "float"
+default = 30.0
+min = 1.0
+description = "Delay before retrying a review whose model or tool decision could not safely consume unread input."
+
+[[fields]]
 path = "agent.review.mention_wake_count"
 type = "integer"
 default = 1
@@ -354,6 +368,13 @@ min = 0.0
 description = "Model retry backoff for overflow compression."
 
 [[fields]]
+path = "agent.review.overflow_compression.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Override model decision deadline for overflow compression; zero disables it."
+
+[[fields]]
 path = "agent.review.overflow_compression.prompts"
 type = "object"
 default = {}
@@ -408,6 +429,13 @@ min = 0.0
 description = "Model retry backoff for review scan."
 
 [[fields]]
+path = "agent.review.scan.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Override model decision deadline for review scan; zero disables it."
+
+[[fields]]
 path = "agent.review.scan.prompts"
 type = "object"
 default = {}
@@ -460,6 +488,13 @@ type = "float"
 default = 0.25
 min = 0.0
 description = "Model retry backoff for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Override model decision deadline for block digest; zero disables it."
 
 [[fields]]
 path = "agent.review.block_digest.prompts"
@@ -528,6 +563,13 @@ min = 0.0
 description = "Model retry backoff for reply decision."
 
 [[fields]]
+path = "agent.review.reply_decision.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Override model decision deadline for reply decision; zero disables it."
+
+[[fields]]
 path = "agent.review.reply_decision.prompts"
 type = "object"
 default = {}
@@ -590,6 +632,13 @@ min = 0.0
 description = "Model retry backoff for active chat bootstrap."
 
 [[fields]]
+path = "agent.review.active_chat_bootstrap.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Override model decision deadline for active chat bootstrap; zero disables it."
+
+[[fields]]
 path = "agent.review.active_chat_bootstrap.prompts"
 type = "object"
 default = {}
@@ -642,6 +691,13 @@ type = "float"
 default = 0.25
 min = 0.0
 description = "Model retry backoff for ACTIVE_CHAT to IDLE review planning."
+
+[[fields]]
+path = "agent.review.idle_review_planning.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Override model decision deadline for ACTIVE_CHAT to IDLE review planning; zero disables it."
 
 [[fields]]
 path = "agent.review.idle_review_planning.prompts"
@@ -936,6 +992,13 @@ type = "object"
 default = {}
 advanced = true
 description = "Model params for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.model_deadline_seconds"
+type = "float"
+default = 120.0
+min = 0.0
+description = "Override model decision deadline for active chat and active reply; zero disables it."
 
 [[fields]]
 path = "agent.active_chat.fast_mode.source_context_before_messages"

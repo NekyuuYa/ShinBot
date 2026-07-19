@@ -74,6 +74,7 @@ def test_runner_template_config_defaults() -> None:
     assert cfg.response_format is None
     assert cfg.component_ids_by_stage == {}
     assert cfg.params == {}
+    assert cfg.model_deadline_seconds is None
 
 
 def test_runner_template_config_custom() -> None:
@@ -226,6 +227,23 @@ async def test_structured_output_runner_passes_params() -> None:
     await runner.run(_stage_input())
     call_args = model_runtime.generate.call_args[0][0]
     assert call_args.params == {"temperature": 0.3}
+
+
+@pytest.mark.asyncio
+async def test_structured_output_runner_passes_model_deadline() -> None:
+    registry = _mock_prompt_registry()
+    model_runtime = AsyncMock()
+    model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
+    runner = StructuredOutputRunner(
+        model_runtime,
+        prompt_registry=registry,
+        config=RunnerTemplateConfig(model_deadline_seconds=17.5),
+    )
+
+    await runner.run(_stage_input())
+
+    call_args = model_runtime.generate.call_args[0][0]
+    assert call_args.deadline_seconds == 17.5
 
 
 @pytest.mark.asyncio

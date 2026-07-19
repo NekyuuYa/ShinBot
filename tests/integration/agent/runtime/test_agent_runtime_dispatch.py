@@ -638,6 +638,59 @@ async def test_runtime_fences_review_scheduler_commit(
 
 
 @pytest.mark.asyncio
+async def test_runtime_commits_deferred_review_to_idle_with_retry_plan(
+    tmp_path: Path,
+) -> None:
+    """A failed review must retain work and schedule a near-term idle retry."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    coordinator = profile.review_coordinator
+    assert coordinator is not None
+    commit_handler = coordinator._scheduler_commit_handler
+    assert commit_handler is not None
+    session_id = "test-bot:group:deferred-review"
+    current_plan = ReviewPlan(
+        session_id=session_id,
+        next_review_at=60.0,
+        reason="review_fence_test",
+        updated_at=10.0,
+    )
+    retry_plan = ReviewPlan(
+        session_id=session_id,
+        next_review_at=90.0,
+        reason="review_deferred_consumption_retry",
+        updated_at=60.0,
+    )
+    scheduler = profile.agent_scheduler
+    scheduler._state_store.set_state(session_id, AgentState.REVIEW)
+    scheduler._state_store.set_review_plan(current_plan)
+    try:
+        decision = await commit_handler(
+            ReviewSchedulerCommitIntent(
+                kind=ReviewSchedulerCommitKind.COMPLETE_REVIEW,
+                session_id=session_id,
+                review_run_id="deferred-review-test",
+                expected_review_plan=current_plan,
+                next_review_plan=retry_plan,
+                enter_active_chat=False,
+            )
+        )
+
+        assert decision.accepted is True
+        assert decision.completion is not None
+        assert decision.completion.returned_to_idle is True
+        assert scheduler.state_for(session_id) == AgentState.IDLE
+        persisted_retry_plan = scheduler.review_plan_for(session_id)
+        assert persisted_retry_plan is not None
+        assert persisted_retry_plan.next_review_at == 90.0
+        assert persisted_retry_plan.reason == "review_deferred_consumption_retry"
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_runtime_rejects_stale_review_scheduler_commit(
     tmp_path: Path,
 ) -> None:

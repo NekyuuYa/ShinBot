@@ -114,6 +114,22 @@ def test_builtin_agent_config_provider_is_registered(tmp_path: Path):
         "回复提交等待超时"
     )
     assert defaults.json()["data"]["agent"]["review"]["reply_commit_timeout_seconds"] == 20.0
+    deferred_retry = fields_by_path[
+        "agent.review.deferred_consumption_retry_after_seconds"
+    ]
+    assert deferred_retry["default"] == 30.0
+    assert deferred_retry["min"] == 1.0
+    assert deferred_retry["metadata"]["i18n"]["zh-CN"]["label"] == "未消费审阅重试延迟"
+    assert (
+        defaults.json()["data"]["agent"]["review"][
+            "deferred_consumption_retry_after_seconds"
+        ]
+        == 30.0
+    )
+    model_deadline = fields_by_path["agent.defaults.model_deadline_seconds"]
+    assert model_deadline["default"] == 120.0
+    assert model_deadline["metadata"]["i18n"]["zh-CN"]["label"] == "默认模型决策截止时间"
+    assert defaults.json()["data"]["agent"]["defaults"]["model_deadline_seconds"] == 120.0
     assert "agent.active_chat.initial_interest" in {
         field["path"] for field in payload["fields"]
     }

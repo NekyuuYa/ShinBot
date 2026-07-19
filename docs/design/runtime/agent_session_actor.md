@@ -134,6 +134,40 @@ the target contract. Compatibility adapters may exist during migration, but no
 new Actor v2 state-mutation path may bypass this contract.  Until activation,
 the legacy runtime intentionally continues to own its existing mutation paths.
 
+## Model Decision Deadlines
+
+The shared `ModelRuntime` accepts an optional `ModelRuntimeCall.deadline_seconds`
+budget. Agent review stages and the legacy active-chat/active-reply runner pass
+this budget from `model_deadline_seconds`; the standard Agent configuration
+defaults it to 120 seconds, permits a per-stage override, and treats `0` as an
+explicit opt-out. The budget is shared by route fallback attempts, so a slow
+first provider cannot multiply a decision's total wait time.
+
+The deadline is enforced at the backend invocation boundary, not around a
+whole workflow. It also tightens the provider transport timeout for that call.
+On expiry, the runtime persists and audits `ModelCallDeadlineExceeded`, returns
+a normal model failure to the runner, and leaves scheduler/workflow recovery to
+the existing typed failure paths. It does not cancel or wrap tool execution,
+adapter sends, or scheduler commits.
+
+Some synchronous provider clients cannot be force-cancelled once their worker
+thread has started. In that case the runtime tracks the worker, discards its
+late result, and records that disposition without allowing the stale model
+decision to produce a tool action. This makes deadline expiry a bounded state
+transition even when a provider is not cooperative.
+
+## Legacy Review Failure Recovery
+
+The live legacy review coordinator treats a missing or malformed scan decision,
+an unconfirmed reply action, and a model/tool failure as non-terminal. Those
+paths set `consumption_deferred`, retain the affected unread interval, skip
+active-chat bootstrap, and complete back to `IDLE` with the explicit
+`review_deferred_consumption_retry` plan. The plan uses
+`agent.review.deferred_consumption_retry_after_seconds` (30 seconds by
+default), rather than waiting for active-chat interest decay and the normal
+review interval. This is a compatibility recovery boundary; it still commits
+through the runtime session mutex and review-plan fence.
+
 ## Invariants
 
 After Actor v2 activation for a session:

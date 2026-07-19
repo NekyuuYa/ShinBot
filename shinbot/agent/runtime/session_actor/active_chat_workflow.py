@@ -540,6 +540,7 @@ def _actor_template_config(
         tool_config=routing.tool_config,
         max_model_retries=0,
         retry_backoff_seconds=getattr(routing, "retry_backoff_seconds", 0.25),
+        model_deadline_seconds=getattr(routing, "model_deadline_seconds", None),
         instance_config_resolver=getattr(routing, "instance_config_resolver", None),
         model_target_resolver=getattr(routing, "model_target_resolver", None),
     )

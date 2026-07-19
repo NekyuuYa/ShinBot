@@ -33,6 +33,7 @@ class ReviewLLMRunnerConfig:
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)
     max_model_retries: int = 1
     retry_backoff_seconds: float = 0.25
+    model_deadline_seconds: float | None = None
     instance_config_resolver: InstanceRuntimeConfigResolver | None = None
     model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None
 

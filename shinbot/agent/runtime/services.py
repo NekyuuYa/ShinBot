@@ -1332,6 +1332,7 @@ class AgentRuntime:
                     active_chat_decay_half_life_seconds=(
                         intent.active_chat_decay_half_life_seconds
                     ),
+                    next_review_plan=intent.next_review_plan,
                 )
                 if completion.skipped_reason is not None:
                     return ReviewSchedulerCommitDecision(

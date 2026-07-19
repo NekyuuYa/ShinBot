@@ -108,6 +108,7 @@ class LLMReplyDecisionStageRunner:
                 tool_config=routing.tool_config,
                 max_model_retries=routing.max_model_retries,
                 retry_backoff_seconds=routing.retry_backoff_seconds,
+                model_deadline_seconds=routing.model_deadline_seconds,
                 instance_config_resolver=routing.instance_config_resolver,
                 model_target_resolver=routing.model_target_resolver,
             ),
@@ -141,7 +142,11 @@ class LLMReplyDecisionStageRunner:
         plan = await self._template.run(stage_input)
         if plan.reason in ("tool_call_plan_build_failed", "tool_call_plan_llm_failed"):
             return _with_plan_provenance(
-                ReplyDecisionStageOutput(reason="llm_reply_decision_failed"),
+                ReplyDecisionStageOutput(
+                    target_message_ids=_candidate_message_ids_from_stage(stage_input),
+                    reason="llm_reply_decision_failed",
+                    consumption_deferred=True,
+                ),
                 plan,
             )
         if plan.has_tool_calls:
@@ -149,35 +154,40 @@ class LLMReplyDecisionStageRunner:
                 await self._run_tool_decision(stage_input, plan),
                 plan,
             )
-        # Actor intent collection has no executable fallback path. A bare JSON
-        # response is not a terminal tool decision and must leave its captured
-        # input unconsumed for the Actor workflow to fail closed.
-        if (
-            plan.text
-            and self._external_action_mode is ExternalActionToolMode.EXECUTE
-        ):
-            payload = parse_json_object(plan.text)
-            if payload is not None:
+        # A bare JSON payload can only be a terminal legacy decision when it
+        # explicitly declines a reply for this exact candidate window. It
+        # cannot prove that a visible reply was sent.
+        candidate_ids = _candidate_message_ids_from_stage(stage_input)
+        legacy_payload = (
+            parse_json_object(plan.text)
+            if plan.text and self._external_action_mode is ExternalActionToolMode.EXECUTE
+            else None
+        )
+        if legacy_payload is not None:
+            if _is_terminal_no_reply_json(legacy_payload, candidate_ids=candidate_ids):
                 return _with_plan_provenance(
                     ReplyDecisionStageOutput(
-                        replied=bool(payload.get("replied")),
-                        reply_message_id=optional_int(payload.get("reply_message_id")),
-                        reply_message_ids=_reply_message_ids_from_payload(payload),
-                        target_message_ids=int_list(payload.get("target_message_ids")),
-                        reason=str(payload.get("reason") or "llm_reply_decision"),
+                        target_message_ids=candidate_ids,
+                        reason=str(
+                            legacy_payload.get("reason") or "llm_reply_decision"
+                        ),
                     ),
                     plan,
                 )
-        candidate_ids = _candidate_message_ids_from_stage(stage_input)
         reason = (
-            "llm_reply_decision_toolless_after_repair"
-            if plan.reason == "tool_call_plan_toolless_after_repair"
-            else (plan.reason or "llm_reply_decision_failed")
+            "llm_reply_decision_unconfirmed_json_output"
+            if legacy_payload is not None
+            else (
+                "llm_reply_decision_toolless_after_repair"
+                if plan.reason == "tool_call_plan_toolless_after_repair"
+                else (plan.reason or "llm_reply_decision_failed")
+            )
         )
         return _with_plan_provenance(
             ReplyDecisionStageOutput(
                 target_message_ids=candidate_ids,
                 reason=reason,
+                consumption_deferred=True,
             ),
             plan,
         )
@@ -192,7 +202,9 @@ class LLMReplyDecisionStageRunner:
             and self._tool_manager is None
         ):
             return ReplyDecisionStageOutput(
-                reason="llm_reply_tool_call_skipped_no_tool_manager"
+                target_message_ids=_candidate_message_ids_from_stage(stage_input),
+                reason="llm_reply_tool_call_skipped_no_tool_manager",
+                consumption_deferred=True,
             )
 
         target_message_ids = _candidate_message_ids_from_stage(stage_input)
@@ -206,6 +218,7 @@ class LLMReplyDecisionStageRunner:
             return ReplyDecisionStageOutput(
                 target_message_ids=target_message_ids,
                 reason=reaction_validation_error,
+                consumption_deferred=True,
             )
         quote_validation_error = _reply_quote_validation_error(
             stage_input,
@@ -216,6 +229,7 @@ class LLMReplyDecisionStageRunner:
             return ReplyDecisionStageOutput(
                 target_message_ids=target_message_ids,
                 reason=quote_validation_error,
+                consumption_deferred=True,
             )
         if self._external_action_mode is ExternalActionToolMode.COLLECT_INTENTS:
             return _collect_reply_external_action_intents(
@@ -271,6 +285,7 @@ class LLMReplyDecisionStageRunner:
                 return ReplyDecisionStageOutput(
                     target_message_ids=target_message_ids,
                     reason=f"reply_tool_failed:{tool_result.error_code}",
+                    consumption_deferred=True,
                 )
             if _tool_result_in_flight(tool_result.output):
                 return ReplyDecisionStageOutput(
@@ -283,6 +298,7 @@ class LLMReplyDecisionStageRunner:
                     return ReplyDecisionStageOutput(
                         target_message_ids=target_message_ids,
                         reason="reply_tool_failed:reply_not_committed",
+                        consumption_deferred=True,
                     )
                 reply_committed = True
                 replied = True
@@ -322,6 +338,7 @@ class LLMReplyDecisionStageRunner:
         return ReplyDecisionStageOutput(
             target_message_ids=target_message_ids,
             reason="llm_reply_decision_no_terminal_tool",
+            consumption_deferred=True,
         )
 
 
@@ -348,6 +365,7 @@ def _collect_reply_external_action_intents(
                     "reply_external_action_invalid:unsupported_tool:"
                     f"{tool_name or 'missing'}"
                 ),
+                consumption_deferred=True,
             )
         if tool_name == "send_poke" and not reply_accepted:
             continue
@@ -365,6 +383,7 @@ def _collect_reply_external_action_intents(
                     f"reply_external_action_invalid:{tool_name}:"
                     f"{type(exc).__name__}"
                 ),
+                consumption_deferred=True,
             )
         intents.append(intent)
         if tool_name == "send_reply":
@@ -395,6 +414,7 @@ def _collect_reply_external_action_intents(
     return ReplyDecisionStageOutput(
         target_message_ids=target_message_ids,
         reason="llm_reply_decision_no_terminal_tool",
+        consumption_deferred=True,
     )
 
 
@@ -444,6 +464,31 @@ def _candidate_message_ids_from_stage(stage_input: ReviewStageInput) -> list[int
     if isinstance(values, list):
         return int_list(values)
     return int_list([stage_input.metadata.get("candidate_message_id")])
+
+
+def _is_terminal_no_reply_json(
+    payload: dict[str, Any] | None,
+    *,
+    candidate_ids: list[int],
+) -> bool:
+    """Return whether a legacy JSON payload safely declines this exact window."""
+
+    if payload is None or payload.get("replied") is not False:
+        return False
+    raw_target_ids = payload.get("target_message_ids")
+    if not isinstance(raw_target_ids, list):
+        return False
+    target_ids = int_list(raw_target_ids)
+    if (
+        len(target_ids) != len(raw_target_ids)
+        or len(set(target_ids)) != len(target_ids)
+        or set(target_ids) != set(candidate_ids)
+    ):
+        return False
+    if payload.get("reply_message_id") is not None:
+        return False
+    raw_reply_message_ids = payload.get("reply_message_ids")
+    return raw_reply_message_ids in (None, [])
 
 
 def _review_action_idempotency_key(

@@ -140,6 +140,14 @@ class _DeferredConsumptionReplyRunner:
         )
 
 
+class _DeferredConsumptionScanRunner:
+    async def run(self, _stage_input) -> ReviewScanStageOutput:
+        return ReviewScanStageOutput(
+            reason="llm_review_scan_failed",
+            consumption_deferred=True,
+        )
+
+
 class _CommittedThenFailingReviewToolManager(FakeReviewToolManager):
     def __init__(self) -> None:
         super().__init__()
@@ -546,7 +554,10 @@ async def test_review_defers_candidate_consumption_while_reply_is_in_flight(tmp_
     )
     scheduler.prepare_due_review(session_id, now=10.0)
     workflow = ReviewCoordinator(
-        ReviewWorkflowConfig(review_scan_batch_size=1),
+        ReviewWorkflowConfig(
+            review_scan_batch_size=1,
+            deferred_consumption_retry_after_seconds=5.0,
+        ),
         message_store=DatabaseReviewMessageStore(db),
         scan_runner=FixedCandidateScanRunner([message_id]),
         reply_runner=_DeferredConsumptionReplyRunner(),
@@ -562,6 +573,68 @@ async def test_review_defers_candidate_consumption_while_reply_is_in_flight(tmp_
 
     assert result.reply.consumption_deferred is True
     assert result.consumed_ranges == []
+    assert result.completion is not None
+    assert result.completion.state == AgentState.IDLE
+    assert result.bootstrap.reason == "review_deferred_consumption_retry"
+    next_plan = scheduler.review_plan_for(session_id)
+    assert next_plan is not None
+    assert next_plan.next_review_at == 15.0
+    assert next_plan.reason == "review_deferred_consumption_retry"
+    assert [item.message_log_id for item in scheduler.unread_messages(session_id)] == [
+        message_id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_review_defers_unread_consumption_when_scan_model_fails(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "bot:group:room"
+    message_id = _insert_message(db, raw_text="scan must be retried", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id=session_id,
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review(session_id, now=10.0)
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=1,
+            deferred_consumption_retry_after_seconds=5.0,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        scan_runner=_DeferredConsumptionScanRunner(),
+        now=lambda: 10.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id=session_id,
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages(session_id),
+    )
+
+    assert result.scan.consumption_deferred is True
+    assert result.consumed_ranges == []
+    assert result.completion is not None
+    assert result.completion.state == AgentState.IDLE
+    assert result.bootstrap.reason == "review_deferred_consumption_retry"
+    next_plan = scheduler.review_plan_for(session_id)
+    assert next_plan is not None
+    assert next_plan.next_review_at == 15.0
+    assert next_plan.reason == "review_deferred_consumption_retry"
     assert [item.message_log_id for item in scheduler.unread_messages(session_id)] == [
         message_id
     ]
@@ -1476,11 +1549,14 @@ async def test_review_scan_persists_progress_per_batch_on_interrupt(tmp_path) ->
     # messages → batches [m1,m2], [m3,m4], [m5]; it fails on the 2nd batch).
     failing_scan_runner = _InterruptingReviewScanRunner(fail_on_call=2)
     workflow = ReviewCoordinator(
-        ReviewWorkflowConfig(review_scan_batch_size=2),
+        ReviewWorkflowConfig(
+            review_scan_batch_size=2,
+            deferred_consumption_retry_after_seconds=5.0,
+        ),
         message_store=DatabaseReviewMessageStore(db),
         scan_runner=failing_scan_runner,
         context_builder=RecordingReviewContextBuilder(),
-        now=lambda: 5.0,
+        now=lambda: 10.0,
     )
 
     result = await workflow.run(
@@ -1495,6 +1571,13 @@ async def test_review_scan_persists_progress_per_batch_on_interrupt(tmp_path) ->
     # resumes from the checkpoint instead of re-scanning the whole backlog.
     assert result.failed is True
     assert failing_scan_runner.calls == 2
+    assert result.completion is not None
+    assert result.completion.state == AgentState.IDLE
+    assert result.bootstrap.reason == "review_failed_retry_scheduled"
+    next_plan = scheduler.review_plan_for("bot:group:room")
+    assert next_plan is not None
+    assert next_plan.next_review_at == 15.0
+    assert next_plan.reason == "review_deferred_consumption_retry"
     remaining = [
         message.message_log_id
         for message in scheduler.unread_messages("bot:group:room")

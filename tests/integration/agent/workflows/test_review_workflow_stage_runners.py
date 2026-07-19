@@ -23,6 +23,13 @@ from review_workflow_support import (
     pytest,
 )
 
+from shinbot.agent.services.model_runtime import ModelCallError
+
+
+class _FailingModelRuntime:
+    async def generate(self, _call):
+        raise ModelCallError("simulated review model failure")
+
 
 def test_database_review_store_reads_review_windows(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -92,7 +99,7 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
         [
             '{"summary": "old context", "candidate_message_ids": [1, "2"], "reason": "compressed"}',
             '{"candidate_message_ids": [3, 3], "reason": "selected"}',
-            '{"replied": true, "reply_message_id": 10, "target_message_ids": [3], "reason": "reply"}',
+            '{"replied": false, "reply_message_id": null, "target_message_ids": [3], "reason": "no reply"}',
             '{"disposition": "engaged", "reason": "chat"}',
         ]
     )
@@ -135,9 +142,9 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
     assert compression.reason == "compressed"
     assert scan.candidate_message_ids == [3, 3]
     assert scan.reason == "selected"
-    assert reply.replied is True
-    assert reply.reply_message_id == 10
-    assert reply.reply_message_ids == [10]
+    assert reply.replied is False
+    assert reply.reply_message_id is None
+    assert reply.reply_message_ids == []
     assert reply.target_message_ids == [3]
     assert bootstrap.disposition == ActiveChatDisposition.ENGAGED
     assert model_runtime.calls[0].route_id == "route-a"
@@ -260,6 +267,91 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
     assert call.metadata["review_stage"] == "review_scan"
     assert call.metadata["batch"] == 1
     assert "review.review_scan.instruction" in call.metadata["prompt_component_ids"]
+
+
+@pytest.mark.asyncio
+async def test_review_scan_runner_defers_consumption_when_model_call_fails() -> None:
+    runner = LLMReviewScanStageRunner(
+        _FailingModelRuntime(),
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="review_scan",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+        )
+    )
+
+    assert result.candidate_message_ids == []
+    assert result.reason == "llm_review_scan_failed"
+    assert result.consumption_deferred is True
+
+
+@pytest.mark.asyncio
+async def test_review_scan_runner_defers_consumption_on_missing_candidate_decision() -> None:
+    runner = LLMReviewScanStageRunner(
+        FakeModelRuntime(['{"reason": "missing candidate ids"}']),
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="review_scan",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+        )
+    )
+
+    assert result.candidate_message_ids == []
+    assert result.reason == "llm_review_scan_invalid_output"
+    assert result.consumption_deferred is True
+
+
+@pytest.mark.asyncio
+async def test_review_scan_runner_defers_consumption_on_invalid_candidate_ids() -> None:
+    runner = LLMReviewScanStageRunner(
+        FakeModelRuntime(['{"candidate_message_ids": [999], "reason": "selected"}']),
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="review_scan",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+        )
+    )
+
+    assert result.candidate_message_ids == []
+    assert result.reason == "llm_review_scan_invalid_output"
+    assert result.consumption_deferred is True
+
+
+@pytest.mark.asyncio
+async def test_review_reply_runner_defers_consumption_when_model_call_fails() -> None:
+    runner = LLMReplyDecisionStageRunner(
+        _FailingModelRuntime(),
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_id": 7, "candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.target_message_ids == [7]
+    assert result.reason == "llm_reply_decision_failed"
+    assert result.consumption_deferred is True
 
 
 @pytest.mark.asyncio

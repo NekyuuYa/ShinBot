@@ -142,6 +142,7 @@ class RunnerTemplateBase:
                             session_id=stage_input.session_id,
                             instance_id=instance_id,
                             purpose=stage_input.purpose,
+                            deadline_seconds=self._config.model_deadline_seconds,
                             messages=messages,
                             tools=tools,
                             response_format=response_format,

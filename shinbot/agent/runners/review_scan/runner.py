@@ -22,6 +22,14 @@ _SCAN_RESPONSE_FORMAT = json_schema_response_format(
     ["candidate_message_ids", "reason"],
 )
 
+_CANDIDATE_ID_KEYS = (
+    "candidate_message_ids",
+    "candidate_msg_log_ids",
+    "selected_msg_log_ids",
+    "selected_message_log_ids",
+    "message_log_ids",
+)
+
 class ReviewScanStageRunner(Protocol):
     """Select candidate message ids from one review_scan stage input."""
 
@@ -76,6 +84,7 @@ class LLMReviewScanStageRunner:
                 tool_config=routing.tool_config,
                 max_model_retries=routing.max_model_retries,
                 retry_backoff_seconds=routing.retry_backoff_seconds,
+                model_deadline_seconds=routing.model_deadline_seconds,
                 instance_config_resolver=routing.instance_config_resolver,
                 model_target_resolver=routing.model_target_resolver,
             ),
@@ -93,19 +102,31 @@ class LLMReviewScanStageRunner:
             stage_input: Review stage input with conversation context.
 
         Returns:
-            An output containing candidate message ids selected by the model,
-            or an empty output on failure.
+            An output containing candidate message ids selected by the model.
+            A failed model call defers unread consumption for a later review.
         """
         payload = await self._template.run(stage_input)
         if payload is None:
-            return ReviewScanStageOutput(reason="llm_review_scan_failed")
+            return ReviewScanStageOutput(
+                reason="llm_review_scan_failed",
+                consumption_deferred=True,
+            )
+        candidate_ids = _candidate_message_ids_from_payload(payload)
+        if candidate_ids is None or not _candidate_ids_belong_to_source(
+            candidate_ids,
+            stage_input.source_messages,
+        ):
+            return ReviewScanStageOutput(
+                reason="llm_review_scan_invalid_output",
+                consumption_deferred=True,
+            )
         message_format_config = self._config.message_format_config
         self_platform_id = _resolve_self_platform_id(
             stage_input.metadata,
             message_format_config.self_platform_id if message_format_config is not None else "",
         )
         candidate_ids = _filter_candidate_message_ids(
-            _candidate_message_ids_from_payload(payload),
+            candidate_ids,
             stage_input.source_messages,
             self_platform_id,
             message_formatter=self._message_formatter,
@@ -117,19 +138,35 @@ class LLMReviewScanStageRunner:
         )
 
 
-def _candidate_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:
-    """Extract candidate ids from the scan payload, accepting observed aliases."""
-    for key in (
-        "candidate_message_ids",
-        "candidate_msg_log_ids",
-        "selected_msg_log_ids",
-        "selected_message_log_ids",
-        "message_log_ids",
-    ):
-        values = int_list(payload.get(key))
-        if values:
-            return values
-    return []
+def _candidate_message_ids_from_payload(payload: dict[str, Any]) -> list[int] | None:
+    """Parse one explicit candidate decision without silently dropping invalid IDs."""
+
+    for key in _CANDIDATE_ID_KEYS:
+        if key not in payload:
+            continue
+        raw_values = payload[key]
+        if not isinstance(raw_values, list):
+            return None
+        values = int_list(raw_values)
+        if len(values) != len(raw_values) or any(value <= 0 for value in values):
+            return None
+        return values
+    return None
+
+
+def _candidate_ids_belong_to_source(
+    candidate_ids: list[int],
+    source_messages: list[dict[str, Any]],
+) -> bool:
+    """Reject a model selection that points outside the scanned batch."""
+
+    source_ids = {
+        message_id
+        for message in source_messages
+        if (message_id := message.get("id")) is not None
+        if isinstance(message_id, int) and not isinstance(message_id, bool)
+    }
+    return not source_ids or set(candidate_ids).issubset(source_ids)
 
 
 def _resolve_self_platform_id(metadata: dict[str, Any], configured: str) -> str:

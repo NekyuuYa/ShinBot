@@ -14,6 +14,7 @@ class ReviewScanStageOutput:
 
     candidate_message_ids: list[int] = field(default_factory=list)
     reason: str = "noop_review_scan"
+    consumption_deferred: bool = False
 
 
 @dataclass(slots=True, frozen=True)

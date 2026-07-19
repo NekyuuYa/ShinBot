@@ -81,6 +81,7 @@ class LLMOverflowCompressionStageRunner:
                 tool_config=routing.tool_config,
                 max_model_retries=routing.max_model_retries,
                 retry_backoff_seconds=routing.retry_backoff_seconds,
+                model_deadline_seconds=routing.model_deadline_seconds,
                 instance_config_resolver=routing.instance_config_resolver,
                 model_target_resolver=routing.model_target_resolver,
             ),

@@ -87,6 +87,7 @@ logger = get_logger(__name__, source="agent:review", color="green")
 _REPLY_COMMIT_CANCELLATION_GRACE_SECONDS = 0.1
 _REPLY_COMMIT_DEFAULT_TIMEOUT_SECONDS = 20.0
 _LATE_REPLY_COMMIT_SHUTDOWN_TIMEOUT_SECONDS = 0.1
+_DEFERRED_CONSUMPTION_RETRY_REASON = "review_deferred_consumption_retry"
 
 
 @dataclass(slots=True)
@@ -322,14 +323,20 @@ class ReviewCoordinator:
                         expected_review_plan=review_plan,
                     )
                 raise
+            consumption_deferred = (
+                scan.consumption_deferred or reply.consumption_deferred
+            )
             commit = await self._commit_review_completion(
                 scheduler=scheduler,
                 session_id=session_id,
                 review_run_id=review_run_id,
                 expected_review_plan=review_plan,
                 consumed_ranges=(
-                    [] if reply.consumption_deferred else consumed_ranges
+                    []
+                    if consumption_deferred
+                    else consumed_ranges
                 ),
+                consumption_deferred=consumption_deferred,
             )
             completion = commit.completion
             if completion is None:
@@ -350,6 +357,24 @@ class ReviewCoordinator:
                     ),
                     review_started_at=started_at,
                     completion=completion,
+                    stage_traces=stage_traces,
+                )
+            if consumption_deferred:
+                return ReviewWorkflowResult(
+                    review_run_id=review_run_id,
+                    scan=scan,
+                    reply=reply,
+                    bootstrap=ActiveChatBootstrapResult(
+                        reason=_DEFERRED_CONSUMPTION_RETRY_REASON,
+                    ),
+                    review_started_at=started_at,
+                    completion=completion,
+                    consumed_ranges=applied_consumed_ranges,
+                    consumed_range_ids=[
+                        item.range_id
+                        for item in applied_consumed_ranges
+                        if item.range_id is not None
+                    ],
                     stage_traces=stage_traces,
                 )
             bootstrap = self._schedule_active_chat_bootstrap(
@@ -394,6 +419,7 @@ class ReviewCoordinator:
                 review_run_id=review_run_id,
                 expected_review_plan=review_plan,
                 consumed_ranges=[],
+                consumption_deferred=True,
             )
             completion = commit.completion
             if completion is None:
@@ -401,17 +427,7 @@ class ReviewCoordinator:
                     "review failure commit returned no scheduler decision"
                 ) from exc
             bootstrap = ActiveChatBootstrapResult(
-                reason="review_failed_provisional_active_chat",
-                active_chat_interest_value=(
-                    completion.active_chat_state.interest_value
-                    if completion.active_chat_state is not None
-                    else None
-                ),
-                active_chat_decay_half_life_seconds=(
-                    completion.active_chat_state.decay_half_life_seconds
-                    if completion.active_chat_state is not None
-                    else None
-                ),
+                reason="review_failed_retry_scheduled",
             )
             return ReviewWorkflowResult(
                 review_run_id=review_run_id,
@@ -520,9 +536,18 @@ class ReviewCoordinator:
         review_run_id: str,
         expected_review_plan: ReviewPlan,
         consumed_ranges: list[ConsumedUnreadRange],
+        consumption_deferred: bool = False,
     ) -> ReviewSchedulerCommitDecision:
         """Submit terminal review completion and unread consumption together."""
 
+        next_review_plan = (
+            self._deferred_consumption_retry_plan(
+                session_id=session_id,
+                previous_plan=expected_review_plan,
+            )
+            if consumption_deferred
+            else None
+        )
         return await self._submit_scheduler_commit(
             scheduler=scheduler,
             intent=ReviewSchedulerCommitIntent(
@@ -530,8 +555,9 @@ class ReviewCoordinator:
                 session_id=session_id,
                 review_run_id=review_run_id,
                 expected_review_plan=expected_review_plan,
+                next_review_plan=next_review_plan,
                 consumed_ranges=tuple(consumed_ranges),
-                enter_active_chat=True,
+                enter_active_chat=not consumption_deferred,
                 active_chat_initial_interest=self._config.provisional_active_chat_interest,
                 active_chat_decay_half_life_seconds=(
                     self._config.provisional_active_chat_half_life_seconds
@@ -584,6 +610,7 @@ class ReviewCoordinator:
                 active_chat_decay_half_life_seconds=(
                     intent.active_chat_decay_half_life_seconds
                 ),
+                next_review_plan=intent.next_review_plan,
             )
             if completion.skipped_reason is not None:
                 return ReviewSchedulerCommitDecision(
@@ -600,6 +627,33 @@ class ReviewCoordinator:
                 consumed_ranges=tuple(applied),
             )
         raise RuntimeError(f"unsupported review scheduler commit: {intent.kind!r}")
+
+    def _deferred_consumption_retry_plan(
+        self,
+        *,
+        session_id: str,
+        previous_plan: ReviewPlan,
+    ) -> ReviewPlan:
+        """Build a near-term retry plan without entering active chat.
+
+        A model or tool decision that cannot prove terminal handling must retain
+        its unread input. It also needs a dedicated timer; relying on the
+        legacy active-chat decay path can delay recovery for the normal review
+        interval.
+        """
+
+        delay = self._config.deferred_consumption_retry_after_seconds
+        if not math.isfinite(delay) or delay <= 0:
+            delay = 30.0
+        scheduled_at = self._now()
+        return ReviewPlan(
+            session_id=session_id,
+            next_review_at=scheduled_at + delay,
+            reason=_DEFERRED_CONSUMPTION_RETRY_REASON,
+            mention_sensitivity=previous_plan.mention_sensitivity,
+            active_reply_threshold=previous_plan.active_reply_threshold,
+            updated_at=scheduled_at,
+        )
 
     async def shutdown(self) -> None:
         """Cancel coordinator-owned background tasks with a bounded late-reply wait."""
@@ -712,6 +766,7 @@ class ReviewCoordinator:
             scan_reasons,
             consumed_ranges,
             block_digest_tasks,
+            scan_consumption_deferred,
         ) = await self._load_scan_batches(
             scheduler=scheduler,
             session_id=session_id,
@@ -746,6 +801,7 @@ class ReviewCoordinator:
                 stage_input_count=stage_input_count,
                 batch_count=batch_count,
                 compressed_ranges=compressed_ranges,
+                consumption_deferred=scan_consumption_deferred,
             ),
             consumed_ranges,
             block_digests,
@@ -1210,9 +1266,17 @@ class ReviewCoordinator:
         trace_by_message_id: dict[int, str],
         self_platform_id: str = "",
         use_partial_consumption: bool = False,
-    ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange], list[asyncio.Task[ReviewBlockDigestStageOutput]]]:
+    ) -> tuple[
+        int,
+        int,
+        list[int],
+        list[str],
+        list[ConsumedUnreadRange],
+        list[asyncio.Task[ReviewBlockDigestStageOutput]],
+        bool,
+    ]:
         if self._message_store is None or max_messages <= 0:
-            return 0, 0, [], [], [], []
+            return 0, 0, [], [], [], [], False
 
         remaining = max_messages
         loaded_count = 0
@@ -1221,6 +1285,7 @@ class ReviewCoordinator:
         candidate_message_ids: list[int] = []
         scan_reasons: list[str] = []
         consumed_ranges: list[ConsumedUnreadRange] = []
+        consumption_deferred = False
         block_digest_tasks: list[asyncio.Task[ReviewBlockDigestStageOutput]] = []
         block_digest_semaphore = asyncio.Semaphore(
             max(1, self._config.review_block_digest_concurrency)
@@ -1298,7 +1363,13 @@ class ReviewCoordinator:
                         stage_output = await self._run_scan_stage(stage_input)
                         stage_traces.append(_trace_for_scan(stage_input, stage_output))
                         candidate_message_ids.extend(stage_output.candidate_message_ids)
-                        defer_batch_consumption = bool(stage_output.candidate_message_ids)
+                        defer_batch_consumption = bool(
+                            stage_output.candidate_message_ids
+                            or stage_output.consumption_deferred
+                        )
+                        consumption_deferred = (
+                            consumption_deferred or stage_output.consumption_deferred
+                        )
                         if stage_output.reason.strip():
                             scan_reasons.append(stage_output.reason.strip())
                     # Persist progress for this batch immediately so a forced
@@ -1327,6 +1398,7 @@ class ReviewCoordinator:
             scan_reasons,
             consumed_ranges,
             block_digest_tasks,
+            consumption_deferred,
         )
 
     async def _load_tail_history(

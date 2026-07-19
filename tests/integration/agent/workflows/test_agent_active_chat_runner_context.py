@@ -53,6 +53,7 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
         prompt_registry=prompt_registry,
         tool_manager=tool_manager,
         message_store=FakeMessageStore(),
+        config=ActiveChatFastRunnerConfig(model_deadline_seconds=22.0),
     )
 
     result = await runner.run(make_batch())
@@ -66,6 +67,7 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
     ]
     assert tool_names == ["send_reply", "no_reply", "exit_active"]
     assert model_runtime.calls[0].purpose == "active_chat_fast"
+    assert model_runtime.calls[0].deadline_seconds == 22.0
     assert model_runtime.calls[0].metadata["message_log_ids"] == [101]
     assert model_runtime.calls[0].metadata["review_result_summary"] == {
         "summary": "review found a running topic"

@@ -84,6 +84,7 @@ class ActiveChatFastRunnerConfig:
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)
     message_format_config: MessageFormatConfig | None = None
     source_context_before_messages: int = 50
+    model_deadline_seconds: float | None = None
     instance_config_resolver: InstanceRuntimeConfigResolver | None = None
     model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None
     external_action_mode: ExternalActionToolMode = ExternalActionToolMode.EXECUTE
@@ -643,6 +644,7 @@ class ActiveChatFastRunner:
                         session_id=batch.session_id,
                         instance_id=instance_id,
                         purpose="active_chat_fast",
+                        deadline_seconds=self._config.model_deadline_seconds,
                         messages=messages,
                         tools=tools,
                         response_format=None,
