@@ -1180,6 +1180,21 @@ class AgentRuntime:
         scheduler = profile.agent_scheduler
         async with self._session_signal_lock(intent.session_id):
             current_state = scheduler.state_for(intent.session_id)
+            if current_state == AgentState.ACTIVE_REPLY:
+                # The legacy active-reply adapter temporarily borrows the
+                # active-chat runner, but it does not install scheduler-owned
+                # ActiveChatState. A successful round still owns an exact
+                # message selection and must consume it before its terminal
+                # ACTIVE_REPLY transition. Otherwise the next review sees the
+                # already-handled mention again and can issue a second reply.
+                scheduler.mark_active_chat_consumed(
+                    intent.session_id,
+                    list(intent.consumed_message_log_ids),
+                )
+                return active_chat_coordinator_models.ActiveChatRoundCommitDecision(
+                    session_id=intent.session_id,
+                    accepted=True,
+                )
             active_chat_state = scheduler.active_chat_state_for(intent.session_id)
             if current_state != AgentState.ACTIVE_CHAT:
                 return active_chat_coordinator_models.ActiveChatRoundCommitDecision(

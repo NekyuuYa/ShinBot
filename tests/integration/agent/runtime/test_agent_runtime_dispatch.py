@@ -369,6 +369,14 @@ async def test_runtime_runs_active_reply_model_outside_session_lock(
         release_model.set()
         await asyncio.wait_for(active_reply_tasks[0], timeout=0.5)
         assert runtime.agent_scheduler.state_for(session_id) == AgentState.IDLE
+        assert first_message_log_id not in {
+            message.message_log_id
+            for message in runtime.agent_scheduler.unread_messages(session_id)
+        }
+        assert second_message_log_id in {
+            message.message_log_id
+            for message in runtime.agent_scheduler.unread_messages(session_id)
+        }
     finally:
         release_model.set()
         await runtime.shutdown()
