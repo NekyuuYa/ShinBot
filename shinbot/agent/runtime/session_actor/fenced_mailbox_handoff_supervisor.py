@@ -407,6 +407,24 @@ class FencedMailboxHandoffSupervisor:
         return self._runtime_id
 
     @property
+    def request(self) -> FencedMailboxWakeRequest:
+        """Return the immutable owner request supervised by this instance."""
+
+        return self._request
+
+    @property
+    def target_identity(self) -> MailboxHandoffTarget:
+        """Return the one target incarnation this supervisor may bind."""
+
+        return self._target_identity
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the target domain while retaining dispatcher-match diagnostics."""
+
+        return self._target.persistence_domain
+
+    @property
     def snapshot(self) -> FencedMailboxHandoffSupervisorSnapshot:
         """Return token-free local lifecycle, binding, and health diagnostics."""
 

@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from inspect import isawaitable
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
 from shinbot.agent.runtime.session_actor.effect_contracts import (
@@ -437,6 +437,34 @@ class EffectSettlementResult:
 
 
 @dataclass(slots=True, frozen=True)
+class EffectExpiryRecoveryResult:
+    """Exact durable outcomes produced while recovering expired effect leases.
+
+    Fenced callers retain the returned mailbox identities for a separately
+    supervised handoff path. They must not collapse those notifications into a
+    key-only registry wake.
+    """
+
+    recovered_count: int
+    notifications: tuple[EffectSettlementResult, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate one bounded typed recovery observation."""
+
+        if isinstance(self.recovered_count, bool) or not isinstance(
+            self.recovered_count,
+            int,
+        ):
+            raise ValueError("recovered_count must be an integer")
+        if self.recovered_count < 0:
+            raise ValueError("recovered_count must not be negative")
+        notifications = tuple(self.notifications)
+        if any(not isinstance(item, EffectSettlementResult) for item in notifications):
+            raise TypeError("recovery notifications must be EffectSettlementResult values")
+        object.__setattr__(self, "notifications", notifications)
+
+
+@dataclass(slots=True, frozen=True)
 class EffectRunResult:
     """Result returned after one claim attempt."""
 
@@ -565,6 +593,19 @@ class SessionActorWakeTarget(Protocol):
 
     def wake(self, key: SessionKey) -> Awaitable[None] | None:
         """Wake an actor without performing another mailbox write."""
+
+
+@runtime_checkable
+class FencedEffectRecoveryStore(Protocol):
+    """Store capability required for one explicit scoped-history recovery."""
+
+    async def recover_expired_fenced(
+        self,
+        *,
+        worker_id: str,
+        execution_binding: FencedActorExecutionBinding,
+    ) -> EffectExpiryRecoveryResult:
+        """Recover only expired work protected by the exact live target lease."""
 
 
 class EffectHandler(Protocol):
@@ -950,7 +991,7 @@ class DurableEffectExecutor:
         *,
         store: DurableEffectStore,
         handlers: EffectHandlerRegistry,
-        session_registry: SessionActorWakeTarget,
+        session_registry: SessionActorWakeTarget | None = None,
         mailbox_handoff_notifier: MailboxHandoffNotifier | None = None,
         worker_id: str | None = None,
         worker_count: int = 1,
@@ -968,7 +1009,9 @@ class DurableEffectExecutor:
         Args:
             store: Durable outbox and atomic settlement implementation.
             handlers: Registry of async effect handlers.
-            session_registry: Actor registry woken only after settlement commits.
+            session_registry: Legacy actor registry woken only after an
+                explicitly unfenced settlement commits. Fenced executors must
+                not receive this key-only target.
             mailbox_handoff_notifier: Optional advisory sink for a committed
                 admission-fenced mailbox id. It is never an authorization
                 boundary and does not activate or bind an Actor v2 target.
@@ -1016,6 +1059,16 @@ class DurableEffectExecutor:
             FencedActorExecutionBinding,
         ):
             raise TypeError("execution_binding must be a FencedActorExecutionBinding")
+        if session_registry is not None and not callable(
+            getattr(session_registry, "wake", None)
+        ):
+            raise TypeError("session_registry must implement wake(key)")
+        if execution_binding is None and session_registry is None:
+            raise ValueError("an unfenced effect executor requires a session_registry")
+        if execution_binding is not None and session_registry is not None:
+            raise ValueError(
+                "a fenced effect executor must not receive a legacy session_registry"
+            )
         if execution_binding is not None and renew_interval_seconds is None:
             raise ValueError(
                 "a fenced effect executor requires automatic lease renewal"
@@ -1056,6 +1109,7 @@ class DurableEffectExecutor:
         self._closing = False
         self._drain_on_shutdown = False
         self._recover_expired_claims = True
+        self._fenced_history_recovery_active = False
 
     @property
     def started(self) -> bool:
@@ -1122,8 +1176,8 @@ class DurableEffectExecutor:
         return authority
 
     @property
-    def session_registry(self) -> SessionActorWakeTarget:
-        """Return the exact actor wake target used after durable settlement."""
+    def session_registry(self) -> SessionActorWakeTarget | None:
+        """Return the legacy key-only wake target, if this executor has one."""
 
         return self._session_registry
 
@@ -1165,6 +1219,24 @@ class DurableEffectExecutor:
             if witness_domain is not persistence_domain:
                 raise EffectStoreBindingChanged(
                     "model execution witness store uses a different persistence domain"
+                )
+
+    @staticmethod
+    def _validate_fenced_recovery_result(
+        result: EffectExpiryRecoveryResult,
+        execution_binding: FencedActorExecutionBinding,
+    ) -> None:
+        """Reject a scoped recovery result that widens its owner identity."""
+
+        request = execution_binding.request
+        for notification in result.notifications:
+            if (
+                notification.key != request.key
+                or notification.wake_request != request
+                or notification.mailbox_id is None
+            ):
+                raise RuntimeError(
+                    "fenced effect recovery returned a mailbox outside its execution binding"
                 )
 
     @property
@@ -1219,6 +1291,51 @@ class DurableEffectExecutor:
         if self._execution_binding is None:
             raise RuntimeError("start_fenced requires an execution_binding")
         return await self._start(recover_expired=False)
+
+    async def recover_fenced_history(self) -> EffectExpiryRecoveryResult:
+        """Recover one inactive target's expired effects without waking by key.
+
+        This is deliberately a pre-start lifecycle primitive. It does not
+        start workers, drain arbitrary store notifications, or call a mailbox
+        notifier. A caller must subsequently bind a fenced handoff dispatcher
+        that can redrive the exact returned mailbox sidecars.
+        """
+
+        execution_binding = self._execution_binding
+        if execution_binding is None:
+            raise RuntimeError("fenced effect history recovery requires an execution_binding")
+        if not isinstance(self._store, FencedEffectRecoveryStore):
+            raise TypeError(
+                "durable effect store does not support explicit fenced history recovery"
+            )
+        async with self._start_lock:
+            self._validate_store_binding()
+            if self._tasks:
+                raise RuntimeError(
+                    "fenced effect history recovery must finish before executor workers start"
+                )
+            if self._active_claims:
+                raise RuntimeError(
+                    "fenced effect history recovery cannot overlap an active effect claim"
+                )
+            if self._closing:
+                raise RuntimeError("a closed durable effect executor cannot recover history")
+            self._fenced_history_recovery_active = True
+            try:
+                result = await self._store.recover_expired_fenced(
+                    worker_id=self.worker_id,
+                    execution_binding=execution_binding,
+                )
+                if not isinstance(result, EffectExpiryRecoveryResult):
+                    raise TypeError("fenced effect recovery store returned an invalid result")
+                self._validate_fenced_recovery_result(result, execution_binding)
+                # This query is a final target-lease validation after the store's
+                # recovery transaction. Its value is intentionally irrelevant.
+                await self._store.next_available_at(execution_binding=execution_binding)
+                self._validate_store_binding()
+                return result
+            finally:
+                self._fenced_history_recovery_active = False
 
     async def _start(self, *, recover_expired: bool) -> int:
         """Start worker tasks under one already-selected recovery policy."""
@@ -1280,6 +1397,7 @@ class DurableEffectExecutor:
     ) -> EffectRunResult:
         """Claim and execute at most one currently available effect."""
 
+        self._require_no_fenced_history_recovery()
         self._validate_store_binding()
         effective_worker_id = worker_id or self.worker_id
         if self._recover_expired_claims and self._execution_binding is None:
@@ -1287,6 +1405,7 @@ class DurableEffectExecutor:
         self._validate_store_binding()
         await self._recover_pending_legacy_wakes()
         effect_contracts, excluded_effect_contracts = self._claim_filter(lane)
+        self._require_no_fenced_history_recovery()
         claim = await self._store.claim_next(
             worker_id=effective_worker_id,
             effect_contracts=effect_contracts,
@@ -1320,6 +1439,14 @@ class DurableEffectExecutor:
             return await self._execute_claim(claim, lane=lane)
         finally:
             self._active_claims.pop(claim.claim_id, None)
+
+    def _require_no_fenced_history_recovery(self) -> None:
+        """Reject ad hoc execution while target-history recovery owns the scope."""
+
+        if self._fenced_history_recovery_active:
+            raise RuntimeError(
+                "effect execution cannot overlap fenced effect history recovery"
+            )
 
     async def wait_idle(self) -> None:
         """Wait until no worker owns a claim and no effect is immediately claimable."""
@@ -2435,9 +2562,12 @@ class DurableEffectExecutor:
     async def _wake_legacy_after_commit(self, key: SessionKey) -> None:
         """Wake an explicitly unfenced legacy mailbox by its session key."""
 
+        session_registry = self._session_registry
+        if session_registry is None:
+            raise RuntimeError("a fenced effect executor cannot perform a legacy key wake")
         self._pending_legacy_wakes.add(key)
         try:
-            outcome = self._session_registry.wake(key)
+            outcome = session_registry.wake(key)
             if isawaitable(outcome):
                 await outcome
         except asyncio.CancelledError:
@@ -2463,9 +2593,12 @@ class DurableEffectExecutor:
         async with self._legacy_wake_recovery_lock:
             if not self._pending_legacy_wakes:
                 return
+            session_registry = self._session_registry
+            if session_registry is None:
+                raise RuntimeError("a fenced effect executor cannot retry legacy key wakes")
             for key in tuple(self._pending_legacy_wakes):
                 try:
-                    outcome = self._session_registry.wake(key)
+                    outcome = session_registry.wake(key)
                     if isawaitable(outcome):
                         await outcome
                 except asyncio.CancelledError:
@@ -3040,6 +3173,7 @@ __all__ = [
     "EffectExecutionCancelled",
     "EffectExecutionDeferred",
     "EffectExecutionContext",
+    "EffectExpiryRecoveryResult",
     "EffectQuarantineReason",
     "EffectExecutorError",
     "EffectHandler",
@@ -3052,6 +3186,7 @@ __all__ = [
     "EffectSettlementResult",
     "EffectSettlementStatus",
     "EffectStoreBindingChanged",
+    "FencedEffectRecoveryStore",
     "InFlightEffectHandlerKey",
     "LocalOperationQuiescence",
     "LocalOperationQuiescenceScope",

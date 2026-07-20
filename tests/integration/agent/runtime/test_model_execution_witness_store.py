@@ -507,9 +507,20 @@ async def test_expired_model_notice_returns_exact_fenced_wake_request(
     ).disposition is ModelExecutionPermitDisposition.STARTED
 
     now[0] = 120.0
-    assert await effects.recover_expired(worker_id="fenced-model-recovery") == 0
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=1,
+        admission_grant=grant,
+        target_incarnation_id="fenced-model-recovery-incarnation",
+    )
+    recovered = await effects.recover_expired_fenced(
+        worker_id="fenced-model-recovery",
+        execution_binding=binding,
+    )
 
-    notifications = await effects.drain_quarantine_notifications()
+    assert recovered.recovered_count == 0
+    notifications = recovered.notifications
     assert len(notifications) == 1
     assert notifications[0].status.value == "committed"
     assert notifications[0].effect_id == effect_id
@@ -519,3 +530,4 @@ async def test_expired_model_notice_returns_exact_fenced_wake_request(
         admission_fence_id=grant.fence.fence_id,
         admission_fence_generation=grant.fence.generation,
     )
+    assert await effects.drain_quarantine_notifications() == ()

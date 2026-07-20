@@ -2,8 +2,9 @@
 
 This module deliberately has no runtime registration, dispatcher binding,
 timer, ingress hook, or ownership cutover. A caller must explicitly acquire a
-target lease, compose the matching actor/effect components, activate this
-target, and only then bind it to a handoff dispatcher.
+target lease, compose the matching actor/effect components, optionally recover
+native history, activate this target, and only then bind it to a handoff
+dispatcher.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from enum import StrEnum
 
 from shinbot.agent.runtime.session_actor.effect_executor import (
     DurableEffectExecutor,
+    EffectExpiryRecoveryResult,
+    FencedEffectExecutionLeaseLost,
     LocalEffectExecutorQuiescence,
     LocalOperationQuiescenceStatus,
 )
@@ -81,6 +84,22 @@ class FencedMailboxHandoffTargetRetirement:
         object.__setattr__(self, "error", str(self.error or "").strip())
 
 
+@dataclass(slots=True, frozen=True)
+class FencedMailboxHandoffTargetHistoryRecovery:
+    """One target-local recovery pass before its handoff dispatcher is bound."""
+
+    actor_wake: FencedMailboxWakeReceipt
+    effect_recovery: EffectExpiryRecoveryResult
+
+    def __post_init__(self) -> None:
+        """Require typed recovery results without exposing target capabilities."""
+
+        if not isinstance(self.actor_wake, FencedMailboxWakeReceipt):
+            raise TypeError("actor_wake must be a FencedMailboxWakeReceipt")
+        if not isinstance(self.effect_recovery, EffectExpiryRecoveryResult):
+            raise TypeError("effect_recovery must be an EffectExpiryRecoveryResult")
+
+
 class FencedMailboxHandoffTarget:
     """Consume one exact fenced handoff only under one target-lease binding.
 
@@ -134,6 +153,7 @@ class FencedMailboxHandoffTarget:
         self._effect_executor = effect_executor
         self._state = FencedMailboxHandoffTargetState.NEW
         self._lifecycle_lock = asyncio.Lock()
+        self._history_recovery: FencedMailboxHandoffTargetHistoryRecovery | None = None
 
     @property
     def state(self) -> FencedMailboxHandoffTargetState:
@@ -176,6 +196,47 @@ class FencedMailboxHandoffTarget:
                 self._state = FencedMailboxHandoffTargetState.BLOCKED
                 raise RuntimeError("fenced effect executor is unhealthy after target activation")
             self._state = FencedMailboxHandoffTargetState.ACTIVE
+
+    async def recover_native_history(self) -> FencedMailboxHandoffTargetHistoryRecovery:
+        """Recover this exact target's mailbox and effect history before start.
+
+        The actor wake handles a previously accepted handoff whose actor died
+        before completing the mailbox claim. Expiry maintenance then emits only
+        exact fenced sidecars. It does not invoke a notifier or settle those
+        sidecars; the caller must bind a handoff supervisor afterwards.
+        """
+
+        async with self._lifecycle_lock:
+            if self._history_recovery is not None:
+                return self._history_recovery
+            if self._state is not FencedMailboxHandoffTargetState.NEW:
+                raise RuntimeError("native history recovery requires a new handoff target")
+            binding = self._execution_binding
+            try:
+                actor_wake = await self._actor_registry.wake_leased(binding)
+                if (
+                    actor_wake.request != binding.request
+                    or actor_wake.disposition is not FencedMailboxWakeDisposition.ACCEPTED
+                ):
+                    self._require_live_execution_binding(binding)
+                    self._state = FencedMailboxHandoffTargetState.BLOCKED
+                    raise RuntimeError("fenced actor registry rejected native history recovery")
+                effect_recovery = await self._effect_executor.recover_fenced_history()
+            except (ActorV2AdmissionFenceError, AgentRuntimeOwnershipError):
+                self._state = FencedMailboxHandoffTargetState.STALE
+                raise
+            except (FencedWakeTargetLeaseError, FencedEffectExecutionLeaseLost):
+                self._state = FencedMailboxHandoffTargetState.BLOCKED
+                raise
+            except Exception:
+                self._state = FencedMailboxHandoffTargetState.BLOCKED
+                raise
+            result = FencedMailboxHandoffTargetHistoryRecovery(
+                actor_wake=actor_wake,
+                effect_recovery=effect_recovery,
+            )
+            self._history_recovery = result
+            return result
 
     async def renew_target_lease(self, *, ttl_seconds: float) -> FencedActorExecutionBinding:
         """Renew this target's durable publication without changing its epoch.
@@ -398,6 +459,22 @@ class FencedMailboxHandoffTarget:
                 quiescence=quiescence,
             )
 
+    def _require_live_execution_binding(
+        self,
+        binding: FencedActorExecutionBinding,
+    ) -> None:
+        """Re-prove target authority after a lower-level stale result."""
+
+        with self._database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            require_live_execution_binding_in_transaction(
+                self._database,
+                conn,
+                binding,
+                key=binding.request.key,
+                ownership_generation=binding.request.ownership_generation,
+            )
+
     @staticmethod
     def _stale_receipt(
         claim: FencedMailboxHandoffClaim,
@@ -459,6 +536,7 @@ def _error_text(exc: BaseException) -> str:
 
 __all__ = [
     "FencedMailboxHandoffTarget",
+    "FencedMailboxHandoffTargetHistoryRecovery",
     "FencedMailboxHandoffTargetRetirement",
     "FencedMailboxHandoffTargetState",
 ]

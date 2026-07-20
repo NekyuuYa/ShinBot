@@ -937,18 +937,16 @@ async def test_scoped_effect_executor_leaves_foreign_maintenance_notifications_u
     handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
     handlers.register("external_write", handler)
     handlers.seal()
-    wake_registry = _WakeRegistry()
     executor = DurableEffectExecutor(
         store=store,
         handlers=handlers,
-        session_registry=wake_registry,
         execution_binding=binding,
     )
 
     result = await executor.run_once()
 
     assert result.status is EffectRunStatus.COMPLETED
-    assert wake_registry.keys == []
+    assert executor.session_registry is None
     assert await store.drain_quarantine_notifications() == (foreign_notification,)
 
 
@@ -1034,6 +1032,11 @@ async def test_scoped_effect_store_rejects_every_claim_lifecycle_write_after_tar
             worker_id="target-loss-worker",
             execution_binding=binding,
         )
+    with pytest.raises(FencedEffectExecutionLeaseLost):
+        await store.recover_expired_fenced(
+            worker_id="target-loss-worker",
+            execution_binding=binding,
+        )
 
     with database.connect() as conn:
         row = conn.execute(
@@ -1088,7 +1091,6 @@ async def test_scoped_effect_executor_does_not_recover_other_session_expired_wor
     executor = DurableEffectExecutor(
         store=store,
         handlers=handlers,
-        session_registry=_WakeRegistry(),
         execution_binding=binding,
         poll_interval_seconds=0.01,
     )
@@ -1114,6 +1116,134 @@ async def test_scoped_effect_executor_does_not_recover_other_session_expired_wor
 
 
 @pytest.mark.asyncio
+async def test_scoped_effect_recovery_only_releases_its_exact_expired_history(
+    tmp_path: Path,
+) -> None:
+    """A fenced recovery pass cannot reset another owner's expired claim."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    other_key = SessionKey("profile-b", "bot:group:expired-history-other-room")
+    other_ownership = database.agent_runtime_ownership.claim(
+        other_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="foreign expired history recovery test",
+    ).ownership
+    await SQLiteSessionActorStore(database, clock=lambda: now[0]).ensure(
+        other_key,
+        ownership_generation=other_ownership.generation,
+    )
+    _seed_effect(database, key, effect_id="bound-expired-history-effect", now=now[0])
+    _seed_effect(database, other_key, effect_id="foreign-expired-history-effect", now=now[0])
+    bound_claim = await store.claim_next(
+        worker_id="bound-expired-history-worker",
+        execution_binding=binding,
+    )
+    other_claim = await store.claim_next(worker_id="foreign-expired-history-worker")
+    assert bound_claim is not None
+    assert other_claim is not None
+    now[0] = 106.0
+
+    recovered = await store.recover_expired_fenced(
+        worker_id="bound-expired-history-recovery",
+        execution_binding=binding,
+    )
+
+    assert recovered.recovered_count == 1
+    assert recovered.notifications == ()
+    assert await store.drain_quarantine_notifications() == ()
+    with database.connect() as conn:
+        bound_row = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner
+            FROM agent_effect_outbox
+            WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+            """,
+            (key.profile_id, key.session_id, bound_claim.effect.effect_id),
+        ).fetchone()
+        foreign_row = conn.execute(
+            """
+            SELECT status, claim_id, lease_owner
+            FROM agent_effect_outbox
+            WHERE profile_id = ? AND session_id = ? AND effect_id = ?
+            """,
+            (other_key.profile_id, other_key.session_id, other_claim.effect.effect_id),
+        ).fetchone()
+    assert dict(bound_row) == {
+        "status": DurableEffectStatus.PENDING.value,
+        "claim_id": "",
+        "lease_owner": "",
+    }
+    assert dict(foreign_row) == {
+        "status": DurableEffectStatus.PROCESSING.value,
+        "claim_id": other_claim.claim_id,
+        "lease_owner": other_claim.worker_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fenced_executor_history_recovery_is_pre_start_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery cannot race target workers or an ad hoc pre-start claim."""
+
+    now = [100.0]
+    database, store, key, admission_grant, ownership_generation = await _make_fenced_store(
+        tmp_path,
+        now,
+    )
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership_generation,
+        admission_grant=admission_grant,
+    )
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.seal()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        execution_binding=binding,
+        poll_interval_seconds=0.01,
+    )
+    original_recovery = store.recover_expired_fenced
+    recovery_started = asyncio.Event()
+    allow_recovery = asyncio.Event()
+
+    async def blocked_recovery(**kwargs: object):
+        recovery_started.set()
+        await allow_recovery.wait()
+        return await original_recovery(**kwargs)
+
+    monkeypatch.setattr(store, "recover_expired_fenced", blocked_recovery)
+    try:
+        recovery_task = asyncio.create_task(executor.recover_fenced_history())
+        await asyncio.wait_for(recovery_started.wait(), timeout=1.0)
+        with pytest.raises(RuntimeError, match="cannot overlap fenced effect history recovery"):
+            await executor.run_once()
+        allow_recovery.set()
+        recovered = await recovery_task
+        assert recovered.recovered_count == 0
+        assert recovered.notifications == ()
+
+        await executor.start_fenced()
+        with pytest.raises(RuntimeError, match="must finish before executor workers start"):
+            await executor.recover_fenced_history()
+    finally:
+        await executor.shutdown(drain=False)
+
+
+@pytest.mark.asyncio
 async def test_scoped_effect_executor_refuses_to_start_after_target_loss(
     tmp_path: Path,
 ) -> None:
@@ -1135,7 +1265,6 @@ async def test_scoped_effect_executor_refuses_to_start_after_target_loss(
     executor = DurableEffectExecutor(
         store=store,
         handlers=handlers,
-        session_registry=_WakeRegistry(),
         execution_binding=binding,
     )
     database.actor_v2_fenced_wake_target_leases.release(binding.target_lease)
@@ -1180,9 +1309,45 @@ def test_scoped_effect_executor_requires_automatic_lease_renewal(tmp_path: Path)
         DurableEffectExecutor(
             store=store,
             handlers=handlers,
-            session_registry=_WakeRegistry(),
             execution_binding=binding,
             renew_interval_seconds=None,
+        )
+
+
+def test_scoped_effect_executor_rejects_legacy_key_wake_target(tmp_path: Path) -> None:
+    """A target-bound executor cannot retain a bare session-key wake path."""
+
+    now = [100.0]
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "bot:group:legacy-wake-forbidden")
+    admission_grant = database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="legacy-wake-forbidden-test",
+        ttl_seconds=60.0,
+    )
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="legacy wake target rejection test",
+        admission_grant=admission_grant,
+    ).ownership
+    binding = _execution_binding(
+        database,
+        key=key,
+        ownership_generation=ownership.generation,
+        admission_grant=admission_grant,
+    )
+    store = SQLiteDurableEffectStore(database, clock=lambda: now[0])
+    handlers = EffectHandlerRegistry(contract_authority=store.effect_contract_authority)
+    handlers.seal()
+
+    with pytest.raises(ValueError, match="must not receive a legacy session_registry"):
+        DurableEffectExecutor(
+            store=store,
+            handlers=handlers,
+            session_registry=_WakeRegistry(),
+            execution_binding=binding,
         )
 
 
@@ -1218,7 +1383,6 @@ async def test_scoped_effect_executor_rechecks_target_before_generic_handler(
     executor = DurableEffectExecutor(
         store=store,
         handlers=handlers,
-        session_registry=_WakeRegistry(),
         execution_binding=binding,
     )
     original_claim_next = store.claim_next
@@ -1271,7 +1435,6 @@ async def test_scoped_effect_executor_cancels_handler_and_stops_after_target_los
     executor = DurableEffectExecutor(
         store=store,
         handlers=handlers,
-        session_registry=_WakeRegistry(),
         execution_binding=binding,
         poll_interval_seconds=0.01,
         renew_interval_seconds=0.01,

@@ -57,18 +57,6 @@ from shinbot.core.dispatch.mailbox_handoff import (
 from shinbot.persistence import DatabaseManager
 
 
-class _LegacyWakeSink:
-    """Record any unexpected legacy effect wake from a fenced target."""
-
-    def __init__(self) -> None:
-        self.keys: list[SessionKey] = []
-
-    async def wake(self, key: SessionKey) -> None:
-        """Record a legacy wake request."""
-
-        self.keys.append(key)
-
-
 def _record_handler(
     aggregate: AgentSessionAggregate,
     envelope: SessionEventEnvelope,
@@ -97,7 +85,6 @@ async def _components(
     FencedSessionActorRegistry,
     DurableEffectExecutor,
     FencedMailboxHandoffTarget,
-    _LegacyWakeSink,
 ]:
     """Compose one unmounted target with a single fenced owner request."""
 
@@ -153,11 +140,9 @@ async def _components(
     if register_handlers is not None:
         register_handlers(handlers)
     handlers.seal()
-    legacy_wakes = _LegacyWakeSink()
     effect_executor = DurableEffectExecutor(
         store=effect_store,
         handlers=handlers,
-        session_registry=legacy_wakes,
         execution_binding=binding,
         poll_interval_seconds=0.01,
         renew_interval_seconds=0.01,
@@ -183,7 +168,6 @@ async def _components(
         actor_registry,
         effect_executor,
         target,
-        legacy_wakes,
     )
 
 
@@ -228,7 +212,6 @@ async def _replacement_target(
     effect_executor = DurableEffectExecutor(
         store=effect_store,
         handlers=handlers,
-        session_registry=_LegacyWakeSink(),
         execution_binding=binding,
         poll_interval_seconds=0.01,
         renew_interval_seconds=0.01,
@@ -322,7 +305,6 @@ async def test_target_accepts_only_live_exact_claim_and_retires_after_unpublish(
         actor_registry,
         _effect_executor,
         target,
-        legacy_wakes,
     ) = await _components(tmp_path)
     await target.activate()
     dispatcher = DurableMailboxHandoffDispatcher(
@@ -366,7 +348,7 @@ async def test_target_accepts_only_live_exact_claim_and_retires_after_unpublish(
     settled = database.actor_v2_mailbox_handoffs.read(mailbox_id)
     assert settled is not None
     assert settled.state.value == "settled"
-    assert legacy_wakes.keys == []
+    assert _effect_executor.session_registry is None
 
     renewed_binding = await target.renew_target_lease(ttl_seconds=60.0)
     assert renewed_binding.has_same_authority(binding)
@@ -392,6 +374,79 @@ async def test_target_accepts_only_live_exact_claim_and_retires_after_unpublish(
 
 
 @pytest.mark.asyncio
+async def test_target_recovers_expired_mailbox_before_dispatcher_binding(
+    tmp_path: Path,
+) -> None:
+    """A replacement target restarts only its own expired mailbox history."""
+
+    (
+        database,
+        _admission_grant,
+        key,
+        request,
+        binding,
+        _actor_store,
+        _effect_store,
+        _actor_registry,
+        _effect_executor,
+        _target,
+    ) = await _components(tmp_path)
+    mailbox_id = _insert_mailbox(
+        database,
+        request,
+        event_id="fenced-native-history-expired-mailbox-event",
+    )
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE agent_session_mailbox
+            SET status = 'processing',
+                claim_id = 'crashed-history-mailbox-claim',
+                lease_owner = 'crashed-history-mailbox-worker',
+                lease_until = 0.0
+            WHERE mailbox_id = ?
+            """,
+            (mailbox_id,),
+        )
+    database.actor_v2_fenced_wake_target_leases.release(binding.target_lease)
+    (
+        replacement_binding,
+        replacement_store,
+        replacement_registry,
+        _replacement_executor,
+        replacement_target,
+    ) = await _replacement_target(
+        database,
+        request,
+        target_identity=MailboxHandoffTarget(
+            "fenced-native-history-test",
+            "fenced-native-history-incarnation-b",
+        ),
+    )
+
+    recovered = await replacement_target.recover_native_history()
+
+    assert recovered.actor_wake.request == request
+    assert recovered.actor_wake.disposition is FencedMailboxWakeDisposition.ACCEPTED
+    assert recovered.effect_recovery.recovered_count == 0
+    assert recovered.effect_recovery.notifications == ()
+    assert replacement_target.state is FencedMailboxHandoffTargetState.NEW
+    actor = replacement_registry.actor_for(request)
+    assert actor is not None
+    await asyncio.wait_for(actor.wait_idle(), timeout=1.0)
+    aggregate = await replacement_store.load(
+        key,
+        ownership_binding=request,
+        execution_binding=replacement_binding,
+    )
+    assert aggregate.data == {"last_event_id": "fenced-native-history-expired-mailbox-event"}
+
+    await replacement_target.unpublish()
+    retirement = await replacement_target.retire(quiescence_timeout_seconds=1.0)
+    assert retirement.state is FencedMailboxHandoffTargetState.STOPPED
+
+
+@pytest.mark.asyncio
 async def test_unpublished_target_preserves_handoff_for_a_replacement_incarnation(
     tmp_path: Path,
 ) -> None:
@@ -408,7 +463,6 @@ async def test_unpublished_target_preserves_handoff_for_a_replacement_incarnatio
         _actor_registry,
         _effect_executor,
         target,
-        _legacy_wakes,
     ) = await _components(tmp_path)
     await target.activate()
     dispatcher = DurableMailboxHandoffDispatcher(
@@ -499,7 +553,6 @@ async def test_lost_target_lease_defers_instead_of_settling_handoff(tmp_path: Pa
         _actor_registry,
         _effect_executor,
         target,
-        _legacy_wakes,
     ) = await _components(tmp_path)
     await target.activate()
     dispatcher = DurableMailboxHandoffDispatcher(
@@ -547,7 +600,6 @@ async def test_closed_local_registry_defers_without_declaring_owner_stale(
         actor_registry,
         _effect_executor,
         target,
-        _legacy_wakes,
     ) = await _components(tmp_path)
     await target.activate()
     await actor_registry.shutdown(drain=False)
@@ -595,7 +647,6 @@ async def test_stale_target_only_terminally_rejects_its_matching_owner_claim(
         _actor_registry,
         _effect_executor,
         target,
-        _legacy_wakes,
     ) = await _components(tmp_path)
     await target.activate()
     terminal_mailbox_id = _insert_mailbox(
@@ -690,7 +741,6 @@ async def test_target_keeps_lease_when_local_effect_handler_has_not_quiesced(
         _actor_registry,
         _effect_executor,
         target,
-        _legacy_wakes,
     ) = await _components(
         tmp_path,
         effect_contracts=(contract,),
@@ -733,7 +783,6 @@ async def test_supervisor_renews_dispatches_and_retires_one_real_fenced_target(
         _actor_registry,
         _effect_executor,
         target,
-        _legacy_wakes,
     ) = await _components(tmp_path)
     dispatcher = DurableMailboxHandoffDispatcher(
         database.actor_v2_mailbox_handoffs,

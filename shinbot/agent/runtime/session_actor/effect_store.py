@@ -29,6 +29,7 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     DurableEffectEnvelope,
     DurableEffectStatus,
     EffectClaimLost,
+    EffectExpiryRecoveryResult,
     EffectQuarantineReason,
     EffectSettlementResult,
     EffectSettlementStatus,
@@ -1293,18 +1294,63 @@ class SQLiteDurableEffectStore:
     ) -> int:
         """Recover reclaimable leases and publish unrecoverable model evidence."""
 
-        if not str(worker_id or "").strip():
-            raise ValueError("worker_id must not be empty")
         if execution_binding is not None:
             raise ValueError(
                 "scoped fenced effect execution requires an explicit recovery controller"
             )
+        result = await self._recover_expired(
+            worker_id=worker_id,
+            execution_binding=None,
+        )
+        self._quarantine_notifications.extend(result.notifications)
+        return result.recovered_count
+
+    async def recover_expired_fenced(
+        self,
+        *,
+        worker_id: str,
+        execution_binding: FencedActorExecutionBinding,
+    ) -> EffectExpiryRecoveryResult:
+        """Recover only one live target's expired effect history.
+
+        The caller must retain the matching target-lease capability for every
+        durable mutation in this pass. Recovery notifications are returned to
+        the caller instead of joining the process-wide maintenance queue, so a
+        scoped executor cannot consume or wake another target's mailbox debt.
+        """
+
+        if not isinstance(execution_binding, FencedActorExecutionBinding):
+            raise TypeError("execution_binding must be a FencedActorExecutionBinding")
+        return await self._recover_expired(
+            worker_id=worker_id,
+            execution_binding=execution_binding,
+        )
+
+    async def _recover_expired(
+        self,
+        *,
+        worker_id: str,
+        execution_binding: FencedActorExecutionBinding | None,
+    ) -> EffectExpiryRecoveryResult:
+        """Run one bounded expiry-maintenance transaction under one scope."""
+
+        if not str(worker_id or "").strip():
+            raise ValueError("worker_id must not be empty")
+        binding_filter_sql, binding_params = _effect_execution_binding_filter(
+            execution_binding,
+            table_alias="effect",
+        )
         recovery_notifications: list[EffectSettlementResult] = []
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            _require_effect_execution_binding(
+                self._database,
+                conn,
+                execution_binding,
+            )
             now = _nonnegative_finite(self._clock(), field_name="clock")
             expired_review_runs = conn.execute(
-                """
+                f"""
                 SELECT effect.profile_id, effect.session_id,
                        effect.ownership_generation, effect.effect_id, effect.event_id,
                        effect.operation_id, effect.kind, effect.contract_version,
@@ -1326,17 +1372,25 @@ class SQLiteDurableEffectStore:
                  AND review_run.claim_id = effect.claim_id
                  AND review_run.worker_id = effect.lease_owner
                 WHERE effect.ownership_generation >= 1
+                  {binding_filter_sql}
                   AND effect.kind = 'run_review_workflow'
                   AND effect.status = 'processing'
                   AND COALESCE(effect.lease_until, 0) <= ?
                   AND review_run.execution_status IN ('running', 'finished')
                 ORDER BY review_run.run_seq
                 """,
-                (now,),
+                (*binding_params, now),
             ).fetchall()
             for row in expired_review_runs:
                 key = SessionKey(str(row["profile_id"]), str(row["session_id"]))
                 generation = int(row["ownership_generation"])
+                _require_effect_execution_binding(
+                    self._database,
+                    conn,
+                    execution_binding,
+                    key=key,
+                    expected_generation=generation,
+                )
                 ownership = _require_effect_ownership(
                     self._database,
                     conn,
@@ -1470,17 +1524,25 @@ class SQLiteDurableEffectStore:
                  AND model_run.claim_id = effect.claim_id
                  AND model_run.worker_id = effect.lease_owner
                 WHERE effect.ownership_generation >= 1
+                  {binding_filter_sql}
                   AND effect.kind IN ({_GENERIC_MODEL_WORKFLOW_EFFECT_KINDS_SQL})
                   AND effect.status = 'processing'
                   AND COALESCE(effect.lease_until, 0) <= ?
                   AND model_run.execution_status IN ('running', 'finished')
                 ORDER BY model_run.run_seq
                 """,
-                (now,),
+                (*binding_params, now),
             ).fetchall()
             for row in expired_model_runs:
                 key = SessionKey(str(row["profile_id"]), str(row["session_id"]))
                 generation = int(row["ownership_generation"])
+                _require_effect_execution_binding(
+                    self._database,
+                    conn,
+                    execution_binding,
+                    key=key,
+                    expected_generation=generation,
+                )
                 ownership = _require_effect_ownership(
                     self._database,
                     conn,
@@ -1603,17 +1665,25 @@ class SQLiteDurableEffectStore:
                  AND ownership.status = 'active'
                  AND ownership.generation = effect.ownership_generation
                 WHERE effect.ownership_generation >= 1
+                  {binding_filter_sql}
                   AND effect.status = 'processing'
                   AND COALESCE(effect.lease_until, 0) <= ?
                   {_model_work_cancellation_gate_sql("effect")}
                 ORDER BY effect.effect_seq
                 """,
-                (now,),
+                (*binding_params, now),
             ).fetchall()
             recovered_count = 0
             for row in rows:
                 key = SessionKey(str(row["profile_id"]), str(row["session_id"]))
                 generation = int(row["ownership_generation"])
+                _require_effect_execution_binding(
+                    self._database,
+                    conn,
+                    execution_binding,
+                    key=key,
+                    expected_generation=generation,
+                )
                 _require_effect_ownership(
                     self._database,
                     conn,
@@ -1641,8 +1711,15 @@ class SQLiteDurableEffectStore:
                     (now, now, row["effect_seq"], generation, now),
                 )
                 recovered_count += int(recovered.rowcount)
-        self._quarantine_notifications.extend(recovery_notifications)
-        return recovered_count
+            _require_effect_execution_binding(
+                self._database,
+                conn,
+                execution_binding,
+            )
+        return EffectExpiryRecoveryResult(
+            recovered_count=recovered_count,
+            notifications=tuple(recovery_notifications),
+        )
 
     async def next_available_at(
         self,

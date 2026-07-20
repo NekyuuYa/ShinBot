@@ -2217,7 +2217,7 @@ a replacement epoch creates a separately bound actor.
 
 The same binding now fences `DurableEffectExecutor` as well. A scoped executor
 must use `start_fenced`, validates the lease before it creates workers, cannot
-perform broad expired-effect recovery, can claim only the exact
+perform implicit broad expired-effect recovery, can claim only the exact
 profile/session/ownership generation, and never drains the store-instance
 maintenance-notification queue owned by unscoped recovery. It requires
 automatic lease renewal and revalidates immediately before every handler task
@@ -2230,6 +2230,14 @@ pre-dispatch renewal receive the same capability. A target-lease loss therefore
 stops the executor rather than scheduling another effect retry; a late
 model/external outcome remains conservatively durable as existing unknown
 evidence instead of authorizing a replay.
+
+`recover_fenced_history()` is the separate pre-start recovery capability for
+that executor. Its store transaction filters every expired row by the exact
+`FencedActorExecutionBinding`, validates the target lease before and after the
+pass, and returns any unknown-model/review mailbox outcomes as exact fenced
+handoffs. It never drains another executor's in-memory maintenance queue,
+calls a key-only registry, invokes a notifier, or starts workers. A caller must
+subsequently publish the same target through the pull dispatcher.
 
 `FencedMailboxHandoffTarget` is the intentionally narrow consumer of these
 pieces. It owns one complete `FencedMailboxWakeRequest` and one already-acquired
@@ -2277,6 +2285,17 @@ never resumes ingress, changes ownership, creates a replacement target, or
 settles work outside target receipts. The lease TTL must outlast a bounded
 full dispatcher pass plus one polling delay, so a slow target timeout cannot
 silently cross an unrenewed publication expiry.
+
+`FencedNativeHistoryLifecycleController` composes the missing restart order for
+one already-active Actor owner. While the target is still unpublished, it first
+starts the request-bound actor so expired mailbox claims from a prior process
+are recovered under the replacement target lease, then runs the executor's
+explicit fenced expiry pass. Only after those steps succeeds does it start the
+handoff supervisor and publish the exact target. Any startup failure or caller
+cancellation drives the same supervisor-owned retirement path; it is terminal
+after a proven stop and retains a failed cleanup state when retirement cannot
+prove completion. This controller does not acquire ownership, scan other
+sessions, enable ingress, timers, recovery discovery, or management commands.
 
 This target remains a dormant integration primitive. No runtime lifecycle,
 ingress route, adapter, timer, scanner, API action, or default runtime starts
