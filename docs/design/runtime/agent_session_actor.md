@@ -1173,6 +1173,16 @@ schedule with an explicit retry time, or supersedes it with an append-only
 reason. Stable cursor scanning and per-row retry times prevent one unavailable
 session from occupying every scan page.
 
+The currently live legacy `ReviewDueTimerService` has an ownership guard while
+the Actor scanner remains unstarted. Before it dispatches a legacy due signal,
+it skips an active Actor v2 owner, a migrating owner, or any session with Actor
+admission-fence history; `AgentRuntime.handle_agent_signal()` repeats that
+check for `REVIEW_DUE` after local legacy admission. This is a one-way safety
+barrier, not Actor v2 timer activation: it never creates a `ReviewDue` mailbox
+event, starts the durable scanner, or publishes a wake target. Unowned legacy
+scheduler rows remain compatible with the existing runtime until their normal
+ingress ownership is persisted.
+
 ## Prompt Assets And Projection
 
 Built-in prompt files and editable runtime copies use three-way synchronization:

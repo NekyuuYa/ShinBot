@@ -44,7 +44,11 @@ from shinbot.agent.signals import (
     AgentSignalSource,
     AgentTimerSignal,
 )
-from shinbot.core.dispatch.agent_identity import DEFAULT_SESSION_ACTOR_PROFILE_ID
+from shinbot.core.dispatch.agent_identity import (
+    DEFAULT_SESSION_ACTOR_PROFILE_ID,
+    SessionKey,
+)
+from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 from shinbot.core.dispatch.message_context import WaitingInputScope
 
 
@@ -2034,6 +2038,56 @@ async def test_agent_runtime_review_due_signal_runs_due_review(
     assert [signal.kind for signal in calls] == [AgentSignalKind.REVIEW_DUE]
     assert [signal.session_id for signal in calls] == [session_id]
     assert [signal.timer.due_at for signal in calls if signal.timer is not None] == [190.0]
+
+
+@pytest.mark.asyncio
+async def test_actor_v2_review_due_signal_never_reaches_legacy_scheduler(
+    tmp_path: Path,
+) -> None:
+    """The runtime repeats timer ownership fencing after the poller check."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    assert bot.database is not None
+    session_id = "test-bot:group:actor-owned"
+    key = SessionKey(DEFAULT_SESSION_ACTOR_PROFILE_ID, session_id)
+    grant = bot.database.actor_v2_admission_fences.reserve(
+        key,
+        holder_id="legacy-review-due-runtime-test",
+        ttl_seconds=3600.0,
+    )
+    bot.database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="legacy review timer fencing test",
+        legacy_session_id=session_id,
+        admission_grant=grant,
+    )
+    calls: list[AgentSignal] = []
+
+    class _RecordingReviewScheduler:
+        async def accept_signal(self, signal: AgentSignal):
+            calls.append(signal)
+            return None
+
+    runtime.agent_scheduler = _RecordingReviewScheduler()  # type: ignore[assignment]
+
+    decision = await runtime.handle_agent_signal(
+        AgentSignal(
+            signal_id="review:test-bot:group:actor-owned",
+            kind=AgentSignalKind.REVIEW_DUE,
+            source=AgentSignalSource.TIMER,
+            session_id=session_id,
+            occurred_at=200.0,
+            timer=AgentTimerSignal(
+                trigger=AgentSignalKind.REVIEW_DUE.value,
+                due_at=190.0,
+            ),
+        )
+    )
+
+    assert decision is None
+    assert calls == []
 
 
 @pytest.mark.asyncio

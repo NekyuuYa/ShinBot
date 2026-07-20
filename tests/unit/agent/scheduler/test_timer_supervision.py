@@ -266,6 +266,56 @@ async def test_review_timer_skips_a_session_with_frozen_legacy_signal_admission(
 
 
 @pytest.mark.asyncio
+async def test_review_timer_skips_nonlegacy_durable_ownership() -> None:
+    """A due legacy plan cannot dispatch after Actor v2 takes ownership."""
+
+    session_id = "bot:group:actor-owned"
+    plan = ReviewPlan(
+        session_id=session_id,
+        next_review_at=10.0,
+        reason="test_due",
+    )
+
+    class Scheduler:
+        def due_review_plans(self, *, limit: int) -> list[ReviewPlan]:
+            assert limit == 50
+            return [plan]
+
+    class Profile:
+        profile_id = "bot-a"
+        agent_scheduler = Scheduler()
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.admission_checks: list[tuple[str, str]] = []
+
+        def agent_profile_for_bot(self, _bot_id: str) -> Profile:
+            return Profile()
+
+        def legacy_review_due_admission_reason(
+            self,
+            profile_id: str,
+            value: str,
+        ) -> str:
+            self.admission_checks.append((profile_id, value))
+            return "actor_v2_owned"
+
+        async def handle_agent_signal(self, signal: AgentSignal) -> None:
+            self.calls.append(signal.session_id)
+
+    runtime = Runtime()
+    timer = ReviewDueTimerService()
+    timer.bind_agent_runtime(runtime)  # type: ignore[arg-type]
+
+    await timer.run_once()
+
+    assert runtime.admission_checks == [("bot-a", session_id)]
+    assert runtime.calls == []
+    assert timer.pending_session_tasks(session_id) == []
+
+
+@pytest.mark.asyncio
 async def test_review_due_dispatch_failure_is_not_a_task_manager_failure() -> None:
     """The timer, not the background-task API, owns a due dispatch error."""
 

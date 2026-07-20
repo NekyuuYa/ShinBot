@@ -1158,6 +1158,38 @@ class AgentRuntime:
 
         return self._legacy_signal_admission.is_frozen(session_id)
 
+    def legacy_review_due_admission_reason(
+        self,
+        profile_id: str,
+        session_id: str,
+    ) -> str:
+        """Return why a legacy review timer must not mutate one session.
+
+        This is a compatibility guard around the legacy timer only. It keeps
+        existing unowned legacy scheduler state eligible while preventing a
+        due signal from becoming a second writer after Actor v2 ownership,
+        migration, or a pending Actor admission fence appears.
+        """
+
+        database = self.database
+        if database is None:
+            return ""
+        try:
+            key = SessionKey(profile_id, session_id)
+        except ValueError:
+            return "invalid_session_key"
+        ownership = database.agent_runtime_ownership.get(key)
+        if ownership is None:
+            admission_fence = database.actor_v2_admission_fences.get(key)
+            if admission_fence is None:
+                return ""
+            return f"admission_fence_{admission_fence.status.value}"
+        if ownership.status is not AgentRuntimeOwnershipStatus.ACTIVE:
+            return "ownership_migrating"
+        if ownership.mode is AgentRuntimeOwnershipMode.LEGACY:
+            return ""
+        return "actor_v2_owned"
+
     def build_legacy_base_session_local_task_quiescer(
         self,
     ) -> LegacySessionAllProfilesTaskQuiescer:
@@ -1277,6 +1309,24 @@ class AgentRuntime:
         # Admission must precede the session lock so a task blocked on that
         # lock remains visible to a future local quiescence observation.
         async with self._legacy_signal_admission.admit_signal(signal.session_id):
+            if signal.kind == AgentSignalKind.REVIEW_DUE:
+                profile = self.agent_profile_for_bot(signal.bot_id)
+                admission_reason = self.legacy_review_due_admission_reason(
+                    profile.profile_id,
+                    signal.session_id,
+                )
+                if admission_reason:
+                    logger.debug(
+                        format_log_event(
+                            "agent.runtime.legacy_review_due_skipped",
+                            signal_id=signal.signal_id,
+                            session_id=signal.session_id,
+                            bot_id=signal.bot_id,
+                            profile_id=profile.profile_id,
+                            reason=admission_reason,
+                        )
+                    )
+                    return None
             return await self._handle_admitted_agent_signal(signal)
 
     async def _handle_admitted_agent_signal(

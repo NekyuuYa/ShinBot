@@ -40,7 +40,7 @@ class ReviewDueDispatchError(RuntimeError):
 
 
 class ReviewDueTimerService:
-    """Poll due review plans and dispatch their review workflow."""
+    """Poll legacy due plans without crossing an Actor v2 ownership boundary."""
 
     def __init__(
         self,
@@ -175,7 +175,8 @@ class ReviewDueTimerService:
         if runtime is None:
             logger.debug(format_log_event("agent.review_timer.scan_skipped", reason="unbound"))
             return
-        scheduler = runtime.agent_profile_for_bot(self._bot_id).agent_scheduler
+        profile = runtime.agent_profile_for_bot(self._bot_id)
+        scheduler = profile.agent_scheduler
         due_plans = scheduler.due_review_plans(limit=self._batch_limit)
         logger.debug(
             format_log_event(
@@ -189,6 +190,11 @@ class ReviewDueTimerService:
         signal_admission_frozen = getattr(
             runtime,
             "is_legacy_session_signal_admission_frozen",
+            None,
+        )
+        review_due_admission_reason = getattr(
+            runtime,
+            "legacy_review_due_admission_reason",
             None,
         )
         dispatch_failures: list[tuple[str, Exception]] = []
@@ -226,6 +232,21 @@ class ReviewDueTimerService:
                     )
                 )
                 continue
+            if callable(review_due_admission_reason):
+                admission_reason = review_due_admission_reason(
+                    profile.profile_id,
+                    plan.session_id,
+                )
+                if admission_reason:
+                    logger.debug(
+                        format_log_event(
+                            "agent.review_timer.skip",
+                            bot_id=self._bot_id,
+                            session_id=plan.session_id,
+                            reason=admission_reason,
+                        )
+                    )
+                    continue
             self._in_flight.add(plan.session_id)
             dispatch_task = self._create_dispatch_task(runtime, plan)
             self._in_flight_tasks[plan.session_id] = dispatch_task
