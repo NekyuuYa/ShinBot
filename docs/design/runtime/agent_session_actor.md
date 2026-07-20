@@ -2107,6 +2107,45 @@ materialized target, or resume buffered routing. These are prerequisites for
 the future controller, not authorization to call one from management or runtime
 lifecycle code.
 
+### Execution Provenance Requirement
+
+The next controller prerequisite is not a permissive fallback from a fenced
+request to a bare `(SessionKey, ownership_generation)`. The current
+`FencedMailboxWakeRequest`, wake-target lease, mailbox-handoff evidence, and
+scoped durable relay all name an `admission_fence_id` and generation. That is
+correct for the clean admission path, but a legacy-state handoff completes an
+Actor owner through a migration barrier and deliberately has no admission
+fence. It therefore cannot publish a target through those admission-only
+surfaces today.
+
+A production-ready execution request needs one immutable provenance variant:
+
+```text
+admission provenance
+  = committed admission fence id + generation
+
+migration provenance
+  = completed migration barrier id + source/migration generation
+    + immutable handoff-finalization identity
+```
+
+Both variants must additionally carry the exact Actor ownership generation.
+Validation of the admission variant requires the committed admission row;
+validation of the migration variant requires the terminal barrier sidecar to
+name the same key, final Actor generation, manifest/materializer result, and
+immutable completion identity. Neither variant may be replaced by an empty
+provenance field after a target, mailbox handoff, or routing claim has been
+written.
+
+The future schema migration must make this a single typed execution-provenance
+contract across wake requests, target leases, mailbox-handoff evidence, and
+routing job/outbox rows. Existing admission columns can be migrated only as
+the admission variant. A target lease must validate that complete variant with
+the ownership row in the same transaction, and the scoped relay must claim only
+rows carrying the same variant. This is intentionally a cross-layer refactor:
+loosening only the target lease or only the relay would either strand migrated
+owners or reintroduce a key/generation-only wake path.
+
 Adapter pause-and-drain remains useful only as an optional stronger proof when
 the operator needs to extend the guarantee upstream of normalized core ingress
 or an adapter has another ingress path. It is not a replacement for the core
