@@ -1941,8 +1941,9 @@ observed quiescence, target activation/publication, and ingress-resume phases
 outside this clean persistence slice.
 
 The state machine and its controller are therefore still not mounted. No
-adapter lifecycle currently registers cross-process ingress membership or
-services a durable drain request, and the legacy scheduler has no production
+standard adapter/runtime lifecycle currently constructs and supervises the
+explicit process participant that registers cross-process ingress membership
+and services durable drain requests, and the legacy scheduler has no production
 per-session durable quiescence receipt. These remain explicit prerequisites;
 the journal does not remove readiness blockers or make Actor v2 ownership safe
 to activate.
@@ -2098,10 +2099,13 @@ finalizer proves the target commit semantics needed by that future controller;
 it does not make live legacy migration deployable today.
 
 The barrier and core-drain worker deliberately still have no production
-completion path. They do not deliver requests to other processes, start an
-Actor target, publish a wake lease, atomically refence a materialized target, or
-resume buffered routing. They are prerequisites for the future controller, not
-authorization to call one from management or runtime lifecycle code.
+completion path. The explicit process participant can deliver requests through
+the durable control plane only when a future controller has constructed and
+supervised it for every relevant process; it does not establish that global
+coverage, start an Actor target, publish a wake lease, atomically refence a
+materialized target, or resume buffered routing. These are prerequisites for
+the future controller, not authorization to call one from management or runtime
+lifecycle code.
 
 Adapter pause-and-drain remains useful only as an optional stronger proof when
 the operator needs to extend the guarantee upstream of normalized core ingress
