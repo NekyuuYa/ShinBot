@@ -2181,13 +2181,27 @@ starve an older frozen request, and retrying that request cannot make newer
 barriers disappear behind a reset cursor. The head lap is scheduling fairness
 only; it does not fabricate a positive drain receipt or weaken member grants.
 
+`ActorV2CoreIngressParticipantLifecycle` now composes that worker and service
+around one explicit process callback boundary. It atomically registers every
+adapter owned by one process incarnation before any supplied callback wrapper
+may start receiving events, starts the local durable drain service, and keeps
+advisory heartbeats current for the complete member set. On shutdown it first
+stops every callback source, gives the local service a final drain pass, and
+then atomically retires all local members. If any adapter or core-ingress drain
+request remains unacknowledged, no member is retired: the lifecycle reports
+`retire_blocked` while retaining the stopped callback boundary, grants, service,
+and advisory heartbeats for an explicit retry. A real
+`AgentRuntime.build_legacy_session_local_drain_participant(ingress)` can supply
+its local drain port, including the normal post-ingress signal-admission ticket
+upgrade; that upgrade is bound to the same request and retained for retries.
+
 This remains an unmounted protocol, not a cutover controller. No adapter
-lifecycle currently starts or supervises the local service, no adapter currently
-implements the required lossless pause participant, and no resume protocol
-verifies delivery of post-pause buffered events to the fenced Actor owner. A
-participant heartbeat expiry is intentionally never treated as any of those
-proofs. Until those execution paths are implemented and supervised under the
-same fence,
+manager or standard runtime boot path currently constructs this lifecycle, no
+built-in adapter currently implements the required explicit callback boundary
+or lossless pause participant, and no resume protocol verifies delivery of
+post-pause buffered events to the fenced Actor owner. A participant heartbeat
+expiry is intentionally never treated as any of those proofs. Until those
+execution paths are implemented and supervised under the same fence,
 `actor_v2_ownership_ingress_cutover_controller_unavailable` remains a real
 blocker.
 

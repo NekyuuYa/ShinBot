@@ -190,6 +190,78 @@ def test_membership_heartbeat_is_token_free_and_never_auto_retires(
     assert str(row["holder_token_digest"]) != grant.holder_token
 
 
+def test_batch_membership_registration_is_all_or_nothing(tmp_path: Path) -> None:
+    """A process cannot expose one adapter member when another registration conflicts."""
+
+    now = [100.0]
+    database = _database(tmp_path)
+    repository = _repository(
+        database,
+        now,
+        member_ids=("member-existing", "member-batch-a", "member-batch-b"),
+        holder_tokens=("token-existing", "token-batch-a", "token-batch-b"),
+    )
+    repository.register_participant(
+        adapter_instance_id="adapter-b",
+        participant_id="process-a:incarnation-a",
+        participant_epoch=1,
+    )
+
+    with pytest.raises(ActorV2IngressDrainConflict, match="durable history"):
+        repository.register_participants(
+            adapter_instance_ids=("adapter-a", "adapter-b"),
+            participant_id="process-a:incarnation-a",
+            participant_epoch=1,
+        )
+
+    assert repository.list_participants(adapter_instance_id="adapter-a") == ()
+    assert tuple(
+        participant.member_id
+        for participant in repository.list_participants(adapter_instance_id="adapter-b")
+    ) == ("member-existing",)
+
+
+def test_batch_retirement_keeps_every_member_visible_when_one_drain_is_open(
+    tmp_path: Path,
+) -> None:
+    """An unacknowledged member blocks terminal updates for the whole process scope."""
+
+    now = [100.0]
+    database = _database(tmp_path)
+    cutover, admission_grant = _reserved_cutover(
+        database,
+        now,
+        adapter_instance_ids=("adapter-b",),
+    )
+    repository = _repository(
+        database,
+        now,
+        member_ids=("member-a", "member-b"),
+        holder_tokens=("token-a", "token-b"),
+    )
+    grants = repository.register_participants(
+        adapter_instance_ids=("adapter-a", "adapter-b"),
+        participant_id="process-a:incarnation-a",
+        participant_epoch=1,
+    )
+    request = repository.begin_drain(
+        cutover_id=cutover.identity.cutover_id,
+        admission_grant=admission_grant,
+    )
+
+    with pytest.raises(ActorV2IngressDrainConflict, match="before acknowledging"):
+        repository.retire_participants(grants)
+
+    assert request.unacknowledged_members[0].member_id == "member-b"
+    assert tuple(
+        participant.status
+        for participant in repository.list_participants(active_only=True)
+    ) == (
+        ActorV2IngressParticipantStatus.ACTIVE,
+        ActorV2IngressParticipantStatus.ACTIVE,
+    )
+
+
 def test_drain_requires_coverage_and_seals_all_current_members(tmp_path: Path) -> None:
     """Every adapter needs coverage, and a sealed request rejects late members."""
 

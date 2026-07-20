@@ -338,10 +338,15 @@ class ActorV2CoreIngressDrainProcessWorker:
                 state.legacy_ticket,
                 timeout_seconds=_remaining_timeout(deadline),
             )
-            if observed.ticket != state.legacy_ticket:
+            if not _compatible_legacy_ticket_update(state.legacy_ticket, observed.ticket):
                 raise ActorV2CoreIngressDrainWorkerConflict(
                     "legacy local drain receipt belongs to another local ticket"
                 )
+            # The real local drainer freezes signal admission only after
+            # pre-freeze ingress has quiesced. Its receipt therefore upgrades
+            # the initial ticket with that same-request signal capability.
+            # Retain the upgrade so a retry cannot rebuild or replace it.
+            state.legacy_ticket = observed.ticket
             state.legacy_receipt = observed
 
     def _acknowledge_members(
@@ -424,6 +429,26 @@ def _request_identity(request: ActorV2CoreIngressDrainRequest) -> tuple[object, 
         request.migration_generation,
         request.members,
     )
+
+
+def _compatible_legacy_ticket_update(
+    previous: LegacySessionLocalDrainTicket,
+    observed: LegacySessionLocalDrainTicket,
+) -> bool:
+    """Allow only the drainer's one-way same-request signal-ticket upgrade."""
+
+    if not isinstance(previous, LegacySessionLocalDrainTicket) or not isinstance(
+        observed,
+        LegacySessionLocalDrainTicket,
+    ):
+        return False
+    if (
+        observed.request != previous.request
+        or observed.ingress_ticket != previous.ingress_ticket
+        or observed.waiting_input_ticket != previous.waiting_input_ticket
+    ):
+        return False
+    return previous.signal_ticket is None or observed.signal_ticket == previous.signal_ticket
 
 
 def _core_ingress_receipt_digest(receipt: LegacySessionLocalDrainReceipt) -> str:

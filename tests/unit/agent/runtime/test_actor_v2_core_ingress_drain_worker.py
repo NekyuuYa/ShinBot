@@ -159,6 +159,7 @@ class _LegacyDrain:
 
     events: list[str]
     outcomes: list[bool]
+    defer_signal_freeze: bool = False
     freeze_calls: int = 0
     drain_calls: int = 0
 
@@ -180,11 +181,15 @@ class _LegacyDrain:
                 cutover_id=request.cutover_id,
                 token="waiting-input-token",
             ),
-            signal_ticket=LegacyAgentSignalFreezeTicket(
-                session_id=request.legacy_session_id,
-                cutover_id=request.cutover_id,
-                freeze_epoch=1,
-                token="legacy-signal-token",
+            signal_ticket=(
+                None
+                if self.defer_signal_freeze
+                else LegacyAgentSignalFreezeTicket(
+                    session_id=request.legacy_session_id,
+                    cutover_id=request.cutover_id,
+                    freeze_epoch=1,
+                    token="legacy-signal-token",
+                )
             ),
         )
 
@@ -200,8 +205,18 @@ class _LegacyDrain:
         self.drain_calls += 1
         self.events.append("legacy.drain")
         quiescent = self.outcomes.pop(0)
+        active_ticket = ticket
+        if ticket.signal_ticket is None:
+            active_ticket = ticket.with_signal_ticket(
+                LegacyAgentSignalFreezeTicket(
+                    session_id=ticket.request.legacy_session_id,
+                    cutover_id=ticket.request.cutover_id,
+                    freeze_epoch=1,
+                    token="legacy-signal-token",
+                )
+            )
         return LegacySessionLocalDrainReceipt(
-            ticket=ticket,
+            ticket=active_ticket,
             ingress=LegacyIngressQuiescenceReceipt(
                 ticket=ticket.ingress_ticket,
                 status=(
@@ -215,7 +230,7 @@ class _LegacyDrain:
                 quiescent=quiescent,
             ),
             agent_signals=LegacyAgentSignalQuiescenceReceipt(
-                ticket=ticket.signal_ticket,
+                ticket=active_ticket.signal_ticket,
                 status=(
                     LegacyAgentSignalQuiescenceStatus.QUIESCENT
                     if quiescent
@@ -297,6 +312,25 @@ async def test_worker_retries_local_drain_without_repeating_the_freeze() -> None
     assert second.status is ActorV2CoreIngressDrainWorkerStatus.ACKNOWLEDGED
     assert events == ["legacy.freeze", "legacy.drain", "legacy.drain"]
     assert tuple(repository.acknowledgements) == ("member-a",)
+
+
+@pytest.mark.asyncio
+async def test_worker_accepts_same_request_signal_ticket_upgrade() -> None:
+    """The real drainer may attach signal-admission state after ingress drains."""
+
+    events: list[str] = []
+    member = _member(member_id="member-a", adapter_instance_id="adapter-a")
+    request = _request(member)
+    worker, repository = _worker(
+        request,
+        _LegacyDrain(events, [True], defer_signal_freeze=True),
+    )
+
+    outcome = await worker.service_request(request.request_id)
+
+    assert outcome.status is ActorV2CoreIngressDrainWorkerStatus.ACKNOWLEDGED
+    assert tuple(repository.acknowledgements) == ("member-a",)
+    assert events == ["legacy.freeze", "legacy.drain"]
 
 
 @pytest.mark.asyncio

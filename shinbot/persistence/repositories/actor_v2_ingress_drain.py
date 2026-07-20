@@ -14,7 +14,7 @@ import json
 import math
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from sqlite3 import Connection, Row
 
 from shinbot.core.dispatch.actor_v2_admission import ActorV2AdmissionGrant
@@ -96,55 +96,92 @@ class ActorV2IngressDrainRepository(Repository):
         escape a snapshot that has already begun.
         """
 
-        adapter_id = _identifier(adapter_instance_id, "adapter_instance_id")
+        return self.register_participants(
+            adapter_instance_ids=(adapter_instance_id,),
+            participant_id=participant_id,
+            participant_epoch=participant_epoch,
+        )[0]
+
+    def register_participants(
+        self,
+        *,
+        adapter_instance_ids: Iterable[str],
+        participant_id: str,
+        participant_epoch: int,
+    ) -> tuple[ActorV2IngressParticipantGrant, ...]:
+        """Atomically register one process incarnation for several adapters.
+
+        A process that owns more than one adapter must not expose a partial
+        membership set between individual registrations. The same writer
+        transaction either creates every requested active member or creates
+        none, so a concurrent drain can snapshot the full process scope or no
+        scope at all. Returned holder capabilities remain local-only.
+        """
+
+        adapter_ids = _adapter_instance_ids(adapter_instance_ids)
         process_id = _identifier(participant_id, "participant_id")
         epoch = _positive_int(participant_epoch, "participant_epoch")
-        member_id = _identifier(self._member_id_factory(), "member_id")
-        token = _identifier(self._holder_token_factory(), "holder_token")
+        registrations = tuple(
+            (
+                adapter_id,
+                _identifier(self._member_id_factory(), "member_id"),
+                _identifier(self._holder_token_factory(), "holder_token"),
+            )
+            for adapter_id in adapter_ids
+        )
+        member_ids = tuple(registration[1] for registration in registrations)
+        if len(set(member_ids)) != len(member_ids):
+            raise ActorV2IngressDrainConflict(
+                "participant member identity factory repeated within one registration"
+            )
         now = _finite_time(self._clock(), "clock")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            _require_adapter_unfrozen(conn, adapter_id)
-            existing = conn.execute(
-                """
-                SELECT member_id
-                FROM agent_runtime_actor_v2_ingress_participants
-                WHERE adapter_instance_id = ?
-                  AND participant_id = ?
-                  AND participant_epoch = ?
-                """,
-                (adapter_id, process_id, epoch),
-            ).fetchone()
-            if existing is not None:
-                raise ActorV2IngressDrainConflict(
-                    "adapter participant incarnation has durable history already"
+            for adapter_id, _member_id, _token in registrations:
+                _require_adapter_unfrozen(conn, adapter_id)
+                existing = conn.execute(
+                    """
+                    SELECT member_id
+                    FROM agent_runtime_actor_v2_ingress_participants
+                    WHERE adapter_instance_id = ?
+                      AND participant_id = ?
+                      AND participant_epoch = ?
+                    """,
+                    (adapter_id, process_id, epoch),
+                ).fetchone()
+                if existing is not None:
+                    raise ActorV2IngressDrainConflict(
+                        "adapter participant incarnation has durable history already"
+                    )
+            for adapter_id, member_id, token in registrations:
+                conn.execute(
+                    """
+                    INSERT INTO agent_runtime_actor_v2_ingress_participants (
+                        member_id, adapter_instance_id, participant_id,
+                        participant_epoch, holder_token_digest, status,
+                        registered_at, last_heartbeat_at, updated_at,
+                        retired_at, revoked_at, stop_proof_issuer_id,
+                        stop_proof_epoch, stop_proof_digest, stop_proof_summary_code
+                    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL, '', 0, '', '')
+                    """,
+                    (
+                        member_id,
+                        adapter_id,
+                        process_id,
+                        epoch,
+                        _token_digest(token),
+                        now,
+                        now,
+                        now,
+                    ),
                 )
-            conn.execute(
-                """
-                INSERT INTO agent_runtime_actor_v2_ingress_participants (
-                    member_id, adapter_instance_id, participant_id,
-                    participant_epoch, holder_token_digest, status,
-                    registered_at, last_heartbeat_at, updated_at,
-                    retired_at, revoked_at, stop_proof_issuer_id,
-                    stop_proof_epoch, stop_proof_digest, stop_proof_summary_code
-                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL, '', 0, '', '')
-                """,
-                (
-                    member_id,
-                    adapter_id,
-                    process_id,
-                    epoch,
-                    _token_digest(token),
-                    now,
-                    now,
-                    now,
-                ),
+            return tuple(
+                ActorV2IngressParticipantGrant(
+                    participant=_load_participant_required(conn, member_id),
+                    holder_token=token,
+                )
+                for _adapter_id, member_id, token in registrations
             )
-            participant = _load_participant_required(conn, member_id)
-        return ActorV2IngressParticipantGrant(
-            participant=participant,
-            holder_token=token,
-        )
 
     def get_participant(self, member_id: str) -> ActorV2IngressParticipant | None:
         """Return one token-free membership snapshot by its stable member id."""
@@ -195,33 +232,55 @@ class ActorV2IngressDrainRepository(Repository):
     ) -> ActorV2IngressParticipant:
         """Update an advisory liveness observation for one exact active member."""
 
+        return self.heartbeat_participants((grant,))[0]
+
+    def heartbeat_participants(
+        self,
+        grants: Iterable[ActorV2IngressParticipantGrant],
+    ) -> tuple[ActorV2IngressParticipant, ...]:
+        """Atomically record advisory heartbeats for one local member set.
+
+        This intentionally provides no lease or expiry semantics. It only
+        prevents a process lifecycle from reporting a partially refreshed
+        member set after a concurrent terminal change invalidates one of its
+        local holder capabilities.
+        """
+
+        normalized_grants = _participant_grants(grants)
         now = _finite_time(self._clock(), "clock")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            current = _require_active_grant(conn, grant)
-            observed_at = max(now, current.last_heartbeat_at)
-            updated = conn.execute(
-                """
-                UPDATE agent_runtime_actor_v2_ingress_participants
-                SET last_heartbeat_at = ?, updated_at = ?
-                WHERE member_id = ?
-                  AND status = 'active'
-                  AND holder_token_digest = ?
-                  AND last_heartbeat_at = ?
-                """,
-                (
-                    observed_at,
-                    observed_at,
-                    current.member_id,
-                    _token_digest(grant.holder_token),
-                    current.last_heartbeat_at,
-                ),
+            current_pairs = tuple(
+                (_require_active_grant(conn, grant), grant)
+                for grant in normalized_grants
             )
-            if updated.rowcount != 1:
-                raise ActorV2IngressDrainConflict(
-                    "participant changed while recording heartbeat"
+            for current, grant in current_pairs:
+                observed_at = max(now, current.last_heartbeat_at)
+                updated = conn.execute(
+                    """
+                    UPDATE agent_runtime_actor_v2_ingress_participants
+                    SET last_heartbeat_at = ?, updated_at = ?
+                    WHERE member_id = ?
+                      AND status = 'active'
+                      AND holder_token_digest = ?
+                      AND last_heartbeat_at = ?
+                    """,
+                    (
+                        observed_at,
+                        observed_at,
+                        current.member_id,
+                        _token_digest(grant.holder_token),
+                        current.last_heartbeat_at,
+                    ),
                 )
-            return _load_participant_required(conn, current.member_id)
+                if updated.rowcount != 1:
+                    raise ActorV2IngressDrainConflict(
+                        "participant changed while recording heartbeat"
+                    )
+            return tuple(
+                _load_participant_required(conn, current.member_id)
+                for current, _grant in current_pairs
+            )
 
     def validate_participant_grant(
         self,
@@ -254,32 +313,56 @@ class ActorV2IngressDrainRepository(Repository):
         blocks retirement, preserving the missing member as a hard failure.
         """
 
+        return self.retire_participants((grant,))[0]
+
+    def retire_participants(
+        self,
+        grants: Iterable[ActorV2IngressParticipantGrant],
+    ) -> tuple[ActorV2IngressParticipant, ...]:
+        """Atomically retire a stopped process's complete member set.
+
+        Every member is validated and checked for unacknowledged adapter or
+        core-ingress drain work before any terminal update occurs. A blocked
+        member therefore leaves *all* supplied members active, preserving the
+        process as a visible hard failure rather than allowing a partial
+        process retirement to hide drain coverage.
+        """
+
+        normalized_grants = _participant_grants(grants)
         now = _finite_time(self._clock(), "clock")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            current = _require_active_grant(conn, grant)
-            _require_no_unacknowledged_snapshot(conn, current.member_id)
-            retired_at = max(now, current.updated_at)
-            updated = conn.execute(
-                """
-                UPDATE agent_runtime_actor_v2_ingress_participants
-                SET status = 'retired', updated_at = ?, retired_at = ?
-                WHERE member_id = ?
-                  AND status = 'active'
-                  AND holder_token_digest = ?
-                """,
-                (
-                    retired_at,
-                    retired_at,
-                    current.member_id,
-                    _token_digest(grant.holder_token),
-                ),
+            current_pairs = tuple(
+                (_require_active_grant(conn, grant), grant)
+                for grant in normalized_grants
             )
-            if updated.rowcount != 1:
-                raise ActorV2IngressDrainConflict(
-                    "participant changed while retiring"
+            for current, _grant in current_pairs:
+                _require_no_unacknowledged_snapshot(conn, current.member_id)
+            for current, grant in current_pairs:
+                retired_at = max(now, current.updated_at)
+                updated = conn.execute(
+                    """
+                    UPDATE agent_runtime_actor_v2_ingress_participants
+                    SET status = 'retired', updated_at = ?, retired_at = ?
+                    WHERE member_id = ?
+                      AND status = 'active'
+                      AND holder_token_digest = ?
+                    """,
+                    (
+                        retired_at,
+                        retired_at,
+                        current.member_id,
+                        _token_digest(grant.holder_token),
+                    ),
                 )
-            return _load_participant_required(conn, current.member_id)
+                if updated.rowcount != 1:
+                    raise ActorV2IngressDrainConflict(
+                        "participant changed while retiring"
+                    )
+            return tuple(
+                _load_participant_required(conn, current.member_id)
+                for current, _grant in current_pairs
+            )
 
     def revoke_with_stop_proof(
         self,
@@ -1042,6 +1125,35 @@ def _adapter_instance_ids(values: object) -> tuple[str, ...]:
     if not normalized or len(set(normalized)) != len(normalized):
         raise ValueError("adapter_instance_ids must be a non-empty unique set")
     return tuple(sorted(normalized))
+
+
+def _participant_grants(
+    values: Iterable[ActorV2IngressParticipantGrant],
+) -> tuple[ActorV2IngressParticipantGrant, ...]:
+    """Normalize one non-empty, non-overlapping local holder capability set."""
+
+    try:
+        grants = tuple(values)
+    except TypeError as exc:
+        raise TypeError("participant grants must be iterable") from exc
+    if not grants:
+        raise ValueError("participant grants must not be empty")
+    if any(not isinstance(grant, ActorV2IngressParticipantGrant) for grant in grants):
+        raise TypeError("participant grants must contain ActorV2IngressParticipantGrant values")
+    member_ids = tuple(grant.participant.member_id for grant in grants)
+    if len(set(member_ids)) != len(member_ids):
+        raise ValueError("participant grants cannot repeat a member")
+    return tuple(
+        sorted(
+            grants,
+            key=lambda grant: (
+                grant.participant.adapter_instance_id,
+                grant.participant.participant_id,
+                grant.participant.participant_epoch,
+                grant.participant.member_id,
+            ),
+        )
+    )
 
 
 def _identifier(value: object, field_name: str) -> str:
