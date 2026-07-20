@@ -1498,6 +1498,7 @@ class AgentRuntime:
                     session_id=session_id,
                     profile_id=profile.profile_id,
                     state=getattr(decision.state, "value", str(decision.state)),
+                    remaining_unread_count=decision.remaining_unread_count,
                     skipped_reason=decision.skipped_reason or "",
                 )
             )

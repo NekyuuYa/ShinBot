@@ -1989,11 +1989,33 @@ class AgentScheduler:
             return ActiveReplyCompletionDecision(
                 session_id=session_id,
                 state=current_state,
+                remaining_unread_count=self.count_unread_messages(session_id),
                 skipped_reason="not_active_reply",
             )
 
         handled_events = self._inbox.mark_high_priority_events_handled(session_id)
+        remaining_unread_count = self.count_unread_messages(session_id)
         resume = self._state_store.get_active_reply_resume(session_id)
+        if review_after is False or (
+            review_after is None and remaining_unread_count == 0
+        ):
+            refreshed_plan = self._refresh_review_plan_after_active_reply(
+                session_id,
+                previous_plan=self._state_store.get_review_plan(session_id),
+                checked_at=checked_at,
+                remaining_unread_count=remaining_unread_count,
+            )
+            return self._prepare_idle_after_active_reply(
+                session_id,
+                plan=refreshed_plan,
+                handled_events=handled_events,
+                remaining_unread_count=remaining_unread_count,
+                skipped_reason=(
+                    "no_unread_after_active_reply"
+                    if review_after is None
+                    else "review_not_requested"
+                ),
+            )
         if resume is not None:
             handler = self._ACTIVE_REPLY_RESUME_HANDLERS.get(resume.resume_state)
             if handler is None:
@@ -2009,6 +2031,21 @@ class AgentScheduler:
             )
 
         plan = self._state_store.get_review_plan(session_id)
+        if plan is None:
+            plan = replace(
+                self._review_policy.initial_plan(
+                    session_id=session_id,
+                    now=checked_at,
+                ),
+                next_review_at=checked_at,
+                reason=(
+                    "forced_review_after_active_reply"
+                    if review_after is True
+                    else "missing_review_plan_after_active_reply"
+                ),
+                updated_at=checked_at,
+            )
+            self._state_store.set_review_plan(plan)
         should_review = self._should_review_after_active_reply(
             plan=plan,
             review_after=review_after,
@@ -2019,12 +2056,47 @@ class AgentScheduler:
                 session_id,
                 plan=plan,
                 handled_events=handled_events,
+                remaining_unread_count=remaining_unread_count,
             )
         return self._prepare_deferred_review_after_active_reply(
             session_id,
             plan=plan,
             handled_events=handled_events,
+            remaining_unread_count=remaining_unread_count,
         )
+
+    def _refresh_review_plan_after_active_reply(
+        self,
+        session_id: str,
+        *,
+        previous_plan: ReviewPlan | None,
+        checked_at: float,
+        remaining_unread_count: int,
+    ) -> ReviewPlan:
+        """Replace a stale pending plan before returning active reply to idle."""
+
+        plan = self._review_policy.plan_after_active_reply(
+            session_id=session_id,
+            now=checked_at,
+            previous_plan=previous_plan,
+        )
+        self._state_store.set_review_plan(plan)
+        logger.info(
+            format_log_event(
+                "agent.review.plan.refreshed_after_active_reply",
+                session_id=session_id,
+                remaining_unread_count=remaining_unread_count,
+                previous_next_review_at=(
+                    f"{previous_plan.next_review_at:.2f}"
+                    if previous_plan is not None
+                    else ""
+                ),
+                next_review_at=f"{plan.next_review_at:.2f}",
+                next_review_after_seconds=f"{max(0.0, plan.next_review_at - checked_at):.2f}",
+                reason=plan.reason,
+            )
+        )
+        return plan
 
     def _prepare_resumed_review_after_active_reply(
         self,
@@ -2071,6 +2143,7 @@ class AgentScheduler:
             state=AgentState.REVIEW,
             review_plan=plan,
             handled_high_priority_events=handled_events,
+            remaining_unread_count=self.count_unread_messages(session_id),
             review_started=True,
         )
 
@@ -2080,6 +2153,8 @@ class AgentScheduler:
         *,
         plan: ReviewPlan | None,
         handled_events: list[HighPriorityEvent],
+        remaining_unread_count: int,
+        skipped_reason: str = "review_not_requested",
     ) -> ActiveReplyCompletionDecision:
         self._transition_state(
             session_id,
@@ -2091,8 +2166,9 @@ class AgentScheduler:
             state=AgentState.IDLE,
             review_plan=plan,
             handled_high_priority_events=handled_events,
+            remaining_unread_count=remaining_unread_count,
             returned_to_idle=True,
-            skipped_reason="missing_review_plan" if plan is None else "review_not_requested",
+            skipped_reason="missing_review_plan" if plan is None else skipped_reason,
         )
 
     def _prepare_deferred_review_after_active_reply(
@@ -2101,6 +2177,7 @@ class AgentScheduler:
         *,
         plan: ReviewPlan,
         handled_events: list[HighPriorityEvent],
+        remaining_unread_count: int,
     ) -> ActiveReplyCompletionDecision:
         self._transition_state(
             session_id,
@@ -2112,6 +2189,7 @@ class AgentScheduler:
             state=AgentState.REVIEW,
             review_plan=plan,
             handled_high_priority_events=handled_events,
+            remaining_unread_count=remaining_unread_count,
             review_started=True,
         )
 

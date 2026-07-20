@@ -273,6 +273,7 @@ class ActiveReplyCompletionDecision:
     state: AgentState
     review_plan: ReviewPlan | None = None
     handled_high_priority_events: list[HighPriorityEvent] = field(default_factory=list)
+    remaining_unread_count: int = 0
     review_started: bool = False
     review_workflow_started: bool = False
     returned_to_idle: bool = False

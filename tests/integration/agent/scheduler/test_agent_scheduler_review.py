@@ -752,6 +752,115 @@ async def test_scheduler_completes_active_reply_to_idle_when_review_is_not_reque
 
 
 @pytest.mark.asyncio
+async def test_scheduler_refreshes_review_plan_when_active_reply_drains_unread() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal(is_mentioned=True))
+    scheduler.mark_active_chat_consumed("bot:group:room", [1])
+
+    decision = await scheduler.complete_active_reply("bot:group:room", now=20.0)
+
+    assert decision.returned_to_idle is True
+    assert decision.remaining_unread_count == 0
+    assert decision.skipped_reason == "no_unread_after_active_reply"
+    assert decision.review_plan is not None
+    assert decision.review_plan.next_review_at == 120.0
+    assert decision.review_plan.reason == "fixed_after_active_reply"
+    assert scheduler.review_plan_for("bot:group:room") == decision.review_plan
+    assert dispatcher.review_calls == []
+
+    due = await scheduler.run_due_review("bot:group:room", now=52.0)
+
+    assert due.skipped_reason == "review_not_due"
+    assert dispatcher.review_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_reviews_only_remaining_unread_after_active_reply() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal(is_mentioned=True))
+    await scheduler.accept_signal(make_signal(message_log_id=2))
+    scheduler.mark_active_chat_consumed("bot:group:room", [1])
+
+    decision = await scheduler.complete_active_reply("bot:group:room", now=52.0)
+
+    assert decision.review_started is True
+    assert decision.review_workflow_started is True
+    assert decision.remaining_unread_count == 1
+    assert decision.state == AgentState.REVIEW
+    assert [
+        message.message_log_id
+        for message in dispatcher.review_calls[0]["unread_messages"]
+    ] == [2]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_explicit_active_reply_idle_refreshes_due_plan() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal(is_mentioned=True))
+
+    decision = await scheduler.complete_active_reply(
+        "bot:group:room",
+        review_after=False,
+        now=52.0,
+    )
+
+    assert decision.returned_to_idle is True
+    assert decision.remaining_unread_count == 1
+    assert decision.review_plan is not None
+    assert decision.review_plan.next_review_at == 152.0
+    assert decision.review_plan.reason == "fixed_after_active_reply"
+    assert dispatcher.review_calls == []
+
+    due = await scheduler.run_due_review("bot:group:room", now=52.0)
+
+    assert due.skipped_reason == "review_not_due"
+    assert dispatcher.review_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_resume_empty_review_after_active_reply() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    await scheduler.accept_signal(make_signal(message_log_id=2, is_mentioned=True))
+    scheduler.mark_active_chat_consumed("bot:group:room", [1, 2])
+
+    decision = await scheduler.complete_active_reply("bot:group:room", now=52.0)
+
+    assert decision.returned_to_idle is True
+    assert decision.review_started is False
+    assert decision.remaining_unread_count == 0
+    assert decision.review_plan is not None
+    assert decision.review_plan.next_review_at == 152.0
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert dispatcher.review_calls == []
+
+
+@pytest.mark.asyncio
 async def test_scheduler_completes_active_reply_and_runs_forced_review() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(

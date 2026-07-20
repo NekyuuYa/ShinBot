@@ -384,6 +384,72 @@ async def test_runtime_runs_active_reply_model_outside_session_lock(
 
 
 @pytest.mark.asyncio
+async def test_runtime_refreshes_plan_after_successful_active_reply(
+    tmp_path: Path,
+) -> None:
+    """A drained active reply supersedes the plan created at message ingress."""
+
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime(
+        [
+            make_generate_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "reply handled"})
+                ]
+            )
+        ]
+    )
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    scheduler_now = 10.0
+    profile.agent_scheduler._now = lambda: scheduler_now
+    session_id = "test-bot:group:group:1"
+    message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="active-reply-plan-refresh",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="@bot hello",
+            content_json="[]",
+            role="user",
+            created_at=10_000.0,
+            is_mentioned=True,
+        )
+    )
+
+    try:
+        await runtime.handle_agent_signal(
+            make_signal(message_log_id=message_log_id, is_mentioned=True)
+        )
+        initial_plan = profile.agent_scheduler.review_plan_for(session_id)
+        assert initial_plan is not None
+
+        scheduler_now = 20.0
+        task_prefix = f"agent:{profile.bot_id or profile.profile_id}:active_reply"
+        active_reply_tasks = runtime.task_manager.tasks(prefix=task_prefix)
+        assert len(active_reply_tasks) == 1
+        await asyncio.wait_for(active_reply_tasks[0], timeout=0.5)
+
+        refreshed_plan = profile.agent_scheduler.review_plan_for(session_id)
+        assert refreshed_plan is not None
+        assert refreshed_plan.next_review_at == 920.0
+        assert refreshed_plan.next_review_at > initial_plan.next_review_at
+        assert profile.agent_scheduler.state_for(session_id) == AgentState.IDLE
+        assert profile.agent_scheduler.unread_messages(session_id) == []
+
+        stale_due = profile.agent_scheduler.prepare_due_review(
+            session_id,
+            now=initial_plan.next_review_at,
+        )
+        assert stale_due.skipped_reason == "review_not_due"
+        assert profile.agent_scheduler.state_for(session_id) == AgentState.IDLE
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_runtime_preserves_active_reply_input_after_model_failure(
     tmp_path: Path,
 ) -> None:

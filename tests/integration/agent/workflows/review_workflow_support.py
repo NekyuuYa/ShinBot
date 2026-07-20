@@ -105,6 +105,20 @@ class FixedReviewPolicy:
             updated_at=now,
         )
 
+    def plan_after_active_reply(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        previous_plan: ReviewPlan | None = None,
+    ) -> ReviewPlan:
+        return ReviewPlan(
+            session_id=session_id,
+            next_review_at=now + 60.0,
+            reason="fixed_after_active_reply",
+            updated_at=now,
+        )
+
 
 def make_agent_signal(
     *,

@@ -38,6 +38,15 @@ class ReviewPolicy(Protocol):
     ) -> ReviewPlan:
         """Return the next review plan after a review completes without active chat."""
 
+    def plan_after_active_reply(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        previous_plan: ReviewPlan | None = None,
+    ) -> ReviewPlan:
+        """Return a fresh idle plan after active reply consumed all pending input."""
+
 
 class DefaultReviewPolicy:
     """Static review policy used until LLM/dynamic review planning is introduced."""
@@ -71,6 +80,25 @@ class DefaultReviewPolicy:
 
         Returns:
             A new review plan for the session.
+        """
+        return self._build_plan(session_id=session_id, now=now)
+
+    def plan_after_active_reply(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        previous_plan: ReviewPlan | None = None,
+    ) -> ReviewPlan:
+        """Return the next idle plan after active reply drained the inbox.
+
+        Args:
+            session_id: The session whose active reply completed.
+            now: Current timestamp in seconds since epoch.
+            previous_plan: The superseded plan, if one existed.
+
+        Returns:
+            A fresh review plan measured from active-reply completion.
         """
         return self._build_plan(session_id=session_id, now=now)
 

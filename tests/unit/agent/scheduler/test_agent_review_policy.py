@@ -43,3 +43,22 @@ def test_default_review_policy_builds_plan_after_review() -> None:
     assert plan.next_review_at == 320.0
     assert plan.reason == "after_review_wait"
     assert plan.updated_at == 20.0
+
+
+def test_default_review_policy_builds_plan_after_active_reply() -> None:
+    policy = DefaultReviewPolicy(
+        ReviewPolicyConfig(
+            default_review_after_seconds=180.0,
+            default_reason="after_active_reply_wait",
+        )
+    )
+
+    plan = policy.plan_after_active_reply(
+        session_id="bot:group:room",
+        now=30.0,
+    )
+
+    assert plan.session_id == "bot:group:room"
+    assert plan.next_review_at == 210.0
+    assert plan.reason == "after_active_reply_wait"
+    assert plan.updated_at == 30.0

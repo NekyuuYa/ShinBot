@@ -168,6 +168,16 @@ default), rather than waiting for active-chat interest decay and the normal
 review interval. This is a compatibility recovery boundary; it still commits
 through the runtime session mutex and review-plan fence.
 
+Legacy active-reply completion also decides scheduling from the committed
+unread remainder rather than only from the plan created at message ingress. If
+the reply consumed every pending message, completion replaces the old plan with
+a fresh idle plan measured from completion time before returning to `IDLE`. If
+unread messages remain, a due plan reviews only that remainder; a future plan
+is preserved. An explicit management `review_after=false` returns to `IDLE`
+with a refreshed plan so the next timer tick cannot immediately undo the
+operator transition. The completion decision and runtime log expose the
+remaining unread count for diagnosis.
+
 ## Invariants
 
 After Actor v2 activation for a session:
