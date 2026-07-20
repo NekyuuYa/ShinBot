@@ -86,7 +86,7 @@ def require_auth(
             },
         )
     try:
-        auth_config.decode_token(token)
+        claims = auth_config.decode_token(token)
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=401,
@@ -97,6 +97,14 @@ def require_auth(
             status_code=401,
             detail={"code": EC.AUTH_TOKEN_INVALID, "message": "Invalid or malformed token"},
         ) from None
+    normalized_subject = ""
+    subject = claims.get("sub")
+    if isinstance(subject, str):
+        normalized_subject = subject.strip()
+    if not normalized_subject:
+        username = claims.get("username")
+        normalized_subject = username.strip() if isinstance(username, str) else ""
+    request.state.auth_subject = normalized_subject or auth_config.username
 
 
 # Shorthand Depends wrappers used in router files

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,6 +46,7 @@ from shinbot.agent.runtime.legacy_session_quiescence import (
 from shinbot.agent.runtime.legacy_signal_admission import (
     LegacyAgentSignalAdmissionRegistry,
     LegacyAgentSignalFreezeTicket,
+    LegacyAgentSignalFrozen,
     LegacyAgentSignalQuiescenceReceipt,
 )
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
@@ -85,6 +86,11 @@ from shinbot.agent.runtime.session_actor.idle_review_planning_context import (
 from shinbot.agent.runtime.session_actor.profile_handler_graph import (
     ActorProfileWorkflowPorts,
     ActorV2ProfileHandlerGraph,
+)
+from shinbot.agent.runtime.session_actor.review_due_scanner import (
+    DurableReviewDueRepository,
+    ManualReviewAdmissionError,
+    ManualReviewAdmissionService,
 )
 from shinbot.agent.runtime.session_actor.review_workflow import (
     RunnerReviewWorkflow,
@@ -146,7 +152,14 @@ from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.workflows.chat_actions import register_chat_action_tools
-from shinbot.core.dispatch.agent_identity import DEFAULT_SESSION_ACTOR_PROFILE_ID
+from shinbot.core.dispatch.agent_identity import (
+    DEFAULT_SESSION_ACTOR_PROFILE_ID,
+    SessionKey,
+)
+from shinbot.core.dispatch.agent_ownership import (
+    AgentRuntimeOwnershipMode,
+    AgentRuntimeOwnershipStatus,
+)
 from shinbot.core.instance_config import (
     resolve_instance_runtime_config,
     select_response_profile,
@@ -171,6 +184,25 @@ if TYPE_CHECKING:
     from shinbot.persistence import DatabaseManager
 
 logger = get_logger(__name__, source="agent:runtime", color="magenta")
+
+
+@dataclass(slots=True, frozen=True)
+class AgentRuntimeReviewAdmissionResult:
+    """Outcome of one profile-scoped management review request.
+
+    ``actor_v2`` means the request was durably admitted to the fenced mailbox,
+    not that an Actor target was published or that review work has started.
+    """
+
+    profile_id: str
+    session_id: str
+    success: bool
+    runtime_kind: str
+    disposition: str
+    reason: str = ""
+    request_id: str = ""
+    event_id: str = ""
+    mailbox_id: int | None = None
 
 
 class AgentRuntimeProfile:
@@ -712,6 +744,7 @@ class AgentRuntime:
         self.database = database
         self._actor_v2_assembly: ActorV2RuntimeAssembly | None = None
         self._actor_v2_handler_graph: ActorV2ProfileHandlerGraph | None = None
+        self._manual_review_admission: ManualReviewAdmissionService | None = None
         self.personas = PersonaFileRepository.from_data_dir(runtime_data_dir)
         self.personas.ensure_default_persona()
         self.prompt_definitions = PromptDefinitionFileRepository.from_data_dir(runtime_data_dir)
@@ -822,6 +855,12 @@ class AgentRuntime:
             media_service=self.media_service,
             inspection_runner=self.media_inspection_runner,
         )
+        # This producer has no mailbox notifier. Admission can only create
+        # durable work for an already-owned Actor v2 session; a future target
+        # lifecycle remains solely responsible for publication and delivery.
+        self._manual_review_admission = ManualReviewAdmissionService(
+            DurableReviewDueRepository(database)
+        )
         self._actor_v2_assembly = self._compose_actor_v2_diagnostics(database)
 
     @property
@@ -883,6 +922,192 @@ class AgentRuntime:
         """Select by stable ``BotServiceConfig.id``, falling back to default."""
 
         return self._profiles_by_bot_id.get(str(bot_id or "").strip(), self._default_profile)
+
+    async def request_review_for_profile(
+        self,
+        profile_id: str,
+        session_id: str,
+        *,
+        request_id: str,
+        requested_by: str,
+        reason: str = "management_trigger_review",
+    ) -> AgentRuntimeReviewAdmissionResult:
+        """Request review through the runtime selected by an exact session key.
+
+        Legacy ownership retains the existing scheduler behavior. An active
+        Actor v2 owner receives only a durable ``ManualReviewRequested``
+        mailbox admission; this method does not claim ownership, publish a
+        target, or wake an Actor directly.
+
+        Args:
+            profile_id: Stable durable Agent profile id.
+            session_id: Bot-scoped session id within ``profile_id``.
+            request_id: Caller-owned idempotency identity.
+            requested_by: Authenticated management principal for the journal.
+            reason: Stable management reason carried by the mailbox event.
+
+        Returns:
+            A typed outcome that distinguishes a legacy trigger from an Actor
+            v2 mailbox admission or fail-closed rejection.
+        """
+
+        normalized_profile_id = str(profile_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        normalized_request_id = str(request_id or "").strip()
+        normalized_requested_by = str(requested_by or "").strip()
+        normalized_reason = str(reason or "").strip()
+        if not normalized_profile_id or not normalized_session_id:
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=normalized_profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="unavailable",
+                disposition="invalid_session_key",
+                reason="profile_id_and_session_id_required",
+            )
+        if not normalized_request_id:
+            raise ValueError("request_id must not be empty")
+        if not normalized_requested_by:
+            raise ValueError("requested_by must not be empty")
+        if not normalized_reason:
+            raise ValueError("reason must not be empty")
+
+        profile = self._profile_for_id(normalized_profile_id)
+        if profile is None:
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=normalized_profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="unavailable",
+                disposition="unknown_profile",
+                reason="profile_not_configured_in_runtime",
+                request_id=normalized_request_id,
+            )
+
+        database = self.database
+        if database is None:
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=profile.profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="unavailable",
+                disposition="runtime_storage_unavailable",
+                reason="agent_runtime_storage_unavailable",
+                request_id=normalized_request_id,
+            )
+
+        key = SessionKey(profile.profile_id, normalized_session_id)
+        ownership = database.agent_runtime_ownership.get(key)
+        if ownership is None:
+            admission_fence = database.actor_v2_admission_fences.get(key)
+            if admission_fence is not None:
+                return AgentRuntimeReviewAdmissionResult(
+                    profile_id=profile.profile_id,
+                    session_id=normalized_session_id,
+                    success=False,
+                    runtime_kind="unavailable",
+                    disposition=f"admission_fence_{admission_fence.status.value}",
+                    reason="session_ownership_is_reserved_for_actor_v2",
+                    request_id=normalized_request_id,
+                )
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=profile.profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="unavailable",
+                disposition="ownership_missing",
+                reason="session_runtime_ownership_missing",
+                request_id=normalized_request_id,
+            )
+
+        if (
+            ownership.status is AgentRuntimeOwnershipStatus.ACTIVE
+            and ownership.mode is AgentRuntimeOwnershipMode.LEGACY
+        ):
+            triggered = await self._trigger_legacy_review_for_profile(
+                profile,
+                normalized_session_id,
+            )
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=profile.profile_id,
+                session_id=normalized_session_id,
+                success=triggered,
+                runtime_kind="legacy",
+                disposition=("triggered" if triggered else "not_triggered"),
+                reason=("" if triggered else "legacy_review_not_startable"),
+                request_id=normalized_request_id,
+            )
+
+        if ownership.status is not AgentRuntimeOwnershipStatus.ACTIVE:
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=profile.profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="unavailable",
+                disposition="ownership_migrating",
+                reason="session_ownership_transition_in_progress",
+                request_id=normalized_request_id,
+            )
+
+        if ownership.mode is not AgentRuntimeOwnershipMode.ACTOR_V2:
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=profile.profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="unavailable",
+                disposition="ownership_unavailable",
+                reason="unsupported_runtime_ownership",
+                request_id=normalized_request_id,
+            )
+
+        admission = self._manual_review_admission
+        if admission is None:
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=profile.profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="actor_v2",
+                disposition="admission_unavailable",
+                reason="actor_v2_manual_review_admission_unavailable",
+                request_id=normalized_request_id,
+            )
+        try:
+            result = await admission.request(
+                key,
+                request_id=normalized_request_id,
+                requested_by=normalized_requested_by,
+                reason=normalized_reason,
+            )
+        except ManualReviewAdmissionError as exc:
+            logger.warning(
+                format_log_event(
+                    "agent.runtime.manual_review_admission_rejected",
+                    profile_id=profile.profile_id,
+                    session_id=normalized_session_id,
+                    request_id=normalized_request_id,
+                    error_code=type(exc).__name__,
+                )
+            )
+            return AgentRuntimeReviewAdmissionResult(
+                profile_id=profile.profile_id,
+                session_id=normalized_session_id,
+                success=False,
+                runtime_kind="actor_v2",
+                disposition="admission_error",
+                reason="manual_review_admission_error",
+                request_id=normalized_request_id,
+            )
+        return AgentRuntimeReviewAdmissionResult(
+            profile_id=profile.profile_id,
+            session_id=normalized_session_id,
+            success=result.accepted,
+            runtime_kind="actor_v2",
+            disposition=result.disposition.value,
+            reason=result.reason,
+            request_id=result.request_id,
+            event_id=result.event_id,
+            mailbox_id=result.mailbox_id,
+        )
 
     def freeze_legacy_session_signal_admission(
         self,
@@ -1804,57 +2029,104 @@ class AgentRuntime:
             )
 
     async def trigger_review(self, session_id: str) -> bool:
-        """Bring the review plan forward to now and run the due review.
+        """Trigger one unambiguous legacy scheduler session.
 
-        This is a non-invasive manual trigger: it adjusts the review plan
-        timing and lets the existing scheduler logic decide the actual state
-        transition.  Only succeeds when the session is in IDLE or REVIEW
-        state; returns ``False`` for all other states without side effects.
+        This compatibility method intentionally does not infer an Actor v2
+        profile from a bare session id. New management callers must use
+        :meth:`request_review_for_profile` so their request retains the full
+        durable ``SessionKey``.
 
         Args:
             session_id: The session to trigger a review for.
 
         Returns:
-            ``True`` if the review was triggered, ``False`` if the session
-            was not found or is in a state that cannot accept a review.
+            ``True`` if exactly one legacy scheduler accepted the request;
+            otherwise ``False`` without selecting among multiple profiles.
         """
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return False
+        profiles = [
+            profile
+            for profile in self._unique_profiles()
+            if normalized_session_id in set(profile.agent_scheduler.list_session_ids())
+        ]
+        if len(profiles) != 1:
+            return False
+        database = self.database
+        if database is None:
+            return False
+        key = SessionKey(profiles[0].profile_id, normalized_session_id)
+        ownership = database.agent_runtime_ownership.get(key)
+        if (
+            ownership is None
+            or ownership.status is not AgentRuntimeOwnershipStatus.ACTIVE
+            or ownership.mode is not AgentRuntimeOwnershipMode.LEGACY
+        ):
+            return False
+        return await self._trigger_legacy_review_for_profile(
+            profiles[0],
+            normalized_session_id,
+        )
+
+    async def _trigger_legacy_review_for_profile(
+        self,
+        profile: AgentRuntimeProfile,
+        session_id: str,
+    ) -> bool:
+        """Admit one legacy management request to the local drain boundary."""
+
+        try:
+            async with self._legacy_signal_admission.admit_signal(session_id):
+                return await self._trigger_admitted_legacy_review_for_profile(
+                    profile,
+                    session_id,
+                )
+        except LegacyAgentSignalFrozen:
+            return False
+
+    async def _trigger_admitted_legacy_review_for_profile(
+        self,
+        profile: AgentRuntimeProfile,
+        session_id: str,
+    ) -> bool:
+        """Run the legacy review after its local admission is tracked."""
+
         checked_at = time.time()
         async with self._session_signal_lock(session_id):
             await self._reconcile_expired_session_pause_locked(session_id)
-            for profile in self._unique_profiles():
-                scheduler = profile.agent_scheduler
-                if session_id not in set(scheduler.list_session_ids()):
-                    continue
-                current_state = scheduler.state_for(session_id)
-                if current_state not in {AgentState.IDLE, AgentState.REVIEW}:
-                    logger.info(
-                        format_log_event(
-                            "agent.runtime.manual_review_skipped",
-                            session_id=session_id,
-                            state=current_state.value,
-                            profile_id=profile.profile_id,
-                        )
-                    )
-                    return False
-                scheduler.bring_review_plan_forward(
-                    session_id,
-                    next_review_at=checked_at,
-                    now=checked_at,
-                    reason="manual_trigger",
-                )
-                decision = await scheduler.run_due_review(session_id, now=checked_at)
-                started = bool(getattr(decision, "review_workflow_started", False))
+            scheduler = profile.agent_scheduler
+            if session_id not in set(scheduler.list_session_ids()):
+                return False
+            current_state = scheduler.state_for(session_id)
+            if current_state not in {AgentState.IDLE, AgentState.REVIEW}:
                 logger.info(
                     format_log_event(
-                        "agent.runtime.manual_review_triggered",
+                        "agent.runtime.manual_review_skipped",
                         session_id=session_id,
-                        review_workflow_started=started,
-                        state=getattr(decision.state, "value", str(decision.state)),
+                        state=current_state.value,
                         profile_id=profile.profile_id,
                     )
                 )
-                return started
-        return False
+                return False
+            scheduler.bring_review_plan_forward(
+                session_id,
+                next_review_at=checked_at,
+                now=checked_at,
+                reason="manual_trigger",
+            )
+            decision = await scheduler.run_due_review(session_id, now=checked_at)
+            started = bool(getattr(decision, "review_workflow_started", False))
+            logger.info(
+                format_log_event(
+                    "agent.runtime.manual_review_triggered",
+                    session_id=session_id,
+                    review_workflow_started=started,
+                    state=getattr(decision.state, "value", str(decision.state)),
+                    profile_id=profile.profile_id,
+                )
+            )
+            return started
 
     async def force_idle(self, session_id: str) -> bool:
         """Force a session back to IDLE from any active state.
@@ -2154,6 +2426,21 @@ class AgentRuntime:
             seen.add(marker)
             result.append(profile)
         return result
+
+    def _profile_for_id(self, profile_id: str) -> AgentRuntimeProfile | None:
+        """Return an exact durable profile without default-profile fallback."""
+
+        normalized_profile_id = str(profile_id or "").strip()
+        if not normalized_profile_id:
+            return None
+        return next(
+            (
+                profile
+                for profile in self._unique_profiles()
+                if profile.profile_id == normalized_profile_id
+            ),
+            None,
+        )
 
 
 def install_agent_runtime(

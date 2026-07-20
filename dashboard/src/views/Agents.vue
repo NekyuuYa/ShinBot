@@ -396,9 +396,9 @@ async function refreshPage() {
   }
 }
 
-async function handleTriggerReview(sessionId: string) {
+async function handleTriggerReview(profileId: string, sessionId: string) {
   try {
-    await apiClient.unwrap(agentsApi.triggerReview(sessionId));
+    await apiClient.unwrap(agentsApi.triggerReview(profileId, sessionId));
     uiStore.showSnackbar(
       translate("pages.agents.messages.triggerReviewSuccess"),
       "success",

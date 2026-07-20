@@ -159,7 +159,7 @@
                     variant="tonal"
                     color="primary"
                     prepend-icon="mdi-refresh"
-                    @click="$emit('triggerReview', session.sessionId)"
+                    @click="$emit('triggerReview', profile.profileId, session.sessionId)"
                   >
                     {{ triggerReviewLabel }}
                   </v-btn>
@@ -220,7 +220,7 @@ const props = defineProps<{
 }>()
 
 defineEmits<{
-  triggerReview: [sessionId: string]
+  triggerReview: [profileId: string, sessionId: string]
   forceIdle: [sessionId: string]
 }>()
 

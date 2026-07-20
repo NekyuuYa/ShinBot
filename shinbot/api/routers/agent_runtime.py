@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import uuid
 from math import isfinite
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Header, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
 from shinbot.admin.agent_runtime_diagnostics import (
@@ -37,6 +38,7 @@ _IDLE_REVIEW_PLANNING_AUDIT_EVENTS = (
 _IDLE_REVIEW_PLANNING_AUDIT_EVENT_LIMIT = 48
 _IDLE_REVIEW_PLANNING_DECISION_LIMIT = 12
 _MAX_AUDIT_TEXT_LENGTH = 256
+_MANUAL_REVIEW_IDEMPOTENCY_KEY_MAX_LENGTH = 256
 
 
 class AgentRuntimeBinding(BaseModel):
@@ -814,10 +816,95 @@ def get_agent_runtime_session_diagnostics(
 
 
 class _ManualActionData(BaseModel):
-    """Response payload for a manual scheduler action."""
+    """Response payload for one profile-scoped management action."""
 
+    profileId: str = ""
     sessionId: str
     success: bool
+    runtimeKind: Literal["legacy", "actor_v2", "unavailable"] = "unavailable"
+    disposition: str = ""
+    reason: str = ""
+    requestId: str = ""
+    eventId: str = ""
+    mailboxId: int | None = None
+
+
+def _manual_review_request_id(idempotency_key: str | None) -> str:
+    """Return a caller retry key or a fresh durable management identity."""
+
+    normalized = str(idempotency_key or "").strip()
+    return normalized or f"management-review:{uuid.uuid4().hex}"
+
+
+def _management_requested_by(request: Request) -> str:
+    """Return the authenticated subject retained by the API auth dependency."""
+
+    subject = getattr(request.state, "auth_subject", "")
+    normalized = str(subject or "").strip()
+    return normalized or "management_api"
+
+
+def _manual_action_payload(result: Any) -> dict[str, Any]:
+    """Project a runtime admission result into the public management schema."""
+
+    return {
+        "profileId": str(getattr(result, "profile_id", "") or ""),
+        "sessionId": str(getattr(result, "session_id", "") or ""),
+        "success": bool(getattr(result, "success", False)),
+        "runtimeKind": str(getattr(result, "runtime_kind", "unavailable")),
+        "disposition": str(getattr(result, "disposition", "")),
+        "reason": str(getattr(result, "reason", "") or ""),
+        "requestId": str(getattr(result, "request_id", "") or ""),
+        "eventId": str(getattr(result, "event_id", "") or ""),
+        "mailboxId": getattr(result, "mailbox_id", None),
+    }
+
+
+@router.post(
+    "/profiles/{profile_id}/sessions/{session_id}/trigger-review",
+    response_model=Envelope[_ManualActionData],
+)
+async def trigger_profile_session_review(
+    profile_id: AgentRuntimeProfileIdPath,
+    session_id: AgentRuntimeSessionIdPath,
+    request: Request,
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            max_length=_MANUAL_REVIEW_IDEMPOTENCY_KEY_MAX_LENGTH,
+        ),
+    ] = None,
+    bot: Any = BotDep,
+) -> dict[str, Any]:
+    """Request review through an exact profile's current durable owner.
+
+    This route admits Actor v2 work only after ownership and its committed
+    admission fence have been verified by the mailbox repository. It never
+    creates ownership, publishes a wake target, or starts an Actor lifecycle.
+    """
+
+    request_id = _manual_review_request_id(idempotency_key)
+    agent_runtime = getattr(bot, "agent_runtime", None)
+    if agent_runtime is None:
+        return ok(
+            {
+                "profileId": profile_id,
+                "sessionId": session_id,
+                "success": False,
+                "runtimeKind": "unavailable",
+                "disposition": "runtime_unavailable",
+                "reason": "agent_runtime_unavailable",
+                "requestId": request_id,
+            }
+        )
+    result = await agent_runtime.request_review_for_profile(
+        profile_id,
+        session_id,
+        request_id=request_id,
+        requested_by=_management_requested_by(request),
+    )
+    return ok(_manual_action_payload(result))
 
 
 @router.post(
@@ -827,12 +914,28 @@ class _ManualActionData(BaseModel):
 async def trigger_session_review(
     session_id: str, bot: Any = BotDep, boot: Any = BootDep
 ) -> dict[str, Any]:
-    """Manually trigger a review for a session by bringing the review plan forward to now."""
+    """Trigger a legacy review through the deprecated unscoped endpoint."""
     agent_runtime = getattr(bot, "agent_runtime", None)
     if agent_runtime is None:
-        return ok({"sessionId": session_id, "success": False})
+        return ok(
+            {
+                "sessionId": session_id,
+                "success": False,
+                "runtimeKind": "unavailable",
+                "disposition": "runtime_unavailable",
+                "reason": "agent_runtime_unavailable",
+            }
+        )
     triggered = await agent_runtime.trigger_review(session_id)
-    return ok({"sessionId": session_id, "success": triggered})
+    return ok(
+        {
+            "sessionId": session_id,
+            "success": triggered,
+            "runtimeKind": "legacy",
+            "disposition": "triggered" if triggered else "not_triggered",
+            "reason": "" if triggered else "legacy_review_not_startable",
+        }
+    )
 
 
 @router.post(

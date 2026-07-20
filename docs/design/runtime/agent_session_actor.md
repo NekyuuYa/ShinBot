@@ -15,8 +15,12 @@ durable effect executor, versioned contracts, workflow adapters, registry, and
 activation harness exist and are covered by focused tests.  They are not yet
 constructed and activated by `AgentRuntime` as the live ingress owner.  In
 particular, a deployment must not flip a session to `actor_v2` ownership or
-route live messages, timers, workflow completions, or management commands to
-the v2 mailbox until the activation gate at the end of this document is met.
+route live messages, timers, or workflow completions to the v2 mailbox until
+the activation gate at the end of this document is met. The one narrow
+management exception is a profile-scoped manual-review admission: it may write
+one fenced mailbox event only for a session that already has active Actor v2
+ownership. It cannot acquire that ownership, publish a wake target, start
+workers, or make the event execute.
 
 Core durable routing has conditional support for an active Actor v2 owner, but
 that is plumbing for the future activation rather than a second live runtime.
@@ -60,7 +64,9 @@ The invariant and workflow sections below therefore use two meanings:
 
 The current reducer dispatches only its implemented event kinds.
 `ManualReviewRequested` now has a diagnostic-only reducer and schedule-claim
-admission path; it is not mounted into the management API or live runtime.
+admission path. The management API can use that admission path for an
+already-owned, fenced Actor v2 session, but it remains outside live ingress and
+target lifecycle activation.
 Pause/force-idle events described by the target contract have not yet been
 added to that enum. They remain activation work, not production capability.
 
@@ -353,9 +359,24 @@ manual request observes the claimed schedule and cannot start a second review.
 The scanner also redrives pending manual mailbox work after a post-commit wake
 failure or restart. Generic mailbox enqueue rejects this event kind, and a
 raw-key partial unique index prevents a second `(profile, session, request id)`
-admission even through a SQLite TEXT/BLOB storage alias. The admission service
-is intentionally not mounted into `AgentRuntime`, core ingress, or the
-management API yet.
+admission even through a SQLite TEXT/BLOB storage alias.
+
+`AgentRuntime` now owns a narrowly scoped `ManualReviewAdmissionService` with
+no mailbox-handoff notifier. The profile-scoped
+`POST /api/v1/agent-runtime/profiles/{profile_id}/sessions/{session_id}/trigger-review`
+route carries the authenticated management subject and optional
+`Idempotency-Key`, then resolves the existing owner before doing anything else.
+Only an active legacy owner may use the legacy scheduler, through the same local
+legacy-signal admission and drain boundary used by a future cutover. An active
+Actor v2 owner uses the fenced admission transaction and returns its mailbox
+identity; an unowned, fenced, migrating, revoked, or unknown profile is
+rejected without falling back to another profile. The route cannot claim
+ownership, publish a target, start a scanner or worker, or invoke an actor
+directly. Its existing unscoped
+`/sessions/{session_id}/trigger-review` compatibility route remains legacy-only
+and refuses to choose among multiple local profiles. The Dashboard uses the
+profile-scoped route so a shared adapter session cannot be addressed as the
+wrong Actor.
 
 The first concrete Actor v2 review vertical is implemented and remains
 diagnostic-only: `ReviewWorkflowEffectHandler` reads only the operation's

@@ -147,8 +147,23 @@ export interface AgentRuntimeProfile {
 }
 
 export interface ManualActionResponse {
+  profileId: string
   sessionId: string
   success: boolean
+  runtimeKind: 'legacy' | 'actor_v2' | 'unavailable'
+  disposition: string
+  reason: string
+  requestId: string
+  eventId: string
+  mailboxId: number | null
+}
+
+function managementRequestId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID
+  if (typeof randomUuid === 'function') {
+    return randomUuid.call(globalThis.crypto)
+  }
+  return `management-review-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 export const agentsApi = {
@@ -178,9 +193,15 @@ export const agentsApi = {
     return apiClient.get<AgentRuntimeProfile[]>('/agent-runtime', config)
   },
 
-  triggerReview(sessionId: string) {
+  triggerReview(profileId: string, sessionId: string) {
     return apiClient.post<ManualActionResponse>(
-      `/agent-runtime/sessions/${encodeURIComponent(sessionId)}/trigger-review`
+      `/agent-runtime/profiles/${encodeURIComponent(profileId)}/sessions/${encodeURIComponent(sessionId)}/trigger-review`,
+      undefined,
+      {
+        headers: {
+          'Idempotency-Key': managementRequestId(),
+        },
+      },
     )
   },
 
