@@ -23,7 +23,12 @@ from shinbot.core.dispatch.dispatchers import (
     AgentEntryDispatcher,
     make_agent_entry_fallback_route_rule,
 )
-from shinbot.core.dispatch.durable_routing_service import DurableRoutingService
+from shinbot.core.dispatch.durable_routing_service import (
+    DurableRoutingService,
+    DurableRoutingServiceStatus,
+    FencedDurableRoutingService,
+)
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
 from shinbot.core.dispatch.ingress import (
     MessageIngress,
     RouteDispatchContext,
@@ -745,6 +750,97 @@ async def test_fenced_route_without_notifier_stays_durable_and_blocks_legacy_rec
         handoff = database.actor_v2_mailbox_handoffs.read(int(row["mailbox_id"]))
         assert handoff is not None
         assert handoff.state is MailboxHandoffState.PENDING
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_scoped_fenced_relay_persists_only_its_target_handoff_without_notifier(
+    tmp_path: Path,
+) -> None:
+    """An explicit target relay cannot claim a sibling fenced request."""
+
+    ingress, database, adapter = _build_actor_ingress(tmp_path, claim_actor_owner=False)
+    first_key = _actor_key()
+    second_key = SessionKey("bot-a", "bot-a:private:user-b")
+    first_grant = database.actor_v2_admission_fences.reserve(
+        first_key,
+        holder_id="scoped-fenced-relay-first",
+        ttl_seconds=30.0,
+    )
+    first_owner = database.agent_runtime_ownership.claim(
+        first_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="test commits first fenced actor owner",
+        legacy_session_id="instance-a:private:user-a",
+        requested_by="test",
+        admission_grant=first_grant,
+    ).ownership
+    second_grant = database.actor_v2_admission_fences.reserve(
+        second_key,
+        holder_id="scoped-fenced-relay-second",
+        ttl_seconds=30.0,
+    )
+    database.agent_runtime_ownership.claim(
+        second_key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="test commits second fenced actor owner",
+        legacy_session_id="instance-a:private:user-b",
+        requested_by="test",
+        admission_grant=second_grant,
+    )
+    request = FencedMailboxWakeRequest(
+        key=first_key,
+        ownership_generation=first_owner.generation,
+        admission_fence_id=first_owner.admission_fence_id,
+        admission_fence_generation=first_owner.admission_fence_generation,
+    )
+    await ingress.process_event(_event(message_id="first-message", user_id="user-a"), adapter)
+    await ingress.process_event(_event(message_id="second-message", user_id="user-b"), adapter)
+    service = FencedDurableRoutingService(
+        repository=database.durable_routing,
+        replay=ingress.replay_claimed_routing_job,
+        adapter_resolver=lambda _instance_id: adapter,
+        request=request,
+        poll_interval_seconds=0.01,
+    )
+
+    try:
+        started = await service.start()
+        await _wait_for_relay_count(service, 1)
+        await asyncio.sleep(0.03)
+
+        assert service.persistence_domain is database
+        assert started.actor_consumer_ready is False
+        assert started.ready_for_actor_traffic is False
+        assert started.fenced_request_scoped is True
+        assert started.fenced_scope_live is True
+        assert started.status is DurableRoutingServiceStatus.RUNNING
+        with database.connect() as conn:
+            outbox_rows = conn.execute(
+                """
+                SELECT profile_id, session_id, status
+                FROM agent_route_outbox
+                ORDER BY session_id
+                """
+            ).fetchall()
+            mailbox_rows = conn.execute(
+                """
+                SELECT mailbox_id, profile_id, session_id
+                FROM agent_session_mailbox
+                ORDER BY session_id
+                """
+            ).fetchall()
+        assert [tuple(row) for row in outbox_rows] == [
+            ("bot-a", first_key.session_id, "completed"),
+            ("bot-a", second_key.session_id, "pending"),
+        ]
+        assert [tuple(row)[1:] for row in mailbox_rows] == [
+            ("bot-a", first_key.session_id),
+        ]
+        handoff = database.actor_v2_mailbox_handoffs.read(int(mailbox_rows[0]["mailbox_id"]))
+        assert handoff is not None
+        assert handoff.evidence.as_fenced_wake_request() == request
     finally:
         await service.shutdown()
 

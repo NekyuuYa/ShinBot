@@ -388,6 +388,12 @@ class DurableMessageRoutingRepository(Repository):
         return self._database.actor_v2_legacy_recovery_gate
 
     @property
+    def persistence_domain(self) -> object:
+        """Return the exact database identity shared by routing transactions."""
+
+        return self._database
+
+    @property
     def lease_seconds(self) -> float:
         """Return the configured claim lease duration."""
 
@@ -494,14 +500,29 @@ class DurableMessageRoutingRepository(Repository):
             decision_kind=str(row["decision_kind"]),
         )
 
-    def claim_next_job(self, *, worker_id: str) -> ClaimedMessageRoutingJob | None:
-        """Claim the oldest available routing job, reclaiming expired leases."""
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str,
+        expected_fenced_request: FencedMailboxWakeRequest | None = None,
+    ) -> ClaimedMessageRoutingJob | None:
+        """Claim the oldest available routing job, optionally for one fence.
+
+        ``expected_fenced_request`` is deliberately a complete ownership and
+        admission-fence identity.  It lets an explicitly composed target relay
+        only its own ingress work without widening that authority to another
+        active Actor v2 session.
+        """
 
         worker = _required_identifier(worker_id, "worker_id")
         now = self._clock()
         lease_expires_at = now + self._lease_seconds
         claim_id = uuid.uuid4().hex
         eligibility = _routing_job_work_eligibility("message_routing_jobs")
+        scope_clause, scope_parameters = _fenced_request_scope_clause(
+            "message_routing_jobs",
+            expected_fenced_request,
+        )
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -512,11 +533,12 @@ class DurableMessageRoutingRepository(Repository):
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                 )
+                  {scope_clause}
                   AND {eligibility}
                 ORDER BY routing_job_seq ASC
                 LIMIT 1
                 """,
-                (now, now, now),
+                (now, now, *scope_parameters, now),
             ).fetchone()
             if row is None:
                 return None
@@ -536,6 +558,7 @@ class DurableMessageRoutingRepository(Repository):
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                   )
+                  {scope_clause}
                   AND {eligibility}
                 """,
                 (
@@ -546,6 +569,7 @@ class DurableMessageRoutingRepository(Repository):
                     row["routing_job_seq"],
                     now,
                     now,
+                    *scope_parameters,
                     now,
                 ),
             )
@@ -780,14 +804,19 @@ class DurableMessageRoutingRepository(Repository):
         self,
         *,
         worker_id: str,
+        expected_fenced_request: FencedMailboxWakeRequest | None = None,
     ) -> ClaimedAgentRouteDelivery | None:
-        """Claim the oldest available Agent route outbox delivery."""
+        """Claim the oldest available Agent route delivery for an optional fence."""
 
         worker = _required_identifier(worker_id, "worker_id")
         now = self._clock()
         lease_expires_at = now + self._lease_seconds
         claim_id = uuid.uuid4().hex
         eligibility = _route_outbox_work_eligibility("agent_route_outbox")
+        scope_clause, scope_parameters = _fenced_request_scope_clause(
+            "agent_route_outbox",
+            expected_fenced_request,
+        )
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -798,11 +827,12 @@ class DurableMessageRoutingRepository(Repository):
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                 )
+                  {scope_clause}
                   AND {eligibility}
                 ORDER BY outbox_seq ASC
                 LIMIT 1
                 """,
-                (now, now, now),
+                (now, now, *scope_parameters, now),
             ).fetchone()
             if row is None:
                 return None
@@ -823,6 +853,7 @@ class DurableMessageRoutingRepository(Repository):
                     (status = 'pending' AND available_at <= ?)
                     OR (status = 'processing' AND COALESCE(lease_until, 0) <= ?)
                   )
+                  {scope_clause}
                   AND {eligibility}
                 """,
                 (
@@ -833,6 +864,7 @@ class DurableMessageRoutingRepository(Repository):
                     row["outbox_seq"],
                     now,
                     now,
+                    *scope_parameters,
                     now,
                 ),
             )
@@ -1062,11 +1094,19 @@ class DurableMessageRoutingRepository(Repository):
             retry_at=retry_at,
         )
 
-    def next_job_available_at(self) -> float | None:
-        """Return the next pending deadline or expired-lease recovery time."""
+    def next_job_available_at(
+        self,
+        *,
+        expected_fenced_request: FencedMailboxWakeRequest | None = None,
+    ) -> float | None:
+        """Return the next routing deadline for an optional exact fence scope."""
 
         now = self._clock()
         eligibility = _routing_job_work_eligibility("message_routing_jobs")
+        scope_clause, scope_parameters = _fenced_request_scope_clause(
+            "message_routing_jobs",
+            expected_fenced_request,
+        )
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -1078,19 +1118,28 @@ class DurableMessageRoutingRepository(Repository):
                 ) AS next_at
                 FROM message_routing_jobs
                 WHERE status IN ('pending', 'processing')
+                  {scope_clause}
                   AND {eligibility}
                 """,
-                (now,),
+                (*scope_parameters, now),
             ).fetchone()
         if row is None or row["next_at"] is None:
             return None
         return float(row["next_at"])
 
-    def next_delivery_available_at(self) -> float | None:
-        """Return the next Agent outbox deadline or lease recovery time."""
+    def next_delivery_available_at(
+        self,
+        *,
+        expected_fenced_request: FencedMailboxWakeRequest | None = None,
+    ) -> float | None:
+        """Return the next Agent delivery deadline for an optional exact fence."""
 
         now = self._clock()
         eligibility = _route_outbox_work_eligibility("agent_route_outbox")
+        scope_clause, scope_parameters = _fenced_request_scope_clause(
+            "agent_route_outbox",
+            expected_fenced_request,
+        )
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -1102,13 +1151,56 @@ class DurableMessageRoutingRepository(Repository):
                 ) AS next_at
                 FROM agent_route_outbox
                 WHERE status IN ('pending', 'processing')
+                  {scope_clause}
                   AND {eligibility}
                 """,
-                (now,),
+                (*scope_parameters, now),
             ).fetchone()
         if row is None or row["next_at"] is None:
             return None
         return float(row["next_at"])
+
+    def is_live_fenced_request(self, request: FencedMailboxWakeRequest) -> bool:
+        """Return whether one complete fenced Actor ownership scope is current.
+
+        This is an observation only.  It does not claim work, acquire a target
+        lease, or prove that a local target is running; callers still need their
+        own target lifecycle proof before treating the scope as consumable.
+        """
+
+        _fenced_request_scope_clause("message_routing_jobs", request)
+        now = self._clock()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM agent_session_runtime_ownership AS ownership
+                JOIN agent_session_actor_v2_admission_fences AS fence
+                  ON fence.profile_id = ownership.profile_id
+                 AND fence.session_id = ownership.session_id
+                 AND fence.fence_id = ownership.admission_fence_id
+                 AND fence.generation = ownership.admission_fence_generation
+                WHERE ownership.profile_id = ?
+                  AND ownership.session_id = ?
+                  AND ownership.mode = 'actor_v2'
+                  AND ownership.status = 'active'
+                  AND ownership.generation = ?
+                  AND ownership.admission_fence_id = ?
+                  AND ownership.admission_fence_generation = ?
+                  AND fence.status = 'committed'
+                  AND fence.expires_at > ?
+                LIMIT 1
+                """,
+                (
+                    request.key.profile_id,
+                    request.key.session_id,
+                    request.ownership_generation,
+                    request.admission_fence_id,
+                    request.admission_fence_generation,
+                    now,
+                ),
+            ).fetchone()
+        return row is not None
 
     def pending_counts(self) -> tuple[int, int]:
         """Return recoverable routing-job and Agent-delivery counts."""
@@ -2532,6 +2624,43 @@ def _claimed_job_from_row(
         attempt_count=int(row["attempt_count"]),
         claimed_at=claimed_at,
         lease_expires_at=lease_expires_at,
+    )
+
+
+def _fenced_request_scope_clause(
+    table_name: str,
+    request: FencedMailboxWakeRequest | None,
+) -> tuple[str, tuple[object, ...]]:
+    """Build an exact request filter for bounded fenced relay work.
+
+    A caller may not scope work by a bare session key or ownership generation:
+    both admission-fence columns are required so a replacement target cannot
+    claim work retained for a prior incarnation of the same session.
+    """
+
+    if table_name not in {"message_routing_jobs", "agent_route_outbox"}:
+        raise ValueError("unsupported durable routing scope table")
+    if request is None:
+        return "", ()
+    if not isinstance(request, FencedMailboxWakeRequest):
+        raise TypeError("expected_fenced_request must be a FencedMailboxWakeRequest")
+    if not request.has_admission_fence:
+        raise ValueError("expected_fenced_request must carry an admission fence")
+    return (
+        f"""
+                  AND {table_name}.profile_id = ?
+                  AND {table_name}.session_id = ?
+                  AND {table_name}.ownership_generation = ?
+                  AND {table_name}.admission_fence_id = ?
+                  AND {table_name}.admission_fence_generation = ?
+        """,
+        (
+            request.key.profile_id,
+            request.key.session_id,
+            request.ownership_generation,
+            request.admission_fence_id,
+            request.admission_fence_generation,
+        ),
     )
 
 

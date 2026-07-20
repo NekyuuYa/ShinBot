@@ -255,6 +255,12 @@ class FencedNativeHistoryLifecycleController:
             cleanup_failed=self._cleanup_failed,
         )
 
+    @property
+    def persistence_domain(self) -> object:
+        """Return the immutable durable domain shared by this target lifecycle."""
+
+        return self._persistence_domain
+
     async def activate(self) -> FencedNativeHistoryLifecycleSnapshot:
         """Recover native history, then publish exactly one target supervisor."""
 

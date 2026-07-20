@@ -2328,14 +2328,36 @@ after a proven stop and retains a failed cleanup state when retirement cannot
 prove completion. This controller does not acquire ownership, scan other
 sessions, enable ingress, timers, recovery discovery, or management commands.
 
-This target remains a dormant integration primitive. No runtime lifecycle,
-ingress route, adapter, timer, scanner, API action, or default runtime starts
-the supervisor or binds it. A production controller must still coordinate the durable core-ingress
-barrier across processes, acquire the ownership/admission fence, construct and
-supervise this single-request target, renew or retire it before expiry, unbind it before
-retirement, and keep failure states operator-visible. The key-only registry and
-ordinary runtime assembly remain unsafe for fenced production traffic until
-that broader controller exists.
+`FencedDurableRoutingService` is the corresponding exact ingress relay. It
+accepts one complete, admission-fenced `FencedMailboxWakeRequest`; every
+durable routing-job claim, route-outbox claim, deadline query, and post-relay
+assertion repeats all five identity fields (profile, session, ownership
+generation, admission-fence id, and admission-fence generation). It cannot
+install a key-only wake target or a global notifier. After it persists a route
+mailbox sidecar, the already-published target's own pull supervisor discovers
+and validates that sidecar. An advisory notifier may reduce latency elsewhere,
+but it is not a correctness or liveness prerequisite for this exact target.
+Its health distinguishes a live scoped fence from global Actor readiness: a
+single-request relay never marks `ready_for_actor_traffic`, because it cannot
+authorize unrelated owners.
+
+`FencedIngressLifecycleController` binds a new native-history target lifecycle
+to one same-domain scoped relay. Startup is strictly `recover/publish target ->
+start scoped relay`; shutdown is the reverse `stop scoped relay -> retire
+target`. A relay startup failure, unexpected relay loss, or caller cancellation
+drives the same ordered cleanup, so no worker can create a new handoff after its
+target starts retirement. The controller remains intentionally unable to acquire
+ownership, reserve or commit an admission fence, start a core ingress drain,
+resume legacy ingress, bind a global notifier, or publish a replacement target.
+
+These remain dormant integration primitives. No runtime lifecycle, ingress
+route, adapter, timer, scanner, API action, or default runtime constructs this
+controller or starts its supervisor/relay. A production cutover controller must
+still coordinate the durable core-ingress barrier across processes, acquire the
+ownership/admission fence, construct and supervise this single-request target,
+renew or retire it before expiry, unbind it before retirement, and keep failure
+states operator-visible. The key-only registry and ordinary runtime assembly
+remain unsafe for fenced production traffic until that broader controller exists.
 
 Actor ownership may be enabled for production traffic only after all of the
 following are true for that ownership mode:

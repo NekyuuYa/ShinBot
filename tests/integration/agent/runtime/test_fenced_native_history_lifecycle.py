@@ -20,6 +20,10 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionEventEnvelope,
     SessionTransition,
 )
+from shinbot.agent.runtime.session_actor.fenced_ingress_lifecycle import (
+    FencedIngressLifecycleController,
+    FencedIngressLifecycleState,
+)
 from shinbot.agent.runtime.session_actor.fenced_mailbox_handoff_supervisor import (
     FencedMailboxHandoffSupervisor,
     FencedMailboxHandoffSupervisorState,
@@ -30,7 +34,6 @@ from shinbot.agent.runtime.session_actor.fenced_mailbox_handoff_target import (
 )
 from shinbot.agent.runtime.session_actor.fenced_native_history_lifecycle import (
     FencedNativeHistoryLifecycleController,
-    FencedNativeHistoryLifecycleState,
 )
 from shinbot.agent.runtime.session_actor.fenced_registry import FencedSessionActorRegistry
 from shinbot.agent.runtime.session_actor.mailbox_handoff_dispatcher import (
@@ -39,6 +42,7 @@ from shinbot.agent.runtime.session_actor.mailbox_handoff_dispatcher import (
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.core.dispatch.actor_v2_admission import ActorV2AdmissionGrant
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
+from shinbot.core.dispatch.durable_routing_service import FencedDurableRoutingService
 from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
 from shinbot.core.dispatch.fenced_wake_target_lease import FencedActorExecutionBinding
 from shinbot.core.dispatch.mailbox_handoff import MailboxHandoffTarget
@@ -191,9 +195,26 @@ async def test_native_history_lifecycle_recovers_expired_mailbox_after_target_re
         dispatch_limit=1,
         quiescence_timeout_seconds=1.0,
     )
-    lifecycle = FencedNativeHistoryLifecycleController(
+    history_lifecycle = FencedNativeHistoryLifecycleController(
         target=target,
         supervisor=supervisor,
+    )
+
+    async def replay_unexpected_route(*_args: object) -> None:
+        """Reject unrelated route replay while this test restores native history."""
+
+        raise AssertionError("native-history fixture has no pending routing job")
+
+    relay = FencedDurableRoutingService(
+        repository=database.durable_routing,
+        replay=replay_unexpected_route,
+        adapter_resolver=lambda _instance_id: None,
+        request=request,
+        poll_interval_seconds=0.01,
+    )
+    lifecycle = FencedIngressLifecycleController(
+        history=history_lifecycle,
+        relay=relay,
     )
     try:
         active = await lifecycle.activate()
@@ -206,17 +227,17 @@ async def test_native_history_lifecycle_recovers_expired_mailbox_after_target_re
             execution_binding=binding,
         )
 
-        assert active.state is FencedNativeHistoryLifecycleState.ACTIVE
-        assert active.recovery is not None
-        assert active.recovery.actor_wake.request == request
+        assert active.state is FencedIngressLifecycleState.ACTIVE
+        assert active.history.recovery is not None
+        assert active.history.recovery.actor_wake.request == request
         assert aggregate.data == {"last_event_id": "native-history-recovery-mailbox-event"}
         assert target.state is FencedMailboxHandoffTargetState.ACTIVE
         assert supervisor.snapshot.state is FencedMailboxHandoffSupervisorState.ACTIVE
-        assert (await lifecycle.verify_active()).state is FencedNativeHistoryLifecycleState.ACTIVE
+        assert (await lifecycle.verify_active()).state is FencedIngressLifecycleState.ACTIVE
     finally:
         closed = await lifecycle.shutdown()
         await dispatcher.close()
 
-    assert closed.state is FencedNativeHistoryLifecycleState.CLOSED
+    assert closed.state is FencedIngressLifecycleState.CLOSED
     assert target.state is FencedMailboxHandoffTargetState.STOPPED
     assert supervisor.snapshot.state is FencedMailboxHandoffSupervisorState.STOPPED

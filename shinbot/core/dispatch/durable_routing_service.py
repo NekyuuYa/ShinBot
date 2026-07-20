@@ -83,10 +83,20 @@ class DurableRoutingHealthSnapshot:
     consecutive_failures: int
     processed_job_count: int
     relayed_delivery_count: int
+    fenced_request_scoped: bool = False
+    fenced_scope_live: bool = False
 
 
 class DurableRoutingService:
-    """Recover routing jobs and relay Agent outbox work with lease fencing."""
+    """Recover routing jobs and relay Agent outbox work with lease fencing.
+
+    The default service remains a process-wide compatibility service.  The
+    ``fenced_request_scope`` mode is reserved for
+    :class:`FencedDurableRoutingService`, whose caller already owns a live,
+    exact target lifecycle.  It never installs a key-only wake target or an
+    advisory notifier, and can claim only the complete fenced request supplied
+    at construction.
+    """
 
     def __init__(
         self,
@@ -103,9 +113,25 @@ class DurableRoutingService:
         max_attempts: int = 5,
         operation_timeout_seconds: float = 20.0,
         clock: Callable[[], float] | None = None,
+        fenced_request_scope: FencedMailboxWakeRequest | None = None,
     ) -> None:
         """Initialize the service without starting background recovery."""
 
+        if fenced_request_scope is not None:
+            if not isinstance(fenced_request_scope, FencedMailboxWakeRequest):
+                raise TypeError(
+                    "fenced_request_scope must be a FencedMailboxWakeRequest or None"
+                )
+            if not fenced_request_scope.has_admission_fence:
+                raise ValueError("fenced_request_scope requires an admission fence")
+            if actor_wake_target is not None:
+                raise ValueError(
+                    "a fenced routing scope cannot install a key-only actor wake target"
+                )
+            if mailbox_handoff_notifier is not None:
+                raise ValueError(
+                    "a fenced routing scope cannot install a global handoff notifier"
+                )
         self._repository = repository
         self._replay = replay
         self._adapter_resolver = adapter_resolver
@@ -115,6 +141,7 @@ class DurableRoutingService:
             raise TypeError("mailbox_handoff_notifier must implement notify(mailbox_id)")
         self._actor_wake_target = actor_wake_target
         self._mailbox_handoff_notifier = mailbox_handoff_notifier
+        self._fenced_request_scope = fenced_request_scope
         self._worker_id = str(
             worker_id or f"durable-routing:{uuid.uuid4().hex}"
         ).strip()
@@ -175,12 +202,28 @@ class DurableRoutingService:
 
         return self._started
 
+    @property
+    def fenced_request_scope(self) -> FencedMailboxWakeRequest | None:
+        """Return the exact fenced request this service may relay, if scoped."""
+
+        return self._fenced_request_scope
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the durable domain used for routing claims and relays."""
+
+        return getattr(self._repository, "persistence_domain", self._repository)
+
     def set_actor_wake_target(
         self,
         target: AgentMailboxWakeTarget | None,
     ) -> None:
         """Install or clear the actor consumer used after mailbox commits."""
 
+        if self._fenced_request_scope is not None:
+            raise RuntimeError(
+                "a fenced routing scope cannot bind a key-only actor wake target"
+            )
         self._actor_wake_target = target
         self._legacy_wake_target_epoch += 1
         self._legacy_wake_discovery_cursor = None
@@ -196,6 +239,10 @@ class DurableRoutingService:
         target, start a dispatcher, or authorize an Actor v2 wake.
         """
 
+        if self._fenced_request_scope is not None:
+            raise RuntimeError(
+                "a fenced routing scope cannot bind a global handoff notifier"
+            )
         if notifier is not None and not callable(getattr(notifier, "notify", None)):
             raise TypeError("notifier must implement notify(mailbox_id)")
         self._mailbox_handoff_notifier = notifier
@@ -254,7 +301,11 @@ class DurableRoutingService:
                     return self.health_snapshot()
                 self._task = asyncio.create_task(
                     self._run(),
-                    name="core.durable-routing",
+                    name=(
+                        "core.fenced-durable-routing"
+                        if self._fenced_request_scope is not None
+                        else "core.durable-routing"
+                    ),
                 )
                 self._startup_complete.set()
         except BaseException:
@@ -290,30 +341,41 @@ class DurableRoutingService:
     def health_snapshot(self) -> DurableRoutingHealthSnapshot:
         """Return current durable backlog, readiness, and failure state."""
 
+        scoped = self._fenced_request_scope is not None
+        fenced_scope_live = False
         try:
             pending_jobs, pending_deliveries = self._repository.pending_counts()
             actor_owners = self._repository.active_actor_ownership_count()
+            if self._fenced_request_scope is not None:
+                fenced_scope_live = self._repository.is_live_fenced_request(
+                    self._fenced_request_scope
+                )
         except Exception as exc:
             self._record_failure(exc)
             pending_jobs = -1
             pending_deliveries = -1
             actor_owners = -1
 
-        fenced_handoff_notifier_required = self._fenced_handoff_notifier_required()
+        fenced_handoff_notifier_required = (
+            not scoped and self._fenced_handoff_notifier_required()
+        )
         consumer_ready = (
             self._legacy_actor_target_available()
             and not self._legacy_broad_wake_fenced_debt
         )
         ready_for_actor = (
-            self._started
+            not scoped
+            and self._started
             and self._adapters_ready
             and actor_owners >= 0
             and (actor_owners == 0 or consumer_ready)
         )
         degraded_reason = ""
-        if fenced_handoff_notifier_required:
+        if scoped and not fenced_scope_live:
+            degraded_reason = "fenced_request_scope_inactive"
+        elif fenced_handoff_notifier_required:
             degraded_reason = "mailbox_handoff_notifier_unavailable"
-        elif actor_owners > 0 and not consumer_ready:
+        elif not scoped and actor_owners > 0 and not consumer_ready:
             degraded_reason = "actor_consumer_unavailable"
         elif self._consecutive_failures:
             degraded_reason = self._last_error_code or "durable_routing_failure"
@@ -355,6 +417,8 @@ class DurableRoutingService:
             consecutive_failures=self._consecutive_failures,
             processed_job_count=self._processed_job_count,
             relayed_delivery_count=self._relayed_delivery_count,
+            fenced_request_scoped=scoped,
+            fenced_scope_live=fenced_scope_live,
         )
 
     async def _run(self) -> None:
@@ -397,11 +461,22 @@ class DurableRoutingService:
             self._release_interrupted_claims()
 
     async def _process_job_once(self) -> bool:
-        claim = self._repository.claim_next_job(worker_id=self._worker_id)
+        claim = self._repository.claim_next_job(
+            worker_id=self._worker_id,
+            expected_fenced_request=self._fenced_request_scope,
+        )
         if claim is None:
             return False
         self._active_job = claim
         try:
+            self._require_fenced_scope_matches(
+                profile_id=claim.envelope.profile_id,
+                session_id=claim.envelope.session_id,
+                ownership_generation=claim.envelope.ownership_generation,
+                admission_fence_id=claim.envelope.admission_fence_id,
+                admission_fence_generation=claim.envelope.admission_fence_generation,
+                subject="routing job",
+            )
             payload = IngressRoutingPayload.from_payload(claim.envelope.payload)
             adapter = self._adapter_resolver(payload.adapter_instance_id)
             if adapter is None:
@@ -436,12 +511,23 @@ class DurableRoutingService:
     async def _process_delivery_once(self, *, wake_after_commit: bool) -> bool:
         if not self._delivery_sink_available():
             return False
-        claim = self._repository.claim_next_delivery(worker_id=self._worker_id)
+        claim = self._repository.claim_next_delivery(
+            worker_id=self._worker_id,
+            expected_fenced_request=self._fenced_request_scope,
+        )
         if claim is None:
             return False
         self._active_delivery = claim
         try:
             result = self._repository.relay_delivery(claim)
+            self._require_fenced_scope_matches(
+                profile_id=result.wake_request.key.profile_id,
+                session_id=result.wake_request.key.session_id,
+                ownership_generation=result.wake_request.ownership_generation,
+                admission_fence_id=result.wake_request.admission_fence_id,
+                admission_fence_generation=result.wake_request.admission_fence_generation,
+                subject="route delivery",
+            )
         except asyncio.CancelledError:
             self._release_delivery_for_shutdown(claim)
             raise
@@ -455,7 +541,7 @@ class DurableRoutingService:
         self._relayed_delivery_count += 1
         self._record_success()
         if result.wake_request.has_admission_fence:
-            if wake_after_commit:
+            if wake_after_commit and self._fenced_request_scope is None:
                 await self._notify_fenced_mailbox_handoff(result)
             return True
         debt = PendingRouteWakeDebt(request=result.wake_request, event_id=result.event_id)
@@ -728,12 +814,20 @@ class DurableRoutingService:
 
     def _next_poll_timeout(self, *, can_process_jobs: bool) -> float:
         deadlines = (
-            [self._repository.next_job_available_at()]
+            [
+                self._repository.next_job_available_at(
+                    expected_fenced_request=self._fenced_request_scope,
+                )
+            ]
             if can_process_jobs
             else []
         )
         if self._delivery_sink_available():
-            deadlines.append(self._repository.next_delivery_available_at())
+            deadlines.append(
+                self._repository.next_delivery_available_at(
+                    expected_fenced_request=self._fenced_request_scope,
+                )
+            )
         now = self._clock()
         due = [deadline for deadline in deadlines if deadline is not None]
         if not due:
@@ -764,9 +858,34 @@ class DurableRoutingService:
         """Return whether a route delivery can make durable post-commit progress."""
 
         return (
-            self._legacy_actor_target_available()
+            self._fenced_request_scope is not None
+            or self._legacy_actor_target_available()
             or self._mailbox_handoff_notifier is not None
         )
+
+    def _require_fenced_scope_matches(
+        self,
+        *,
+        profile_id: str,
+        session_id: str,
+        ownership_generation: int,
+        admission_fence_id: str,
+        admission_fence_generation: int,
+        subject: str,
+    ) -> None:
+        """Reject a repository result that escapes this service's exact scope."""
+
+        scope = self._fenced_request_scope
+        if scope is None:
+            return
+        if (
+            profile_id != scope.key.profile_id
+            or session_id != scope.key.session_id
+            or ownership_generation != scope.ownership_generation
+            or admission_fence_id != scope.admission_fence_id
+            or admission_fence_generation != scope.admission_fence_generation
+        ):
+            raise RuntimeError(f"fenced durable routing {subject} escaped its request scope")
 
     def _fenced_handoff_notifier_required(self) -> bool:
         """Return whether fenced debt lacks even an advisory handoff hint sink."""
@@ -826,6 +945,76 @@ class DurableRoutingService:
         self._consecutive_failures += 1
 
 
+class FencedDurableRoutingService(DurableRoutingService):
+    """Relay ingress for one already-published fenced Actor target.
+
+    This service is deliberately not part of ``ShinBot`` startup.  A caller
+    must first recover and publish the matching target through a lifecycle that
+    retains the same :class:`FencedMailboxWakeRequest`.  The service then
+    replays only that request's routing jobs and persists only that request's
+    mailbox sidecars.  It has no key-only target and no global notifier; the
+    target's own pull supervisor remains responsible for handoff consumption.
+    """
+
+    def __init__(
+        self,
+        *,
+        repository: DurableMessageRoutingRepository,
+        replay: RoutingReplay,
+        adapter_resolver: AdapterResolver,
+        request: FencedMailboxWakeRequest,
+        worker_id: str | None = None,
+        poll_interval_seconds: float = 1.0,
+        retry_base_seconds: float = 1.0,
+        retry_max_seconds: float = 60.0,
+        max_attempts: int = 5,
+        operation_timeout_seconds: float = 20.0,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        """Create an inactive relay for one complete fenced request.
+
+        Args:
+            repository: Durable routing repository shared with the target.
+            replay: Canonical ingress replay callback.
+            adapter_resolver: Resolves only currently usable adapter instances.
+            request: Exact active Actor v2 ownership and admission-fence scope.
+            worker_id: Optional durable claim worker identity.
+            poll_interval_seconds: Maximum wait between scoped recovery passes.
+            retry_base_seconds: Base retry delay for route or relay failures.
+            retry_max_seconds: Maximum retry delay for route or relay failures.
+            max_attempts: Bounded retry count for one durable claim.
+            operation_timeout_seconds: Bound for one replay callback.
+            clock: Optional clock used by retry and health accounting.
+        """
+
+        if not isinstance(request, FencedMailboxWakeRequest):
+            raise TypeError("request must be a FencedMailboxWakeRequest")
+        if not request.has_admission_fence:
+            raise ValueError("fenced durable routing requires an admission-fenced request")
+        super().__init__(
+            repository=repository,
+            replay=replay,
+            adapter_resolver=adapter_resolver,
+            worker_id=worker_id,
+            poll_interval_seconds=poll_interval_seconds,
+            retry_base_seconds=retry_base_seconds,
+            retry_max_seconds=retry_max_seconds,
+            max_attempts=max_attempts,
+            operation_timeout_seconds=operation_timeout_seconds,
+            clock=clock,
+            fenced_request_scope=request,
+        )
+
+    @property
+    def request(self) -> FencedMailboxWakeRequest:
+        """Return the immutable ownership request this relay is allowed to claim."""
+
+        request = self.fenced_request_scope
+        if request is None:
+            raise RuntimeError("fenced durable routing service lost its request scope")
+        return request
+
+
 def _positive_finite(value: float, field_name: str) -> float:
     normalized = float(value)
     if not math.isfinite(normalized) or normalized <= 0:
@@ -854,4 +1043,5 @@ __all__ = [
     "DurableRoutingHealthSnapshot",
     "DurableRoutingService",
     "DurableRoutingServiceStatus",
+    "FencedDurableRoutingService",
 ]

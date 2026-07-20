@@ -149,6 +149,7 @@ from shinbot.core.dispatch.durable_routing_service import (
     DurableRoutingHealthSnapshot,
     DurableRoutingService,
     DurableRoutingServiceStatus,
+    FencedDurableRoutingService,
 )
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
 from shinbot.core.dispatch.fenced_wake import (
@@ -350,6 +351,7 @@ __all__ = [
     "DurableRoutingHealthSnapshot",
     "DurableRoutingService",
     "DurableRoutingServiceStatus",
+    "FencedDurableRoutingService",
     "IngressRoutingPayload",
     "IngressRoutingPayloadError",
     "LegacyIngressDurableAdmissionRequired",

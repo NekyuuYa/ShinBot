@@ -26,6 +26,7 @@ from shinbot.core.dispatch.durable_routing import (
     AGENT_ROUTE_MAILBOX_SOURCE,
     MessageRoutingJobEnvelope,
 )
+from shinbot.core.dispatch.fenced_wake import FencedMailboxWakeRequest
 from shinbot.core.dispatch.mailbox_handoff import (
     MailboxHandoffEvidenceState,
     MailboxHandoffState,
@@ -199,6 +200,88 @@ def _fenced_routing_claim(
     claim = store.claim_next_job(worker_id="fenced-router")
     assert claim is not None
     return db, store, claim, _delivery(persisted.message_log_id)
+
+
+def test_fenced_job_claim_scope_cannot_select_sibling_actor_request(tmp_path: Path) -> None:
+    """An exact relay claim retains both ownership and admission-fence scope."""
+
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    store = DurableMessageRoutingRepository(db, lease_seconds=5.0, clock=_Clock())
+    first_key = SessionKey("profile-first", "profile-first:group:room")
+    second_key = SessionKey("profile-second", "profile-second:group:room")
+
+    def persist_fenced_job(
+        key: SessionKey,
+        *,
+        suffix: str,
+    ) -> FencedMailboxWakeRequest:
+        grant = db.actor_v2_admission_fences.reserve(
+            key,
+            holder_id=f"fenced-scope-{suffix}",
+            ttl_seconds=60.0,
+        )
+        ownership = db.agent_runtime_ownership.claim(
+            key,
+            AgentRuntimeOwnershipMode.ACTOR_V2,
+            reason=f"fenced scope claim test {suffix}",
+            legacy_session_id=f"instance-main:group:{suffix}",
+            admission_grant=grant,
+        ).ownership
+        envelope = MessageRoutingJobEnvelope(
+            job_id=f"fenced-scope-job-{suffix}",
+            idempotency_key=f"fenced-scope-idempotency-{suffix}",
+            trace_id=f"fenced-scope-trace-{suffix}",
+            correlation_id=f"fenced-scope-correlation-{suffix}",
+            causation_id=f"fenced-scope-causation-{suffix}",
+            payload={"kind": "fenced-scope", "suffix": suffix},
+            profile_id=key.profile_id,
+            session_id=key.session_id,
+            ownership_generation=ownership.generation,
+            admission_fence_id=ownership.admission_fence_id,
+            admission_fence_generation=ownership.admission_fence_generation,
+            occurred_at=1_000.0,
+            available_at=1_000.0,
+        )
+        store.persist_message_and_job(
+            replace(
+                _record(raw_text=f"scope-{suffix}"),
+                session_id=f"instance-main:group:{suffix}",
+                platform_msg_id=f"scope-message-{suffix}",
+            ),
+            envelope,
+        )
+        return FencedMailboxWakeRequest(
+            key=key,
+            ownership_generation=ownership.generation,
+            admission_fence_id=ownership.admission_fence_id,
+            admission_fence_generation=ownership.admission_fence_generation,
+        )
+
+    first_request = persist_fenced_job(first_key, suffix="first")
+    second_request = persist_fenced_job(second_key, suffix="second")
+
+    assert store.is_live_fenced_request(first_request) is True
+    assert store.is_live_fenced_request(second_request) is True
+
+    first_claim = store.claim_next_job(
+        worker_id="fenced-scope-first",
+        expected_fenced_request=first_request,
+    )
+
+    assert first_claim is not None
+    assert first_claim.envelope.profile_id == first_key.profile_id
+    assert first_claim.envelope.session_id == first_key.session_id
+    assert store.next_job_available_at(expected_fenced_request=first_request) == 1_005.0
+
+    sibling_claim = store.claim_next_job(
+        worker_id="fenced-scope-second",
+        expected_fenced_request=second_request,
+    )
+
+    assert sibling_claim is not None
+    assert sibling_claim.envelope.profile_id == second_key.profile_id
+    assert sibling_claim.envelope.session_id == second_key.session_id
 
 
 def _install_abort_trigger(
